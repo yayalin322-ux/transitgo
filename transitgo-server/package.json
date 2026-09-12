@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/index.mjs",
     "dev": "node --watch src/index.mjs",
-    "test": "node test/gtfs_import.test.mjs && node test/tdx_normalize.test.mjs && node test/graph_builder.test.mjs && node test/virtual_od.test.mjs"
+    "test": "node test/gtfs_import.test.mjs && node test/tdx_normalize.test.mjs && node test/graph_builder.test.mjs && node test/virtual_od.test.mjs && node test/astar.test.mjs"
   },
   "engines": {
     "node": ">=22.5"
