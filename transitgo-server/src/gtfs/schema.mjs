@@ -73,10 +73,17 @@ export function ensureGtfsSchema(db) {
     -- arrival_time/departure_time stay as GTFS's raw "HH:MM:SS" text (can exceed 24:00:00
     -- for a post-midnight trip on the *same* service day) — Phase 2's Graph Builder
     -- converts to seconds-since-midnight, this layer stores exactly what the feed said.
+    --
+    -- stop_id is nullable (not the GTFS spec default) because TDX's bus schedule
+    -- endpoint gives real per-stop *times* for a trip without a StopUID attached to each
+    -- one — only the route's ordered stop list (StopOfRoute) says which physical stop
+    -- each position corresponds to. A null here means "real time, stop identity not yet
+    -- resolved by sequence" — Graph Builder resolves it by joining against
+    -- gtfs_trips.route_id's stop order, never by guessing.
     CREATE TABLE IF NOT EXISTS gtfs_stop_times (
       feed_id        TEXT NOT NULL,
       trip_id        TEXT NOT NULL,
-      stop_id        TEXT NOT NULL,
+      stop_id        TEXT,
       arrival_time   TEXT,
       departure_time TEXT,
       stop_sequence  INTEGER NOT NULL,
@@ -100,6 +107,28 @@ export function ensureGtfsSchema(db) {
       date            TEXT NOT NULL,
       exception_type  INTEGER NOT NULL,
       PRIMARY KEY (feed_id, service_id, date)
+    );
+
+    -- Most Taiwan city bus routes have no published fixed timetable in TDX — only a
+    -- real headway (minHeadwayMins/maxHeadwayMins) per time-of-day band, straight from
+    -- TDX's own v2/Bus/Schedule "Frequencys" field. This is NOT an invented average —
+    -- it's what the operator itself filed with TDX. Routes that DO have a real
+    -- timetable (TDX's "Timetables" field — common for intercity coach) go through
+    -- gtfs_trips/gtfs_stop_times instead, same as TRA/THSR; this table only exists for
+    -- the routes where that's genuinely not available.
+    CREATE TABLE IF NOT EXISTS transit_route_frequency (
+      feed_id           TEXT NOT NULL,
+      route_id          TEXT NOT NULL,
+      direction         INTEGER NOT NULL,
+      sub_route_name    TEXT,
+      service_day_label TEXT,
+      start_time        TEXT NOT NULL,
+      end_time          TEXT NOT NULL,
+      min_headway_mins  INTEGER,
+      max_headway_mins  INTEGER,
+      source            TEXT NOT NULL DEFAULT 'TDX v2/Bus/Schedule Frequencys',
+      imported_at       TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (feed_id, route_id, direction, service_day_label, start_time, end_time)
     );
   `);
 }

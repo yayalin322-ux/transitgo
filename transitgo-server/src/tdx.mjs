@@ -28,7 +28,7 @@ async function token() {
   return cachedToken;
 }
 
-async function get(path) {
+export async function get(path) {
   const t = await token();
   const res = await fetch(`${BASE}/${path}${path.includes("?") ? "&" : "?"}$format=JSON`, {
     headers: { authorization: `Bearer ${t}` },
