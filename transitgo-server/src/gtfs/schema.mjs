@@ -1,0 +1,105 @@
+/**
+ * GTFS static schema — Phase 1 of the multimodal routing engine (see the architecture
+ * doc: Data Model → Graph Builder → Virtual Origin/Destination → A* → ...).
+ *
+ * This mirrors the standard GTFS text files (agency/routes/stops/trips/stop_times/
+ * calendar/calendar_dates) almost verbatim rather than inventing a custom shape, because
+ * every Taiwan transit operator that publishes GTFS (TRA, THSR, city bus systems, metro
+ * systems) already conforms to this spec — an adapter step at import time, not a
+ * redesign, is what "don't hardcode TDX into the routing engine" from the doc's dev
+ * principles actually calls for.
+ *
+ * `feed_id` namespaces every table so multiple operators' GTFS feeds (which mint their
+ * own route_id/stop_id/trip_id independently and WILL collide across operators) can
+ * coexist in one database without stepping on each other. Re-importing a feed replaces
+ * that feed_id's rows only — see gtfs/import.mjs — which is the "DataVersion, don't mix
+ * old and new data" requirement: each import is one atomic swap, not an incremental
+ * merge that could leave stale rows behind.
+ */
+export function ensureGtfsSchema(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS gtfs_feeds (
+      feed_id     TEXT PRIMARY KEY,
+      name        TEXT NOT NULL,
+      source_url  TEXT,
+      imported_at TEXT NOT NULL DEFAULT (datetime('now')),
+      row_counts  TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS gtfs_agency (
+      feed_id          TEXT NOT NULL,
+      agency_id        TEXT NOT NULL,
+      agency_name      TEXT,
+      agency_url       TEXT,
+      agency_timezone  TEXT,
+      PRIMARY KEY (feed_id, agency_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS gtfs_routes (
+      feed_id          TEXT NOT NULL,
+      route_id         TEXT NOT NULL,
+      agency_id        TEXT,
+      route_short_name TEXT,
+      route_long_name  TEXT,
+      route_type       INTEGER,
+      PRIMARY KEY (feed_id, route_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS gtfs_stops (
+      feed_id         TEXT NOT NULL,
+      stop_id         TEXT NOT NULL,
+      stop_name       TEXT,
+      stop_lat        REAL,
+      stop_lon        REAL,
+      parent_station  TEXT,
+      location_type   INTEGER,
+      PRIMARY KEY (feed_id, stop_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_gtfs_stops_geo ON gtfs_stops (stop_lat, stop_lon);
+
+    CREATE TABLE IF NOT EXISTS gtfs_trips (
+      feed_id        TEXT NOT NULL,
+      trip_id        TEXT NOT NULL,
+      route_id       TEXT NOT NULL,
+      service_id     TEXT NOT NULL,
+      direction_id   INTEGER,
+      trip_headsign  TEXT,
+      shape_id       TEXT,
+      PRIMARY KEY (feed_id, trip_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_gtfs_trips_route ON gtfs_trips (feed_id, route_id);
+    CREATE INDEX IF NOT EXISTS idx_gtfs_trips_service ON gtfs_trips (feed_id, service_id);
+
+    -- arrival_time/departure_time stay as GTFS's raw "HH:MM:SS" text (can exceed 24:00:00
+    -- for a post-midnight trip on the *same* service day) — Phase 2's Graph Builder
+    -- converts to seconds-since-midnight, this layer stores exactly what the feed said.
+    CREATE TABLE IF NOT EXISTS gtfs_stop_times (
+      feed_id        TEXT NOT NULL,
+      trip_id        TEXT NOT NULL,
+      stop_id        TEXT NOT NULL,
+      arrival_time   TEXT,
+      departure_time TEXT,
+      stop_sequence  INTEGER NOT NULL,
+      PRIMARY KEY (feed_id, trip_id, stop_sequence)
+    );
+    CREATE INDEX IF NOT EXISTS idx_gtfs_stop_times_stop ON gtfs_stop_times (feed_id, stop_id);
+
+    CREATE TABLE IF NOT EXISTS gtfs_calendar (
+      feed_id     TEXT NOT NULL,
+      service_id  TEXT NOT NULL,
+      monday      INTEGER, tuesday INTEGER, wednesday INTEGER, thursday INTEGER,
+      friday      INTEGER, saturday INTEGER, sunday INTEGER,
+      start_date  TEXT,
+      end_date    TEXT,
+      PRIMARY KEY (feed_id, service_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS gtfs_calendar_dates (
+      feed_id         TEXT NOT NULL,
+      service_id      TEXT NOT NULL,
+      date            TEXT NOT NULL,
+      exception_type  INTEGER NOT NULL,
+      PRIMARY KEY (feed_id, service_id, date)
+    );
+  `);
+}

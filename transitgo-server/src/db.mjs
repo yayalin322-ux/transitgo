@@ -2,6 +2,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { ensureGtfsSchema } from "./gtfs/schema.mjs";
 
 const DB_PATH = process.env.DB_PATH || "./data/transitgo.db";
 mkdirSync(dirname(DB_PATH), { recursive: true });
@@ -91,6 +92,8 @@ CREATE TABLE IF NOT EXISTS speedcam_cache (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 `);
+
+ensureGtfsSchema(db);
 
 // ---- devices ----
 export function upsertDevice({ token, platform, appVersion }) {
