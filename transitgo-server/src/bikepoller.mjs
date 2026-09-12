@@ -89,6 +89,33 @@ async function fetchTaichungDirect() {
     });
 }
 
+/** Kaohsiung's feed nests the actual rows under data.data.retVal, and splits general/electric as an object ({yb2, eyb}) rather than Taichung's comma string. */
+async function fetchKaohsiungDirect() {
+  const res = await fetch("https://api.kcg.gov.tw/api/service/Get/b4dd9c40-9027-4125-8666-06bef1756092", {
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const body = await res.json();
+  const rows = body?.data?.data?.retVal;
+  if (!Array.isArray(rows)) throw new Error("unexpected response shape");
+  return rows
+    .filter((r) => r.lat && r.lng)
+    .map((r) => ({
+      uid: r.sno,
+      name: (r.sna || "").replace(/^YouBike\d\.\d_/, ""),
+      city: "Kaohsiung",
+      lat: parseFloat(r.lat), lon: parseFloat(r.lng),
+      address: r.ar || "",
+      capacity: r.tot != null ? parseInt(r.tot, 10) : null,
+      rent: parseInt(r.sbi, 10) || 0,
+      ret: parseInt(r.bemp, 10) || 0,
+      general: r.sbi_detail?.yb2 != null ? parseInt(r.sbi_detail.yb2, 10) : null,
+      electric: r.sbi_detail?.eyb != null ? parseInt(r.sbi_detail.eyb, 10) : null,
+      status: r.act === 1 || r.act === "1" ? 1 : 0,
+      src: r.mday || null,
+    }));
+}
+
 /** Minimal CSV parser — good enough for these government feeds (quoted fields, no embedded newlines). */
 function parseCsv(text) {
   const lines = text.replace(/^﻿/, "").split(/\r?\n/).filter(Boolean);
@@ -122,6 +149,7 @@ const DIRECT_FEEDS = {
   Taipei: fetchTaipeiDirect,
   NewTaipei: fetchNewTaipeiDirect,
   Taichung: fetchTaichungDirect,
+  Kaohsiung: fetchKaohsiungDirect,
 };
 
 /**
