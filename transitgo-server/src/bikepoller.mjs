@@ -116,6 +116,33 @@ async function fetchKaohsiungDirect() {
     }));
 }
 
+/** Taoyuan's feed is the same shape as Kaohsiung's, one level shallower: retVal directly at the top, and sbi_detail as {yb2, eyb} too. */
+async function fetchTaoyuanDirect() {
+  const res = await fetch("https://opendata.tycg.gov.tw/api/v1/dataset/5ca2bfc7-9ace-4719-88ae-4034b9a5a55c/resource/08274d61-edbe-419d-8fcc-7a643831283d/download", {
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const body = await res.json();
+  const rows = body?.retVal;
+  if (!Array.isArray(rows)) throw new Error("unexpected response shape");
+  return rows
+    .filter((r) => r.lat && r.lng)
+    .map((r) => ({
+      uid: r.sno,
+      name: (r.sna || "").replace(/^YouBike\d\.\d_/, ""),
+      city: "Taoyuan",
+      lat: parseFloat(r.lat), lon: parseFloat(r.lng),
+      address: r.ar || "",
+      capacity: r.tot != null ? parseInt(r.tot, 10) : null,
+      rent: parseInt(r.sbi, 10) || 0,
+      ret: parseInt(r.bemp, 10) || 0,
+      general: r.sbi_detail?.yb2 != null ? parseInt(r.sbi_detail.yb2, 10) : null,
+      electric: r.sbi_detail?.eyb != null ? parseInt(r.sbi_detail.eyb, 10) : null,
+      status: r.act === 1 || r.act === "1" ? 1 : 0,
+      src: r.mday || null,
+    }));
+}
+
 /** Minimal CSV parser — good enough for these government feeds (quoted fields, no embedded newlines). */
 function parseCsv(text) {
   const lines = text.replace(/^﻿/, "").split(/\r?\n/).filter(Boolean);
@@ -150,7 +177,14 @@ const DIRECT_FEEDS = {
   NewTaipei: fetchNewTaipeiDirect,
   Taichung: fetchTaichungDirect,
   Kaohsiung: fetchKaohsiungDirect,
+  Taoyuan: fetchTaoyuanDirect,
 };
+
+// In-memory poll status per city — no way to see Render's own server logs from here, so
+// this gives a way to check *why* a city's cache is empty (direct feed failed? TDX 429?)
+// without dashboard access. See GET /v1/admin/bike-status in index.mjs.
+const pollStatus = {};
+export function bikePollStatus() { return pollStatus; }
 
 /**
  * Periodically pulls YouBike availability for the configured cities and caches it, so
@@ -177,18 +211,25 @@ export function startBikePoller() {
       try {
         const rows = direct ? await direct() : await bikeCity(city);
         setBikeCache(city, rows);
+        pollStatus[city] = { ok: true, source: direct ? "direct" : "tdx", count: rows.length, at: new Date().toISOString() };
         console.log(`[bike] cached ${city}: ${rows.length} stations${direct ? " (direct feed)" : ""}`);
       } catch (e) {
         console.warn(`[bike] ${city} failed: ${e.message}`);
+        pollStatus[city] = { ok: false, source: direct ? "direct" : "tdx", error: e.message, at: new Date().toISOString() };
         // A direct feed failing is unusual (not the TDX 429s this exists to dodge) — fall
         // back to TDX for this one cycle rather than serving a stale/empty cache.
         if (direct && tdxConfigured()) {
           try {
             const rows = await bikeCity(city);
             setBikeCache(city, rows);
+            pollStatus[city] = { ok: true, source: "tdx-fallback", count: rows.length, at: new Date().toISOString() };
             console.log(`[bike] cached ${city}: ${rows.length} stations (TDX fallback)`);
           } catch (e2) {
             console.warn(`[bike] ${city} TDX fallback also failed: ${e2.message}`);
+            pollStatus[city] = {
+              ok: false, source: "direct+tdx-fallback",
+              error: `direct: ${e.message} | tdx: ${e2.message}`, at: new Date().toISOString(),
+            };
           }
         }
       }

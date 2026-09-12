@@ -21,7 +21,7 @@ import {
 } from "./db.mjs";
 import { pushAnnouncement } from "./push.mjs";
 import { startAlertPoller } from "./alerts.mjs";
-import { startBikePoller, nearestFrom } from "./bikepoller.mjs";
+import { startBikePoller, nearestFrom, bikePollStatus } from "./bikepoller.mjs";
 import { startSpeedcamPoller, nearestCams } from "./speedcampoller.mjs";
 
 // load .env (no dependency)
@@ -205,6 +205,13 @@ app.post("/v1/admin/announcements", requireAdmin, async (req, res) => {
 app.delete("/v1/admin/announcements/:id", requireAdmin, (req, res) => {
   deactivateAnnouncement(parseInt(req.params.id, 10));
   res.json({ ok: true });
+});
+
+// Last poll result per bike city — direct feed vs TDX, ok/error, station count, timestamp.
+// No way to see Render's own server logs from here, so this is how "why is city X empty"
+// gets debugged without dashboard access.
+app.get("/v1/admin/bike-status", requireAdmin, (_req, res) => {
+  res.json({ status: bikePollStatus() });
 });
 
 app.get("/v1/admin/reports", requireAdmin, (req, res) => {
