@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TransitGo 管理</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 15px/1.5 -apple-system, "PingFang TC", system-ui, sans-serif; max-width: 720px; margin: 0 auto; padding: 20px; }
+  h1 { font-size: 20px; }
+  fieldset { border: 1px solid #8884; border-radius: 10px; margin: 16px 0; padding: 14px; }
+  legend { font-weight: 600; }
+  label { display: block; margin: 8px 0 3px; font-size: 13px; opacity: .8; }
+  input, select, textarea, button { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid #8886; width: 100%; box-sizing: border-box; background: transparent; color: inherit; }
+  button { background: #007aff; color: #fff; border: 0; font-weight: 600; cursor: pointer; width: auto; padding: 9px 18px; }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+  .item { border-bottom: 1px solid #8883; padding: 8px 0; font-size: 13px; }
+  .warn { color: #d70015; } .info { color: #007aff; }
+  pre { background: #8881; padding: 10px; border-radius: 8px; overflow: auto; font-size: 12px; }
+  code { background: #8882; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>TransitGo 管理台</h1>
+
+<fieldset>
+  <legend>管理者權杖</legend>
+  <input id="token" type="password" placeholder="ADMIN_TOKEN" />
+  <p style="font-size:12px;opacity:.7">存在瀏覽器 localStorage，不會外傳。</p>
+</fieldset>
+
+<fieldset>
+  <legend>發佈公告</legend>
+  <div class="row">
+    <div><label>分類</label>
+      <select id="category">
+        <option value="metro">捷運</option>
+        <option value="rail">台鐵 / 高鐵</option>
+        <option value="bus">公車</option>
+        <option value="general">一般</option>
+      </select>
+    </div>
+    <div><label>嚴重度</label>
+      <select id="severity">
+        <option value="info">資訊</option>
+        <option value="warning" selected>警示</option>
+        <option value="critical">緊急</option>
+      </select>
+    </div>
+    <div><label>幾分鐘後過期（空=不過期）</label>
+      <input id="expires" type="number" placeholder="180" />
+    </div>
+  </div>
+  <label>標題</label>
+  <input id="title" placeholder="例如：板南線忠孝復興站有旅客事件，列車延誤" />
+  <label>內文</label>
+  <textarea id="body" rows="3" placeholder="細節說明…"></textarea>
+  <p><button onclick="publish()">發佈並推播</button> <span id="pubMsg"></span></p>
+</fieldset>
+
+<fieldset>
+  <legend>目前公告 <button style="background:#8884;color:inherit" onclick="loadAnns()">重新整理</button></legend>
+  <div id="anns"></div>
+</fieldset>
+
+<fieldset>
+  <legend>行程評分 <button style="background:#8884;color:inherit" onclick="loadRatings()">重新整理</button></legend>
+  <div id="ratingStats" style="margin-bottom:8px;font-size:15px"></div>
+  <div id="ratings"></div>
+</fieldset>
+
+<fieldset>
+  <legend>乘客回報（上下車） <button style="background:#8884;color:inherit" onclick="loadObs()">重新整理</button></legend>
+  <div id="obs"></div>
+</fieldset>
+
+<fieldset>
+  <legend>App 回報 <button style="background:#8884;color:inherit" onclick="loadReports()">重新整理</button></legend>
+  <div id="reports"></div>
+</fieldset>
+
+<fieldset>
+  <legend>用 curl 發佈</legend>
+  <pre id="curl"></pre>
+</fieldset>
+
+<script>
+const $ = (id) => document.getElementById(id);
+$("token").value = localStorage.getItem("tg_admin") || "";
+$("token").oninput = () => localStorage.setItem("tg_admin", $("token").value);
+
+function headers() {
+  return { "Content-Type": "application/json", Authorization: "Bearer " + $("token").value };
+}
+function updateCurl() {
+  $("curl").textContent =
+`curl -X POST ${location.origin}/v1/admin/announcements \\
+  -H "Authorization: Bearer $ADMIN_TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{"category":"metro","severity":"warning","title":"...","body":"...","expiresInMinutes":180}'`;
+}
+updateCurl();
+
+async function publish() {
+  $("pubMsg").textContent = "發佈中…";
+  const payload = {
+    category: $("category").value,
+    severity: $("severity").value,
+    title: $("title").value,
+    body: $("body").value,
+  };
+  const ex = parseInt($("expires").value, 10);
+  if (ex) payload.expiresInMinutes = ex;
+  const res = await fetch("/v1/admin/announcements", { method: "POST", headers: headers(), body: JSON.stringify(payload) });
+  const j = await res.json();
+  if (res.ok) {
+    $("pubMsg").textContent = `已發佈 #${j.announcement.id}（推播 ${j.push.dryRun ? "DRY-RUN" : j.push.sent + " 台"}）`;
+    $("title").value = ""; $("body").value = "";
+    loadAnns();
+  } else $("pubMsg").textContent = "失敗：" + (j.error || res.status);
+}
+
+async function loadAnns() {
+  const res = await fetch("/v1/admin/announcements", { headers: headers() });
+  if (!res.ok) return ($("anns").textContent = "需要正確的權杖");
+  const { announcements } = await res.json();
+  $("anns").innerHTML = announcements.map((a) =>
+    `<div class="item">
+       <b class="${a.severity === "info" ? "info" : "warn"}">[${a.category}] ${a.title}</b>
+       ${a.active ? "" : "（已下架）"}<br>
+       <span style="opacity:.7">${a.body || ""}</span><br>
+       <small style="opacity:.6">${a.createdAt} · ${a.source}</small>
+       ${a.active ? `<button style="background:#8884;color:inherit;padding:3px 8px" onclick="delAnn(${a.id})">下架</button>` : ""}
+     </div>`).join("") || "（無）";
+}
+async function delAnn(id) {
+  await fetch("/v1/admin/announcements/" + id, { method: "DELETE", headers: headers() });
+  loadAnns();
+}
+async function loadReports() {
+  const res = await fetch("/v1/admin/reports?limit=50", { headers: headers() });
+  if (!res.ok) return ($("reports").textContent = "需要正確的權杖");
+  const { reports } = await res.json();
+  $("reports").innerHTML = reports.map((r) =>
+    `<div class="item"><b>${r.type}</b> — ${r.message}
+       <br><small style="opacity:.6">${r.created_at} · ${r.os || "?"} · ${r.app_version || "?"}</small>
+       ${r.context ? `<pre>${r.context}</pre>` : ""}
+     </div>`).join("") || "（無）";
+}
+async function loadRatings() {
+  const res = await fetch("/v1/admin/ratings", { headers: headers() });
+  if (!res.ok) return ($("ratings").textContent = "需要正確的權杖");
+  const { stats, ratings } = await res.json();
+  const bars = [5,4,3,2,1].map((s) =>
+    `${"★".repeat(s)} ${stats.byStar[s] || 0}`).join("　");
+  $("ratingStats").innerHTML =
+    `平均 <b>${stats.avg ?? "—"}</b> ★（${stats.count} 筆）<br><small style="opacity:.7">${bars}</small>`;
+  $("ratings").innerHTML = ratings.map((r) =>
+    `<div class="item"><b>${"★".repeat(r.stars)}</b> ${r.kind === "rail" ? "🚆" : "🚌"} ${r.route || ""}
+       ${r.from_stop ? `（${r.from_stop} → ${r.to_stop || "?"}）` : ""}
+       <br><small style="opacity:.6">${r.created_at} · ${r.system || ""} · ${r.app_version || "?"}</small>
+     </div>`).join("") || "（無）";
+}
+async function loadObs() {
+  const res = await fetch("/v1/admin/observations", { headers: headers() });
+  if (!res.ok) return ($("obs").textContent = "需要正確的權杖");
+  const { observations } = await res.json();
+  $("obs").innerHTML = observations.map((o) =>
+    `<div class="item"><b>${o.kind === "alight" ? "下車" : "上車"}</b> ${o.route || ""}
+       ${o.plate ? `車牌 ${o.plate}` : ""} ${o.stop_name ? `@ ${o.stop_name}` : ""}
+       <br><small style="opacity:.6">${o.created_at} · ${o.system || ""}</small></div>`
+  ).join("") || "（無）";
+}
+loadAnns(); loadReports(); loadRatings(); loadObs();
+</script>
+</body>
+</html>

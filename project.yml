@@ -1,0 +1,87 @@
+name: TransitGo
+options:
+  bundleIdPrefix: tw.yayalin
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: "GWLUZQT9AJ"
+
+targets:
+  TransitGo:
+    type: application
+    platform: iOS
+    sources:
+      - path: TransitGo
+    dependencies:
+      - target: TransitGoWidgets
+    configFiles:
+      Debug: Config/Secrets.xcconfig
+      Release: Config/Secrets.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tw.yayalin.TransitGo
+    info:
+      path: TransitGo/Info.plist
+      properties:
+        CFBundleDisplayName: 交通即時查
+        UILaunchScreen: {}
+        NSSupportsLiveActivities: true
+        NSSupportsLiveActivitiesFrequentUpdates: true
+        UIBackgroundModes:
+          - remote-notification
+          - location
+        BackendHost: $(BACKEND_HOST)
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSLocationWhenInUseUsageDescription: 用於顯示你附近的公車站牌與到站時間。
+        NSLocationAlwaysAndWhenInUseUsageDescription: 追蹤班車時，需在背景保持定位以持續更新靈動島的到站倒數。
+        TDXClientID: $(TDX_CLIENT_ID)
+        TDXClientSecret: $(TDX_CLIENT_SECRET)
+
+  TransitGoWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: TransitGoWidgets
+      - path: TransitGo/Shared
+      - path: TransitGo/Core
+      - path: TransitGo/Features/Bus/BusModels.swift
+      - path: TransitGo/Features/Bus/BusService.swift
+      - path: TransitGo/Features/Bus/BusRouteCatalog.swift
+      - path: TransitGo/Features/Bus/CrowdingProvider.swift
+      - path: TransitGo/Features/Bus/VehicleProvider.swift
+      - path: TransitGo/Features/Rail/RailModels.swift
+      - path: TransitGo/Features/Rail/RailService.swift
+      - path: TransitGo/Features/Bike/BikeModels.swift
+      - path: TransitGo/Features/Bike/BikeService.swift
+      - path: TransitGo/Features/Metro/MetroModels.swift
+      - path: TransitGo/Features/Metro/MetroService.swift
+    configFiles:
+      Debug: Config/Secrets.xcconfig
+      Release: Config/Secrets.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tw.yayalin.TransitGo.Widgets
+    info:
+      path: TransitGoWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: 交通即時查
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        TDXClientID: $(TDX_CLIENT_ID)
+        TDXClientSecret: $(TDX_CLIENT_SECRET)

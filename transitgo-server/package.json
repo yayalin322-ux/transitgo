@@ -1,0 +1,17 @@
+{
+  "name": "transitgo-server",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "TransitGo 推播 / 公告 / 回報 後端",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "dev": "node --watch src/index.mjs"
+  },
+  "engines": { "node": ">=22.5" },
+  "dependencies": {
+    "apns2": "^11.7.0",
+    "express": "^4.21.2",
+    "node-cron": "^3.0.3"
+  }
+}

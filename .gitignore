@@ -1,0 +1,19 @@
+# Xcode / Swift
+build/
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcuserstate
+.swiftpm/
+Package.resolved
+
+# XcodeGen output (regenerate with `xcodegen generate`)
+TransitGo.xcodeproj/
+TransitGo/Info.plist
+TransitGoWidgets/Info.plist
+
+# Secrets — never commit real TDX credentials
+Config/Secrets.xcconfig
+
+# macOS
+.DS_Store

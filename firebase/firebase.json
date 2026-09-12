@@ -1,0 +1,21 @@
+{
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "runtime": "nodejs20",
+      "ignore": ["node_modules", ".git", "*.local"]
+    }
+  ],
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "hosting": {
+    "public": "public",
+    "rewrites": [
+      { "source": "/v1/**", "function": "api" },
+      { "source": "/admin", "function": "api" }
+    ]
+  }
+}
