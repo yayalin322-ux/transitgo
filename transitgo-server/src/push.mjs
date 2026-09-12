@@ -8,17 +8,22 @@ try {
   const { ApnsClient, Notification } = await import("apns2");
   const {
     APNS_KEY_PATH,
+    APNS_KEY_CONTENT,
     APNS_KEY_ID,
     APNS_TEAM_ID,
     APNS_BUNDLE_ID,
     APNS_PRODUCTION,
   } = process.env;
 
-  if (APNS_KEY_PATH && APNS_KEY_ID && APNS_TEAM_ID && APNS_BUNDLE_ID) {
+  // Render (and other host-without-persistent-disk platforms) can't hold a .p8 file —
+  // APNS_KEY_CONTENT (the .p8's PEM text, set as a normal env var) works there instead.
+  const signingKey = APNS_KEY_CONTENT || (APNS_KEY_PATH ? readFileSync(APNS_KEY_PATH, "utf8") : null);
+
+  if (signingKey && APNS_KEY_ID && APNS_TEAM_ID && APNS_BUNDLE_ID) {
     const client = new ApnsClient({
       team: APNS_TEAM_ID,
       keyId: APNS_KEY_ID,
-      signingKey: readFileSync(APNS_KEY_PATH, "utf8"),
+      signingKey,
       defaultTopic: APNS_BUNDLE_ID,
       host: APNS_PRODUCTION === "true" ? "api.push.apple.com" : "api.sandbox.push.apple.com",
     });

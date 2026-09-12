@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: transitgo-server
+    runtime: node
+    plan: free
+    rootDir: transitgo-server
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /v1/health
+    envVars:
+      - key: ADMIN_TOKEN
+        sync: false
+      - key: TDX_CLIENT_ID
+        sync: false
+      - key: TDX_CLIENT_SECRET
+        sync: false
+      - key: BIKE_CITIES
+        value: Taipei,NewTaipei,Taoyuan,Hsinchu,HsinchuCounty,MiaoliCounty,Taichung,ChanghuaCounty,Chiayi,ChiayiCounty,Tainan,Kaohsiung,PingtungCounty,YilanCounty,HualienCounty,TaitungCounty,KinmenCounty
+      - key: BIKE_POLL_MINUTES
+        value: "2"
+      - key: ALERT_POLL_MINUTES
+        value: "3"
+      - key: ANNOUNCE_RECOVERY
+        value: "true"
+      # APNs push stays DRY_RUN (logged, not sent) unless you also set
+      # APNS_KEY_PATH won't work here (no persistent disk) — leave push unconfigured
+      # for now, or switch push.mjs to read a PEM from an env var like the Firebase
+      # port's APNS_KEY_CONTENT if you want real push on Render.

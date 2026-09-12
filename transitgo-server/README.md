@@ -65,3 +65,19 @@ curl -X POST http://localhost:8787/v1/admin/announcements \
 docker build -t transitgo-server .
 docker run -d -p 8787:8787 -v $PWD/data:/data --env-file .env transitgo-server
 ```
+
+## 部署到 Render（免信用卡）
+
+repo 根目錄的 `render.yaml` 已經設定好這個 blueprint：
+
+1. [render.com](https://render.com) 用 GitHub 帳號登入 → **New → Blueprint** → 選這個 repo。
+   Render 會自動讀到 `render.yaml`，root directory 已指到 `transitgo-server/`。
+2. 部署前會要你手動填幾個標成 `sync: false` 的環境變數：`ADMIN_TOKEN`、
+   `TDX_CLIENT_ID`、`TDX_CLIENT_SECRET`（不填 TDX 的話，自動公告 / YouBike 輪詢就不會啟動，其餘 API 仍正常）。
+3. Deploy 完，Render 給的網址（去掉 `https://`）就是 App `Config/Secrets.xcconfig` 裡的 `BACKEND_HOST`。
+
+**免費方案的兩個限制：**
+- **沒有永久磁碟** —— 每次重新部署／服務被喚醒重啟，`data/transitgo.db`（公告、評分、回報、YouBike 快取）都會重置。YouBike 快取本來就每 2 分鐘重抓一次無所謂，但評分 / 回報歷史會遺失。想要資料不遺失的話要嘛加 Render 的付費永久磁碟，要嘛換用 `firebase/`（Firestore 永久儲存，但 Cloud Functions 需要 Blaze 方案 = 要綁卡）。
+- **閒置 15 分鐘會休眠**，休眠時 `node-cron` 的排程（YouBike／台鐵高鐵輪詢）也會跟著停，直到下一個請求把它叫醒才恢復。想保持常駐，可以用 UptimeRobot 之類的免費服務每 10 分鐘 ping 一次 `/v1/health`。
+
+推播（APNs）一樣可以留空跑 DRY RUN；真的要推播的話，因為 Render 免費方案沒有永久磁碟放 `.p8`，把 `.p8` 檔案內容整個貼進 `APNS_KEY_CONTENT` 環境變數（不要用 `APNS_KEY_PATH`）。
