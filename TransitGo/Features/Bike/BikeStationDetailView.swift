@@ -130,6 +130,21 @@ struct BikeStationDetailView: View {
                 await sweep(at: mapCenter, radius: expanding ? sweepRadius : 3000)
             }
         }
+        .task {
+            // Priority refresh: whatever station is actually selected/shown in the bottom
+            // card gets its own fast, independent update cadence — it shouldn't have to
+            // wait for the broader area sweep's turn to come back around.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                if Task.isCancelled { break }
+                guard let uid = selectedUID, let current = stationMap[uid] else { continue }
+                if let avail = try? await BikeService.shared.availability(city: current.city, stationUID: uid) {
+                    var updated = current
+                    updated.availability = avail
+                    merge([updated])
+                }
+            }
+        }
     }
 
     private var map: some View {
@@ -278,7 +293,18 @@ struct BikeStationDetailView: View {
     }
 
     private func merge(_ fresh: [BikeStationLive]) {
-        for s in fresh { stationMap[s.station.stationUID] = s }
+        for s in fresh {
+            // Requests can resolve out of order (a slow wide sweep vs. a fast priority
+            // refresh) — don't let a late, stale response regress a station we've
+            // already shown fresher availability for.
+            if let existing = stationMap[s.station.stationUID],
+               let existingAt = existing.availability?.updatedAt,
+               let freshAt = s.availability?.updatedAt,
+               freshAt < existingAt {
+                continue
+            }
+            stationMap[s.station.stationUID] = s
+        }
         // Trim to the nearest `keepCap` to the current map centre.
         if stationMap.count > keepCap {
             let c = CLLocation(latitude: mapCenter.latitude, longitude: mapCenter.longitude)

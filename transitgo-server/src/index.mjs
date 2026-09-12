@@ -17,10 +17,12 @@ import {
   listObservations,
   getBikeCache,
   allBikeCaches,
+  getSpeedcamCache,
 } from "./db.mjs";
 import { pushAnnouncement } from "./push.mjs";
 import { startAlertPoller } from "./alerts.mjs";
 import { startBikePoller, nearestFrom } from "./bikepoller.mjs";
+import { startSpeedcamPoller, nearestCams } from "./speedcampoller.mjs";
 
 // load .env (no dependency)
 try {
@@ -157,6 +159,20 @@ app.get("/v1/bike/search", (req, res) => {
   res.json({ stations: matches });
 });
 
+// Fixed traffic-camera locations (speed / intersection / pedestrian-yield), nationwide —
+// see speedcampoller.mjs for sources. No TDX involved, so no rate limit either.
+app.get("/v1/speedcams/nearby", (req, res) => {
+  const lat = parseFloat(req.query.lat);
+  const lon = parseFloat(req.query.lon);
+  if (Number.isNaN(lat) || Number.isNaN(lon)) return res.status(400).json({ error: "lat/lon required" });
+  const radius = Math.min(20000, parseInt(req.query.radius, 10) || 2000);
+  const limit = Math.min(200, parseInt(req.query.limit, 10) || 50);
+
+  const cache = getSpeedcamCache();
+  if (!cache) return res.json({ cams: [], updatedAt: null });
+  res.json({ cams: nearestCams(cache.cams, lat, lon, radius, limit), updatedAt: cache.updatedAt });
+});
+
 // Public read so the app can fall back to crowd data when TDX is stale.
 app.get("/v1/observations", (req, res) => {
   const route = typeof req.query.route === "string" ? req.query.route : null;
@@ -201,6 +217,7 @@ app.get("/admin", (_req, res) => res.sendFile(join(__dirname, "..", "public", "a
 app.listen(PORT, () => {
   console.log(`[transitgo-server] listening on :${PORT}`);
   startBikePoller();
+  startSpeedcamPoller();
   if (!ADMIN_TOKEN) console.warn("[transitgo-server] WARNING: ADMIN_TOKEN not set — admin endpoints disabled");
   startAlertPoller();
 });

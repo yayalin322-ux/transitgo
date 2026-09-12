@@ -3,6 +3,22 @@ import WidgetKit
 import ActivityKit
 import AppIntents
 
+/// Staged wording instead of a live-ticking mm:ss clock. TDX only refreshes every
+/// 15-20s server-side, so a per-second countdown implies false precision and drifts
+/// visibly out of sync with reality — a plain "即將進站" reads as accurate either way.
+private func heroLabel(_ s: BusTripAttributes.ContentState) -> String {
+    if let n = s.stopsAway, n <= 0 { return "即將進站" }
+    if let eta = s.etaDate, eta.timeIntervalSinceNow < 60 { return "即將進站" }
+    if let n = s.stopsAway, n <= 2 { return "即將到站" }
+    if let eta = s.etaDate, eta.timeIntervalSinceNow < 180 { return "即將到站" }
+    if let n = s.stopsAway { return "\(n) 站" }
+    if let eta = s.etaDate {
+        let mins = max(1, Int((eta.timeIntervalSinceNow / 60).rounded()))
+        return "\(mins) 分"
+    }
+    return "—"
+}
+
 /// Lock Screen + Dynamic Island presentation for a tracked bus ride.
 struct BusTripLiveActivity: Widget {
     var body: some WidgetConfiguration {
@@ -39,7 +55,8 @@ struct BusTripLiveActivity: Widget {
                 if context.state.stage == .rating || context.state.stage == .done {
                     Image(systemName: "star.fill").foregroundStyle(.yellow)
                 } else {
-                    countdown(context.state).font(.caption.bold().monospacedDigit()).frame(maxWidth: 46)
+                    Text(heroLabel(context.state)).font(.caption2.bold()).frame(maxWidth: 46).lineLimit(1)
+                        .minimumScaleFactor(0.7)
                 }
             } minimal: {
                 Image(systemName: stageGlyph(context.state.stage)).foregroundStyle(stageTint(context.state.stage))
@@ -60,8 +77,9 @@ struct BusTripLiveActivity: Widget {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     VStack(spacing: 0) {
-                        Text("上車倒數").font(.system(size: 10)).foregroundStyle(.secondary)
-                        countdown(s).font(.system(size: 30, weight: .heavy, design: .rounded)).monospacedDigit()
+                        Text("上車").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(heroLabel(s)).font(.system(size: 26, weight: .heavy, design: .rounded))
+                            .minimumScaleFactor(0.6).lineLimit(1)
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         Label(attr.boardStopName, systemImage: "hand.wave.fill")
@@ -83,9 +101,9 @@ struct BusTripLiveActivity: Widget {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
                     VStack(spacing: 0) {
-                        Text("下車倒數").font(.system(size: 10)).foregroundStyle(.secondary)
-                        countdown(s).font(.system(size: s.isArriving ? 38 : 30, weight: .heavy, design: .rounded))
-                            .monospacedDigit()
+                        Text("下車").font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(heroLabel(s)).font(.system(size: s.isArriving ? 30 : 26, weight: .heavy, design: .rounded))
+                            .minimumScaleFactor(0.6).lineLimit(1)
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         Label(attr.alightStopName, systemImage: "bell.fill")
@@ -102,15 +120,6 @@ struct BusTripLiveActivity: Widget {
                         .font(.caption.weight(.semibold)).foregroundStyle(.blue).lineLimit(1)
                 }
             }
-        }
-    }
-
-    @ViewBuilder
-    private func countdown(_ s: BusTripAttributes.ContentState) -> some View {
-        if let eta = s.etaDate, eta > .now {
-            Text(timerInterval: Date.now...eta)
-        } else {
-            Text(s.stopsAway.map { "\($0) 站" } ?? "—")
         }
     }
 
@@ -213,17 +222,10 @@ private struct LockScreenView: View {
             case .awaitingBoard:
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        Group {
-                            if let eta = s.etaDate, eta > .now {
-                                Text(timerInterval: Date.now...eta)
-                                    .font(.system(size: 42, weight: .heavy, design: .rounded)).monospacedDigit()
-                            } else {
-                                Text(s.stopsAway.map { "\($0) 站" } ?? s.statusText)
-                                    .font(.system(size: 28, weight: .heavy, design: .rounded))
-                            }
-                        }
-                        .minimumScaleFactor(0.6).lineLimit(1).layoutPriority(1)
-                        .foregroundStyle(.orange)
+                        Text(heroLabel(s))
+                            .font(.system(size: 36, weight: .heavy, design: .rounded))
+                            .minimumScaleFactor(0.6).lineLimit(1).layoutPriority(1)
+                            .foregroundStyle(.orange)
                         VStack(alignment: .leading, spacing: 1) {
                             Text("上車").font(.system(size: 10, weight: .bold)).foregroundStyle(.orange)
                             Label(attr.boardStopName, systemImage: "hand.wave.fill")
@@ -245,18 +247,10 @@ private struct LockScreenView: View {
 
             default:  // riding / awaitingAlight
                 HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Group {
-                        if let eta = s.etaDate, eta > .now {
-                            Text(timerInterval: Date.now...eta)
-                                .font(.system(size: s.isArriving ? 52 : 42, weight: .heavy, design: .rounded))
-                                .monospacedDigit()
-                        } else {
-                            Text(s.stopsAway.map { "\($0) 站" } ?? s.statusText)
-                                .font(.system(size: s.isArriving ? 34 : 28, weight: .heavy, design: .rounded))
-                        }
-                    }
-                    .minimumScaleFactor(0.6).lineLimit(1).layoutPriority(1)
-                    .foregroundStyle(s.isArriving ? .red : (s.stage == .awaitingAlight ? .red : .primary))
+                    Text(heroLabel(s))
+                        .font(.system(size: s.isArriving ? 44 : 36, weight: .heavy, design: .rounded))
+                        .minimumScaleFactor(0.6).lineLimit(1).layoutPriority(1)
+                        .foregroundStyle(s.isArriving ? .red : (s.stage == .awaitingAlight ? .red : .primary))
                     VStack(alignment: .leading, spacing: 1) {
                         Text(s.isArriving ? "快下車" : "下車").font(.system(size: s.isArriving ? 12 : 10, weight: .bold))
                             .foregroundStyle(s.isArriving || s.stage == .awaitingAlight ? .red : .blue)

@@ -42,10 +42,23 @@ enum SharedBikeService {
         comps?.queryItems = items
         guard let url = comps?.url else { return nil }
 
-        guard let (data, resp) = try? await URLSession.shared.data(from: url),
-              (resp as? HTTPURLResponse)?.statusCode == 200,
-              let decoded = try? JSONDecoder().decode(Response.self, from: data),
-              !decoded.stations.isEmpty else { return nil }
+        // Render's free tier sleeps after ~15 min idle and takes 30-50s to wake up — a
+        // default 60s URLSession timeout would make every caller of this function *wait*
+        // that long before falling back to direct TDX. A short-ish timeout here means a
+        // sleeping backend gets skipped reasonably quickly instead of stalling the UI, but
+        // callers that already gave the backend a head start (see Prewarm.wakeBackend())
+        // get one retry at a longer timeout instead of immediately giving up and falling
+        // through to the (easily rate-limited) direct-TDX path.
+        if let stations = try? await fetch(url, near: coord, timeoutInterval: 6) { return stations }
+        return try? await fetch(url, near: coord, timeoutInterval: 20)
+    }
+
+    private static func fetch(_ url: URL, near coord: CLLocationCoordinate2D, timeoutInterval: TimeInterval) async throws -> [BikeStationLive] {
+        let request = URLRequest(url: url, timeoutInterval: timeoutInterval)
+        let (data, resp) = try await URLSession.shared.data(for: request)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+        let decoded = try JSONDecoder().decode(Response.self, from: data)
+        guard !decoded.stations.isEmpty else { throw URLError(.zeroByteResource) }
 
         return decoded.stations.map { r -> BikeStationLive in
             let station = BikeStation(
@@ -81,8 +94,9 @@ enum SharedBikeService {
             URLQueryItem(name: "q", value: keyword),
             URLQueryItem(name: "limit", value: String(limit)),
         ]
-        guard let url = comps?.url,
-              let (data, resp) = try? await URLSession.shared.data(from: url),
+        guard let url = comps?.url else { return nil }
+        let request = URLRequest(url: url, timeoutInterval: 6)   // see nearby(): don't stall on a sleeping backend
+        guard let (data, resp) = try? await URLSession.shared.data(for: request),
               (resp as? HTTPURLResponse)?.statusCode == 200,
               let decoded = try? JSONDecoder().decode(Response.self, from: data) else { return nil }
 

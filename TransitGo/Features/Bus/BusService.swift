@@ -188,10 +188,17 @@ struct BusService {
     /// merged into one logical stop (e.g. "婦幼館" / "婦幼館站") — the results are the
     /// union of routes serving any of them.
     func arrivals(city: BusCity, stopUIDs: [String]) async throws -> [StopArrival] {
+        try await arrivals(scope: .city(city), stopUIDs: stopUIDs)
+    }
+
+    /// Same as above but scope-general — routes like intercity coach 5900 (新竹縣政府↔高鐵新竹站)
+    /// live under `.interCity`, not any city, so anything scoped to a single `BusCity` alone
+    /// will never see them at a stop that only intercity coaches serve.
+    func arrivals(scope: BusScope, stopUIDs: [String]) async throws -> [StopArrival] {
         guard !stopUIDs.isEmpty else { return [] }
         let filter = stopUIDs.map { "StopUID eq '\($0)'" }.joined(separator: " or ")
         let raw: [RawStopETA] = try await client.get(
-            "v2/Bus/EstimatedTimeOfArrival/City/\(city.rawValue)",
+            "v2/Bus/EstimatedTimeOfArrival/\(scope.pathComponent)",
             query: [
                 "$filter": filter,
                 "$select": "RouteName,Direction,EstimateTime,StopStatus",

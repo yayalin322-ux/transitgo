@@ -148,15 +148,74 @@ final class BikeNearbyViewModel {
     var isLoading = false
     var errorText: String?
 
+    /// Wide enough that the map has something worth clustering, not just the handful of
+    /// stations right on top of you. Shared-backend cache first (no TDX, no rate limit);
+    /// TDX only as a fallback.
     func load(near location: CLLocation, city: BikeCity) async {
         isLoading = items.isEmpty
         errorText = nil
         defer { isLoading = false }
+        if let shared = await SharedBikeService.nearby(near: location.coordinate, radius: 3000, city: nil), !shared.isEmpty {
+            items = shared
+            return
+        }
         do {
-            items = try await BikeService.shared.nearbyLive(city: city, near: location.coordinate)
+            items = try await BikeService.shared.nearbyLive(city: city, near: location.coordinate, radius: 3000)
         } catch {
             errorText = error.localizedDescription
         }
+    }
+}
+
+/// A group of nearby YouBike stations shown as one bubble when the map is zoomed out too
+/// far to tell individual stations apart — same idea as the marker clustering common in
+/// map apps, done manually since SwiftUI's `Map` doesn't cluster `Marker`/`Annotation`
+/// automatically the way UIKit's `MKMapView` does.
+struct BikeCluster: Identifiable {
+    let id: String
+    let coordinate: CLLocationCoordinate2D
+    let stations: [BikeStationLive]
+    var stationCount: Int { stations.count }
+    var totalRent: Int { stations.reduce(0) { $0 + $1.rent } }
+    var isSingle: Bool { stations.count == 1 }
+
+    /// Tiered like a typical bike-share map: exact count while small, rounded-down bucket
+    /// once there's enough in one spot that an exact number isn't actually useful.
+    var badgeText: String {
+        switch totalRent {
+        case 0..<10: return "\(totalRent)"
+        case 10..<50: return "10+"
+        case 50..<100: return "50+"
+        default: return "100+"
+        }
+    }
+    var badgeColor: Color {
+        switch totalRent {
+        case 0..<10: return .gray
+        case 10..<50: return .blue
+        case 50..<100: return .green
+        default: return .orange
+        }
+    }
+}
+
+/// Buckets stations into a grid sized relative to the current visible map span — zoom out
+/// and cells cover more ground (fewer, bigger clusters); zoom in and cells shrink until
+/// each one is just a single real station again.
+func clusterBikeStations(_ items: [BikeStationLive], span: MKCoordinateSpan) -> [BikeCluster] {
+    let cellLat = max(span.latitudeDelta / 10, 0.0006)
+    let cellLon = max(span.longitudeDelta / 10, 0.0006)
+    var buckets: [String: [BikeStationLive]] = [:]
+    for item in items {
+        guard let c = item.station.coordinate else { continue }
+        let key = "\(Int((c.latitude / cellLat).rounded()))_\(Int((c.longitude / cellLon).rounded()))"
+        buckets[key, default: []].append(item)
+    }
+    return buckets.map { key, group in
+        let coords = group.compactMap(\.station.coordinate)
+        let lat = coords.map(\.latitude).reduce(0, +) / Double(coords.count)
+        let lon = coords.map(\.longitude).reduce(0, +) / Double(coords.count)
+        return BikeCluster(id: key, coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon), stations: group)
     }
 }
 
@@ -197,6 +256,7 @@ struct NearbyStopsView: View {
     @State private var resolver = RegionResolver.shared
     @State private var mode: NearbyMode = .bus
     @State private var camera: MapCameraPosition = .userLocation(fallback: .automatic)
+    @State private var visibleSpan = MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
 
     @State private var busVM = NearbyViewModel()
     @State private var bikeVM = BikeNearbyViewModel()
@@ -275,10 +335,29 @@ struct NearbyStopsView: View {
                     }
                 }
             case .bike:
-                ForEach(bikeVM.items.prefix(30)) { item in
-                    if let c = item.station.coordinate {
+                ForEach(clusterBikeStations(bikeVM.items, span: visibleSpan)) { cluster in
+                    if cluster.isSingle, let item = cluster.stations.first, let c = item.station.coordinate {
                         Marker("\(item.station.name)（\(item.rent)）", systemImage: "bicycle", coordinate: c)
                             .tint(item.rent == 0 ? .red : (item.rent < 3 ? .orange : .green))
+                    } else {
+                        Annotation("", coordinate: cluster.coordinate) {
+                            Button {
+                                withAnimation {
+                                    camera = .region(MKCoordinateRegion(
+                                        center: cluster.coordinate,
+                                        span: MKCoordinateSpan(latitudeDelta: visibleSpan.latitudeDelta / 4,
+                                                                longitudeDelta: visibleSpan.longitudeDelta / 4)
+                                    ))
+                                }
+                            } label: {
+                                Text(cluster.badgeText)
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.white)
+                                    .frame(minWidth: 34, minHeight: 34)
+                                    .background(cluster.badgeColor, in: Circle())
+                                    .overlay(Circle().stroke(.white, lineWidth: 2))
+                            }
+                        }
                     }
                 }
             case .metro:
@@ -290,6 +369,9 @@ struct NearbyStopsView: View {
             }
         }
         .mapControls { MapUserLocationButton(); MapCompass() }
+        .onMapCameraChange(frequency: .continuous) { context in
+            visibleSpan = context.region.span
+        }
         .mapStyle(.standard(elevation: .flat))
     }
 

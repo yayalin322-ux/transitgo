@@ -9,5 +9,6 @@ struct TransitGoWidgetsBundle: WidgetBundle {
         RailTripLiveActivity()
         BikeTripLiveActivity()
         MetroTripLiveActivity()
+        NavigationTripLiveActivity()
     }
 }

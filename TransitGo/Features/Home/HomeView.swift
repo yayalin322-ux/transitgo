@@ -114,6 +114,7 @@ struct HomeView: View {
     @State private var showBusSearch = false
     @State private var showSettings = false
     @State private var showFavorites = false
+    @State private var showTransferPlanner = false
 
     @State private var path = NavigationPath()
 
@@ -154,6 +155,11 @@ struct HomeView: View {
                     Button { showSettings = true } label: { Image(systemName: "gearshape") }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    if region?.busCity != nil {
+                        Button { showTransferPlanner = true } label: {
+                            Image(systemName: "arrow.triangle.turn.up.right.diamond")
+                        }
+                    }
                     Button { showFavorites = true } label: { Image(systemName: "star") }
                     Button { showBusSearch = true } label: { Image(systemName: "magnifyingglass") }
                 }
@@ -168,6 +174,11 @@ struct HomeView: View {
                 FavoritesView { item in
                     showFavorites = false
                     path.append(item)
+                }
+            }
+            .sheet(isPresented: $showTransferPlanner) {
+                if let city = region?.busCity, let loc = location.location {
+                    TransferPlannerView(city: city, origin: loc.coordinate, metroOperator: region?.metroOperator)
                 }
             }
             .onAppear { location.request() }

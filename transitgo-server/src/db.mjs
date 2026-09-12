@@ -84,6 +84,12 @@ CREATE TABLE IF NOT EXISTS bike_cache (
   json       TEXT NOT NULL,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS speedcam_cache (
+  id         TEXT PRIMARY KEY DEFAULT 'all',
+  json       TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `);
 
 // ---- devices ----
@@ -248,6 +254,19 @@ export function allBikeCaches() {
   return db.prepare(`SELECT city, json, updated_at FROM bike_cache`).all().map((r) => ({
     city: r.city, stations: JSON.parse(r.json), updatedAt: isoZ(r.updated_at),
   }));
+}
+
+// ---- speed/traffic-camera cache (shared, refreshed by the poller) ----
+export function setSpeedcamCache(cams) {
+  db.prepare(`
+    INSERT INTO speedcam_cache (id, json, updated_at) VALUES ('all', :json, datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = datetime('now')
+  `).run({ json: JSON.stringify(cams) });
+}
+export function getSpeedcamCache() {
+  const r = db.prepare(`SELECT json, updated_at FROM speedcam_cache WHERE id = 'all'`).get();
+  if (!r) return null;
+  return { cams: JSON.parse(r.json), updatedAt: isoZ(r.updated_at) };
 }
 
 export function ratingStats() {

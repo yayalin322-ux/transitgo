@@ -30,6 +30,10 @@ final class TripTracker {
     /// us notice when the *same plate* shows up again on a later loop of the route (city
     /// buses run round trips all day) instead of quietly "reconnecting" to that new run.
     private var maxSeqSeen: Int?
+    /// When a candidate bus was first captured (pending board confirmation). If the user
+    /// never taps 我上車了/看下一班, we default to "you boarded the nearest bus" after a
+    /// grace period rather than waiting on positional proof, which can lag behind reality.
+    private var capturedAt: Date?
 
     struct Target {
         let scope: BusScope
@@ -66,6 +70,7 @@ final class TripTracker {
         notifiedAlightArrive = false
         capturedPlate = target.plate
         maxSeqSeen = nil
+        capturedAt = nil
         // At an origin stop any bus sitting there is boardable — skip the "is this the
         // one?" candidate-matching flow entirely and start straight in .riding.
         onboard = target.isOriginStop
@@ -126,6 +131,7 @@ final class TripTracker {
 
     private func refreshOnce() async {
         guard let target, let activity else { return }
+        let stageBefore = stage
 
         // --- Apply any button the user tapped on the Live Activity ---
         if let action = TripInteraction.consume() {
@@ -134,6 +140,7 @@ final class TripTracker {
                 if stage == .awaitingBoard {
                     stage = .riding; onboard = true
                     maxSeqSeen = nil   // fresh baseline for the bus we just confirmed boarding
+                    capturedAt = nil
                     ObservationService.shared.report(
                         route: target.routeName, plate: capturedPlate,
                         stopUID: target.boardStop.stopUID, stopName: target.boardStop.stopName.display,
@@ -151,6 +158,7 @@ final class TripTracker {
                 if let p = capturedPlate ?? target.plate { skipPlates.insert(p) }
                 capturedPlate = nil
                 maxSeqSeen = nil
+                capturedAt = nil
             case let r where r.hasPrefix("rate:"):
                 let n = Int(r.dropFirst(5)) ?? 0
                 TripInteraction.recordRating(n, route: target.routeName,
@@ -189,6 +197,7 @@ final class TripTracker {
                     if onboard { stage = .rating; ratingSince = ratingSince ?? .now }
                     if let plate { skipPlates.insert(plate) }
                     capturedPlate = nil
+                    capturedAt = nil
                 } else {
                     tracked = match
                     if let t = match { maxSeqSeen = max(maxSeqSeen ?? t.stopSequence, t.stopSequence) }
@@ -207,12 +216,20 @@ final class TripTracker {
             }
 
             // --- Auto-advance fallbacks so the LA never gets stuck if the user ignores it ---
-            if stage == .awaitingBoard, let t = tracked, t.stopSequence > target.boardStop.stopSequence + 1 {
-                stage = .riding; onboard = true
-            }
             if stage == .awaitingBoard, let t = tracked, t.stopSequence >= target.boardStop.stopSequence,
                capturedPlate == nil {
                 capturedPlate = t.plate   // remember which bus is here, pending user confirm
+                capturedAt = .now
+            }
+            // Positional proof it left the stop — confirms boarding fast when it's clear.
+            if stage == .awaitingBoard, let t = tracked, t.stopSequence > target.boardStop.stopSequence {
+                stage = .riding; onboard = true; capturedAt = nil
+            }
+            // No positional proof yet (TDX lag) but the user hasn't said otherwise either —
+            // default to "you got on the nearest bus" rather than leaving the prompt stuck.
+            if stage == .awaitingBoard, let capturedAt, Date().timeIntervalSince(capturedAt) > 90 {
+                stage = .riding; onboard = true
+                self.capturedAt = nil
             }
             onboard = (stage != .awaitingBoard)
             if onboard, capturedPlate == nil { capturedPlate = tracked?.plate }
@@ -241,8 +258,10 @@ final class TripTracker {
             let arriving = (stopsAway.map { $0 <= 0 } ?? false) || (etaSeconds.map { $0 < 45 } ?? false)
             let serviceEnded = est?.stopStatus == 1 || est?.stopStatus == 3 || est?.stopStatus == 4
 
-            // riding → awaitingAlight when we're basically there; passed the stop → rating
-            if stage == .riding, (stopsAway.map { $0 <= 0 } ?? false) { stage = .awaitingAlight }
+            // riding → awaitingAlight a stop early (heads-up before arrival, not exactly at
+            // it — TDX's own polling lag means "right at the stop" can be too late to react
+            // to); passed the stop → rating
+            if stage == .riding, (stopsAway.map { $0 <= 1 } ?? false) { stage = .awaitingAlight }
             if (stage == .riding || stage == .awaitingAlight), (stopsAway.map { $0 < -1 } ?? false) {
                 stage = .rating; ratingSince = .now
             }
@@ -273,9 +292,18 @@ final class TripTracker {
                 stage: stage,
                 rating: nil
             )
-            await activity.update(
-                ActivityContent(state: state, staleDate: Date().addingTimeInterval(300))
-            )
+            let content = ActivityContent(state: state, staleDate: Date().addingTimeInterval(300))
+            // There's no API to force the Dynamic Island's compact bubble open into the
+            // full expanded view — that's reserved for a user long-press. The closest
+            // equivalent we get is `alertConfiguration`: a brief haptic + system banner
+            // at the moment that actually matters (entering the "get off soon" heads-up).
+            if stageBefore != .awaitingAlight, stage == .awaitingAlight {
+                await activity.update(content, alertConfiguration: .init(
+                    title: "快到站了", body: "「\(target.alightStop.stopName.display)」快到了，準備下車", sound: .default
+                ))
+            } else {
+                await activity.update(content)
+            }
 
             // --- Notifications ---
             if !serviceEnded, stage != .rating, stage != .done {

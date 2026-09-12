@@ -15,4 +15,19 @@ enum Prewarm {
             await RailStationStore.shared.loadIfNeeded()
         }
     }
+
+    /// Render's free tier sleeps the backend after ~15 min idle and takes 30-50s to wake
+    /// back up — far longer than any request timeout we can afford to block a UI on. Fire
+    /// this the moment a flow that will *later* need the backend starts (e.g. beginning a
+    /// transfer search), so by the time the user actually reaches a backend-dependent step
+    /// (like the YouBike picker) seconds later, it's had a head start waking up. Fire-and-
+    /// forget, generous timeout, failures ignored — this is purely a warm-up, never the
+    /// real request.
+    static func wakeBackend() {
+        guard let base = BackendConfig.baseURL else { return }
+        Task.detached(priority: .utility) {
+            let request = URLRequest(url: base.appendingPathComponent("v1/health"), timeoutInterval: 40)
+            _ = try? await URLSession.shared.data(for: request)
+        }
+    }
 }

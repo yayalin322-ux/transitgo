@@ -19,6 +19,9 @@ final class AddTicketViewModel {
     var selectedRun: TrainRun?
     var isSearching = false
     var errorText: String?
+    /// When a direct search comes back empty (TRA only) — a trunk-to-branch-line trip
+    /// needs an actual transfer, which a plain OD search can't find on its own.
+    var transferSuggestions: [RailItinerary] = []
 
     // by-number mode
     var trainNoInput = ""
@@ -52,13 +55,31 @@ final class AddTicketViewModel {
 
     func search() async {
         guard let origin, let destination else { return }
-        isSearching = true; errorText = nil; selectedRun = nil
+        isSearching = true; errorText = nil; selectedRun = nil; transferSuggestions = []
         defer { isSearching = false }
         do {
             runs = try await RailService.shared.timetable(system: system, from: origin, to: destination, date: date)
         } catch {
             errorText = error.localizedDescription; runs = []
         }
+        if runs.isEmpty, system == .tra {
+            transferSuggestions = await RailTransferPlanner.plan(from: origin, to: destination, date: date)
+            if !transferSuggestions.isEmpty {
+                errorText = "沒有直達車次，但可以轉乘"
+            }
+        }
+    }
+
+    /// Builds a ticket for one leg of a transfer suggestion (not the picked `selectedRun`).
+    func ticket(for leg: RailLeg) -> RailTicket {
+        RailTicket(
+            system: .tra, serviceDate: Calendar.current.startOfDay(for: date),
+            trainNo: leg.train.trainNo, trainType: leg.train.trainType,
+            fromStationID: leg.fromStation.id, fromName: leg.fromStation.name,
+            toStationID: leg.toStation.id, toName: leg.toStation.name,
+            depTime: leg.train.departure, arrTime: leg.train.arrival,
+            carNo: "", seatNo: "", reminderLeadMinutes: reminderLead
+        )
     }
 
     func lookup() async {
@@ -181,6 +202,36 @@ struct AddTicketView: View {
                 if model.mode == .search {
                     if model.isSearching {
                         Section { HStack { Spacer(); ProgressView(); Spacer() } }
+                    } else if !model.transferSuggestions.isEmpty {
+                        ForEach(model.transferSuggestions) { itinerary in
+                            Section {
+                                ForEach(Array(itinerary.legs.enumerated()), id: \.element.id) { index, leg in
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("\(index + 1). \(leg.train.trainType) \(leg.train.trainNo)")
+                                            .font(.subheadline.weight(.medium))
+                                        Text("\(leg.fromStation.name) \(leg.train.departure) → \(leg.toStation.name) \(leg.train.arrival)")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                                Button {
+                                    let tickets = itinerary.legs.map { model.ticket(for: $0) }
+                                    for t in tickets { context.insert(t) }
+                                    Task {
+                                        await TicketReminders.requestAuthIfNeeded()
+                                        for t in tickets { TicketReminders.reschedule(for: t) }
+                                    }
+                                    dismiss()
+                                } label: {
+                                    Label("兩段都加入車票", systemImage: "plus.circle.fill")
+                                }
+                            } header: {
+                                if let wait = itinerary.transferWaitMinutes {
+                                    Text("在 \(itinerary.legs[0].toStation.name) 轉車・等 \(wait) 分鐘")
+                                } else {
+                                    Text("轉乘一次")
+                                }
+                            }
+                        }
                     } else if !model.runs.isEmpty {
                         Section("選擇車次") {
                             ForEach(model.displayRuns) { run in
