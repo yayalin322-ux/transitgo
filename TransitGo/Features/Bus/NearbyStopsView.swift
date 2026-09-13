@@ -178,23 +178,31 @@ struct BikeCluster: Identifiable {
     var stationCount: Int { stations.count }
     var totalRent: Int { stations.reduce(0) { $0 + $1.rent } }
     var isSingle: Bool { stations.count == 1 }
+    /// Whether to bubble is about visual clutter — how many separate pins would overlap —
+    /// not how many bikes are sitting in them. A single big station with 80 bikes is still
+    /// just one real station and should show as one real pin, not a "80+" badge; only
+    /// collapse once there are genuinely several distinct stations crowded together.
+    var shouldBubble: Bool { stationCount > 6 }
 
     /// Tiered like a typical bike-share map: exact count while small, rounded-down bucket
-    /// once there's enough in one spot that an exact number isn't actually useful.
+    /// once there's enough in one spot that an exact number isn't actually useful. Once
+    /// past 100 it steps in hundreds, capped at 900+ so the label never grows unbounded.
     var badgeText: String {
         switch totalRent {
         case 0..<10: return "\(totalRent)"
         case 10..<50: return "10+"
         case 50..<100: return "50+"
-        default: return "100+"
+        case 900...: return "900+"
+        default: return "\((totalRent / 100) * 100)+"
         }
     }
     var badgeColor: Color {
         switch totalRent {
         case 0..<10: return .gray
         case 10..<50: return .blue
-        case 50..<100: return .green
-        default: return .orange
+        case 50..<200: return .green
+        case 200..<500: return .orange
+        default: return .red
         }
     }
 }
@@ -203,8 +211,11 @@ struct BikeCluster: Identifiable {
 /// and cells cover more ground (fewer, bigger clusters); zoom in and cells shrink until
 /// each one is just a single real station again.
 func clusterBikeStations(_ items: [BikeStationLive], span: MKCoordinateSpan) -> [BikeCluster] {
-    let cellLat = max(span.latitudeDelta / 10, 0.0006)
-    let cellLon = max(span.longitudeDelta / 10, 0.0006)
+    // YouBike stations in a dense city grid often sit only 200-400m apart — the divisor
+    // and floor both need to be generous enough that stations actually group at a normal
+    // "nearby" zoom level, not just once you've zoomed most of the way out.
+    let cellLat = max(span.latitudeDelta / 3, 0.008)
+    let cellLon = max(span.longitudeDelta / 3, 0.008)
     var buckets: [String: [BikeStationLive]] = [:]
     for item in items {
         guard let c = item.station.coordinate else { continue }
@@ -216,6 +227,33 @@ func clusterBikeStations(_ items: [BikeStationLive], span: MKCoordinateSpan) -> 
         let lat = coords.map(\.latitude).reduce(0, +) / Double(coords.count)
         let lon = coords.map(\.longitude).reduce(0, +) / Double(coords.count)
         return BikeCluster(id: key, coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon), stations: group)
+    }
+}
+
+/// One map annotation — either a real station or a bubble standing in for several.
+/// `Map`'s `MapContentBuilder` doesn't reliably type-check a `ForEach` nested inside
+/// another `ForEach`'s branch, so callers flatten to this single-level list instead of
+/// looping over clusters and then over each cluster's stations.
+enum BikeMapItem: Identifiable {
+    /// Coordinate carried alongside the station so rendering never needs an `if let`
+    /// inside the `Map` builder closure — every case here is unconditionally drawable.
+    case station(BikeStationLive, CLLocationCoordinate2D)
+    case cluster(BikeCluster)
+    var id: String {
+        switch self {
+        case .station(let s, _): return "s_\(s.id)"
+        case .cluster(let c): return "c_\(c.id)"
+        }
+    }
+}
+
+func bikeMapItems(_ items: [BikeStationLive], span: MKCoordinateSpan) -> [BikeMapItem] {
+    clusterBikeStations(items, span: span).flatMap { cluster -> [BikeMapItem] in
+        if cluster.shouldBubble { return [.cluster(cluster)] }
+        return cluster.stations.compactMap { s in
+            guard let c = s.station.coordinate else { return nil }
+            return .station(s, c)
+        }
     }
 }
 
@@ -335,11 +373,11 @@ struct NearbyStopsView: View {
                     }
                 }
             case .bike:
-                ForEach(clusterBikeStations(bikeVM.items, span: visibleSpan)) { cluster in
-                    if cluster.isSingle, let item = cluster.stations.first, let c = item.station.coordinate {
+                ForEach(bikeMapItems(bikeVM.items, span: visibleSpan)) { entry in
+                    if case .station(let item, let c) = entry {
                         Marker("\(item.station.name)（\(item.rent)）", systemImage: "bicycle", coordinate: c)
                             .tint(item.rent == 0 ? .red : (item.rent < 3 ? .orange : .green))
-                    } else {
+                    } else if case .cluster(let cluster) = entry {
                         Annotation("", coordinate: cluster.coordinate) {
                             Button {
                                 withAnimation {
@@ -369,8 +407,14 @@ struct NearbyStopsView: View {
             }
         }
         .mapControls { MapUserLocationButton(); MapCompass() }
-        .onMapCameraChange(frequency: .continuous) { context in
-            visibleSpan = context.region.span
+        // .onEnd (not .continuous) — re-bucketing on every touch-move frame mid-gesture is
+        // what caused pins to pop in and out while dragging, and it's needless battery
+        // drain besides. Settling for a moment before re-clustering also means the
+        // animation below has something stable to animate *to*, not a moving target.
+        .onMapCameraChange(frequency: .onEnd) { context in
+            withAnimation(.easeInOut(duration: 0.3)) {
+                visibleSpan = context.region.span
+            }
         }
         .mapStyle(.standard(elevation: .flat))
     }

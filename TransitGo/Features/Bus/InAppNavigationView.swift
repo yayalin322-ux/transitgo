@@ -135,10 +135,25 @@ struct InAppNavigationView: View {
     @State private var upcomingCam: SpeedCam?
     @State private var camFetchCenter: CLLocationCoordinate2D?
     @State private var legInitialDistance: CLLocationDistance?
+    /// How many consecutive fixes have read "close enough to arrive/advance" — GPS in
+    /// dense areas easily reports 10-30m of error, so a single close reading isn't
+    /// trusted for anything irreversible (arriving, advancing past a turn). This is what
+    /// was causing announcements to fire before actually there / jump around.
+    @State private var closeFixStreak = 0
+    @State private var maneuverPassStreak = 0
+    @State private var followResumeTask: Task<Void, Never>?
+    @State private var nearbyParking: [MKMapItem] = []
     private let speech = AVSpeechSynthesizer()
+    private let maneuverHaptic = UIImpactFeedbackGenerator(style: .light)
+    private let notificationHaptic = UINotificationFeedbackGenerator()
+    private let legTransitionHaptic = UIImpactFeedbackGenerator(style: .medium)
     /// Distance milestones (metres) to call out, checked in descending order.
     private static let milestones = [1000, 500, 200, 100, 50]
     private static let arrivalThreshold: CLLocationDistance = 20
+    /// Consecutive fixes required inside a threshold before acting on it.
+    private static let requiredCloseFixes = 2
+    /// Fixes worse than this are too noisy to trust for arrival/maneuver decisions.
+    private static let maxTrustedAccuracy: CLLocationDistance = 35
 
     private var currentLeg: NavigationLeg { legs[currentLegIndex] }
     private var destination: CLLocationCoordinate2D { currentLeg.coordinate }
@@ -173,10 +188,19 @@ struct InAppNavigationView: View {
                 Marker(destinationName, coordinate: destination).tint(.red)
             }
             .mapControls { MapCompass() }
+            .mapStyle(.standard(elevation: .realistic, pointsOfInterest: .excludingAll, showsTraffic: transportType == .automobile))
             .onMapCameraChange(frequency: .continuous) { _ in
-                // Any manual drag turns off auto-follow so the user can look around;
-                // the "回到目前位置" button below brings it back.
+                // A manual drag pauses auto-follow so the user can look around, but this
+                // is navigation — nobody wants to remember to tap "recenter" every time,
+                // so it resumes on its own a few seconds after they stop touching the map.
                 followUser = false
+                followResumeTask?.cancel()
+                followResumeTask = Task {
+                    try? await Task.sleep(for: .seconds(4))
+                    guard !Task.isCancelled else { return }
+                    followUser = true
+                    recenter()
+                }
             }
             .ignoresSafeArea()
 
@@ -222,7 +246,31 @@ struct InAppNavigationView: View {
                         .font(.system(size: 48))
                         .foregroundStyle(.green)
                         .transition(.scale.combined(with: .opacity))
-                    Text("已抵達\(tripName)").font(.title3.bold())
+                    // Some destinations sit in the middle of a road with nothing to
+                    // physically stand at — "附近" matches what a 20m-radius arrival
+                    // actually means instead of implying an exact-point arrival.
+                    Text("已抵達\(tripName)附近").font(.title3.bold())
+
+                    if !nearbyParking.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("附近停車場").font(.caption).foregroundStyle(.secondary)
+                            ForEach(Array(nearbyParking.enumerated()), id: \.offset) { _, item in
+                                Button {
+                                    navigateToParking(item)
+                                } label: {
+                                    HStack {
+                                        Image(systemName: "parkingsign.circle.fill").foregroundStyle(.blue)
+                                        Text(item.name ?? "停車場").lineLimit(1)
+                                        Spacer()
+                                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                                    }
+                                }
+                                .foregroundStyle(.primary)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+
                     Button { finish() } label: {
                         Label("完成", systemImage: "checkmark").frame(maxWidth: .infinity)
                     }
@@ -294,6 +342,12 @@ struct InAppNavigationView: View {
             tracker.start()
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt, options: [.duckOthers, .mixWithOthers])
             try? AVAudioSession.sharedInstance().setActive(true)
+            // An unprepared UIFeedbackGenerator can silently miss its first hit or two —
+            // the Taptic Engine needs a moment to spin up. Preparing once up front (and
+            // again after each firing, below) is what actually makes haptics reliable.
+            maneuverHaptic.prepare()
+            notificationHaptic.prepare()
+            legTransitionHaptic.prepare()
         }
         .onDisappear { tracker.stop() }
         .task { await computeRoute(from: tracker.location?.coordinate) }
@@ -381,6 +435,19 @@ struct InAppNavigationView: View {
         return "arrow.up"
     }
 
+    /// Destination point `meters` along `bearingDegrees` from `start` — spherical-earth
+    /// approximation, plenty accurate at the tens-of-metres scale this is used for.
+    private static func coordinate(_ start: CLLocationCoordinate2D, movedMeters meters: Double, bearingDegrees: CLLocationDirection) -> CLLocationCoordinate2D {
+        let earthRadius = 6371000.0
+        let bearing = bearingDegrees * .pi / 180
+        let lat1 = start.latitude * .pi / 180
+        let lon1 = start.longitude * .pi / 180
+        let angularDistance = meters / earthRadius
+        let lat2 = asin(sin(lat1) * cos(angularDistance) + cos(lat1) * sin(angularDistance) * cos(bearing))
+        let lon2 = lon1 + atan2(sin(bearing) * sin(angularDistance) * cos(lat1), cos(angularDistance) - sin(lat1) * sin(lat2))
+        return CLLocationCoordinate2D(latitude: lat2 * 180 / .pi, longitude: lon2 * 180 / .pi)
+    }
+
     private func recenter() {
         guard let loc = tracker.location else { return }
         let heading: CLLocationDirection = tracker.headingDegrees ?? (loc.course >= 0 ? loc.course : 0)
@@ -400,6 +467,13 @@ struct InAppNavigationView: View {
         dismiss()
     }
 
+    /// This is a final-mile "park the car" errand after the main trip is already done —
+    /// handing off to Apple Maps here is fine, unlike the primary trip which draws its
+    /// own route so it can reroute/speak/track live.
+    private func navigateToParking(_ item: MKMapItem) {
+        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving])
+    }
+
     // MARK: - Voice announcements
 
     private func speak(_ text: String) {
@@ -415,20 +489,39 @@ struct InAppNavigationView: View {
             WalkingSpeedLearner.record(loc.speed)
         }
         let distance = loc.distance(from: CLLocation(latitude: destination.latitude, longitude: destination.longitude))
-        if !arrived, distance <= Self.arrivalThreshold {
+        // A noisy fix (common between buildings) can read 20-30m closer than reality —
+        // trusting a single such reading is exactly what caused "already arrived" to
+        // fire before actually there. Require the close reading to repeat, and only
+        // count it at all if this particular fix's own accuracy is good enough to trust.
+        let fixIsTrustworthy = loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy <= Self.maxTrustedAccuracy
+        let isClose = distance <= Self.arrivalThreshold && fixIsTrustworthy
+        closeFixStreak = isClose ? closeFixStreak + 1 : 0
+
+        if !arrived, closeFixStreak >= Self.requiredCloseFixes {
             if isLastLeg {
                 withAnimation(.spring(response: 0.4)) { arrived = true }
-                UINotificationFeedbackGenerator().notificationOccurred(.success)
-                speak("您已經抵達目的地")
+                notificationHaptic.notificationOccurred(.success)
+                notificationHaptic.prepare()
+                // Some destinations sit in the middle of a road with no exact building to
+                // stand at — "抵達附近" is honest about that instead of implying you
+                // should be standing on the exact pin.
+                speak("您已抵達\(tripName)附近")
+                if transportType == .automobile { Task { await loadNearbyParking() } }
             } else {
                 // Reaching an intermediate waypoint (e.g. a YouBike station) isn't trip
                 // completion — announce it and roll straight into the next leg's route and
                 // transport mode, same screen, no manual restart.
                 let finishedLeg = currentLeg
                 currentLegIndex += 1
-                announcedMilestones = []
-                legInitialDistance = loc.distance(from: CLLocation(latitude: destination.latitude, longitude: destination.longitude))
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                closeFixStreak = 0
+                let newLegDistance = loc.distance(from: CLLocation(latitude: destination.latitude, longitude: destination.longitude))
+                legInitialDistance = newLegDistance
+                // Same fix as the trip-start case: a leg that begins under 1km/500m/etc
+                // didn't "cross" those milestones by approach, so don't announce them —
+                // pre-mark whichever ones the new leg already starts inside of.
+                announcedMilestones = Set(Self.milestones.filter { Double($0) >= newLegDistance })
+                legTransitionHaptic.impactOccurred()
+                legTransitionHaptic.prepare()
                 speak(finishedLeg.waypointAnnouncement ?? "已抵達，繼續前往下一段")
                 Task { await computeRoute(from: loc.coordinate) }
             }
@@ -439,6 +532,18 @@ struct InAppNavigationView: View {
             }
         }
         updateActivity()
+    }
+
+    /// A destination in the middle of a road (no exact building to walk to) is exactly
+    /// when "where do I actually put the car" matters most — a couple of nearby parking
+    /// options right on the arrival card beats making the user open Maps separately.
+    private func loadNearbyParking() async {
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = "停車場"
+        request.region = MKCoordinateRegion(center: destination, latitudinalMeters: 400, longitudinalMeters: 400)
+        request.resultTypes = [.pointOfInterest]
+        guard let response = try? await MKLocalSearch(request: request).start() else { return }
+        nearbyParking = Array(response.mapItems.prefix(3))
     }
 
     // MARK: - Live Activity
@@ -476,17 +581,29 @@ struct InAppNavigationView: View {
         self.activity = nil
     }
 
-    private func computeRoute(from origin: CLLocationCoordinate2D?) async {
+    /// `preferContinueForward`: when rerouting mid-drive/ride after straying off path,
+    /// requesting directions from the literal GPS point can lead MapKit to propose
+    /// turning around right where you are — technically shortest, but the ask was
+    /// explicitly "don't suggest a U-turn, find the nearest way forward instead". There's
+    /// no public MapKit flag for that, so this nudges the request's origin a short
+    /// distance further along the current heading first, biasing the result toward a
+    /// route that continues forward rather than doubling back immediately.
+    private func computeRoute(from origin: CLLocationCoordinate2D?, preferContinueForward: Bool = false) async {
         guard let origin else {
             // No fix yet — try again shortly rather than failing outright.
             try? await Task.sleep(for: .seconds(1))
-            await computeRoute(from: tracker.location?.coordinate)
+            await computeRoute(from: tracker.location?.coordinate, preferContinueForward: preferContinueForward)
             return
         }
         isRouting = true
         defer { isRouting = false }
+        var effectiveOrigin = origin
+        if preferContinueForward, transportType != .walking,
+           let heading = tracker.headingDegrees ?? (tracker.location?.course).flatMap({ $0 >= 0 ? $0 : nil }) {
+            effectiveOrigin = Self.coordinate(origin, movedMeters: 40, bearingDegrees: heading)
+        }
         let request = MKDirections.Request()
-        request.source = MKMapItem(placemark: MKPlacemark(coordinate: origin))
+        request.source = MKMapItem(placemark: MKPlacemark(coordinate: effectiveOrigin))
         request.destination = MKMapItem(placemark: MKPlacemark(coordinate: destination))
         request.transportType = transportType
         guard let response = try? await MKDirections(request: request).calculate(), let first = response.routes.first else {
@@ -540,7 +657,7 @@ struct InAppNavigationView: View {
         offRoute = strayed
         // Throttle recalculation — don't fire a new MKDirections request on every 5m tick.
         if strayed, Date().timeIntervalSince(lastRerouteAt) > 12 {
-            Task { await computeRoute(from: loc.coordinate) }
+            Task { await computeRoute(from: loc.coordinate, preferContinueForward: true) }
         }
     }
 
@@ -556,17 +673,28 @@ struct InAppNavigationView: View {
         guard nextStep.polyline.pointCount > 0 else { return }
         let maneuverCoord = nextStep.polyline.points()[0].coordinate
         let distanceToManeuver = loc.distance(from: CLLocation(latitude: maneuverCoord.latitude, longitude: maneuverCoord.longitude))
+        let fixIsTrustworthy = loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy <= Self.maxTrustedAccuracy
 
         let announceThreshold: CLLocationDistance = transportType == .walking ? 60 : 150
         let passThreshold: CLLocationDistance = transportType == .walking ? 20 : 35
 
         if distanceToManeuver <= announceThreshold, !announcedStepIndices.contains(nextIndex), !nextStep.instructions.isEmpty {
             announcedStepIndices.insert(nextIndex)
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            speak(nextStep.instructions)
+            maneuverHaptic.impactOccurred()
+            maneuverHaptic.prepare()
+            // "前方 X 公尺，[實際指示]" — a bare instruction with no distance reads like
+            // it's happening right now; the distance is what makes it a heads-up.
+            let roundedDistance = Int((distanceToManeuver / 10).rounded()) * 10
+            speak("前方\(max(roundedDistance, 10))公尺，\(nextStep.instructions)")
         }
-        if distanceToManeuver <= passThreshold {
+        // Advancing past a maneuver is irreversible (the old step's instructions won't be
+        // shown again), so — same reasoning as arrival — don't act on a single noisy fix
+        // that happens to read closer than reality.
+        let isPastManeuver = distanceToManeuver <= passThreshold && fixIsTrustworthy
+        maneuverPassStreak = isPastManeuver ? maneuverPassStreak + 1 : 0
+        if maneuverPassStreak >= Self.requiredCloseFixes {
             currentStepIndex = nextIndex
+            maneuverPassStreak = 0
         }
     }
 
@@ -595,7 +723,8 @@ struct InAppNavigationView: View {
             let d = loc.distance(from: CLLocation(latitude: cam.lat, longitude: cam.lon))
             if d <= announceThreshold, !announcedCamIDs.contains(cam.id) {
                 announcedCamIDs.insert(cam.id)
-                UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                notificationHaptic.notificationOccurred(.warning)
+                notificationHaptic.prepare()
                 speak(cam.announcement)
             }
             if announcedCamIDs.contains(cam.id), d <= announceThreshold, d > passThreshold {

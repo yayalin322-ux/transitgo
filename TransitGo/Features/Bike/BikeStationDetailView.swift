@@ -36,6 +36,7 @@ struct BikeStationDetailView: View {
     @State private var location = LocationManager()
     @State private var tracker = BikeTripTracker.shared
     @State private var now = Date()
+    @State private var visibleSpan = MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
     private let tick = Timer.publish(every: 15, on: .main, in: .common).autoconnect()
 
     private let renderCap = 320
@@ -150,8 +151,8 @@ struct BikeStationDetailView: View {
     private var map: some View {
         Map(position: $camera, selection: $selectedUID) {
             UserAnnotation()
-            ForEach(rendered) { s in
-                if let c = s.station.coordinate {
+            ForEach(bikeMapItems(rendered, span: visibleSpan)) { entry in
+                if case .station(let s, let c) = entry {
                     Annotation(s.station.name, coordinate: c) {
                         BikePin(rent: s.rent,
                                 highlighted: s.station.stationUID == selectedUID,
@@ -159,6 +160,25 @@ struct BikeStationDetailView: View {
                     }
                     .tag(s.station.stationUID)
                     .annotationTitles(.hidden)
+                } else if case .cluster(let cluster) = entry {
+                    Annotation("", coordinate: cluster.coordinate) {
+                        Button {
+                            withAnimation {
+                                camera = .region(MKCoordinateRegion(
+                                    center: cluster.coordinate,
+                                    span: MKCoordinateSpan(latitudeDelta: visibleSpan.latitudeDelta / 4,
+                                                            longitudeDelta: visibleSpan.longitudeDelta / 4)
+                                ))
+                            }
+                        } label: {
+                            Text(cluster.badgeText)
+                                .font(.caption.bold())
+                                .foregroundStyle(.white)
+                                .frame(minWidth: 36, minHeight: 36)
+                                .background(cluster.badgeColor, in: Circle())
+                                .overlay(Circle().stroke(.white, lineWidth: 2))
+                        }
+                    }
                 }
             }
         }
@@ -167,7 +187,15 @@ struct BikeStationDetailView: View {
             MapCompass()
         }
         .ignoresSafeArea(edges: .bottom)
+        // One .onEnd handler, not .continuous — re-bucketing stations into clusters on
+        // every touch-move frame mid-gesture is what caused pins to pop in and out while
+        // dragging, and it drained battery for no benefit since nobody's reading the map
+        // mid-swipe anyway. withAnimation below smooths the resulting re-cluster instead
+        // of it snapping instantly once the gesture ends.
         .onMapCameraChange(frequency: .onEnd) { ctx in
+            withAnimation(.easeInOut(duration: 0.3)) {
+                visibleSpan = ctx.region.span
+            }
             mapCenter = ctx.region.center
             recomputeRendered()
             // Fetch the newly-visible area, but don't stack requests.
