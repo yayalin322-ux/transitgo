@@ -1,4 +1,4 @@
-import { get } from "../tdx.mjs";
+import { getRouting as get } from "../tdx.mjs";
 import { TransitDataProvider } from "./provider.mjs";
 
 /**

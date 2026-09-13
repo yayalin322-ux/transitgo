@@ -5,16 +5,26 @@ const BASE = "https://tdx.transportdata.tw/api/basic";
 let cachedToken = null;
 let cachedExp = 0;
 
+// Separate credential set + token cache for the routing engine, so its TDX calls draw
+// from their own account's 5 req/min quota instead of competing with the alert/bike
+// pollers that already run on TDX_CLIENT_ID. Falls back to the main credentials if no
+// routing-specific ones are configured.
+let cachedRoutingToken = null;
+let cachedRoutingExp = 0;
+
 export function tdxConfigured() {
   return !!(process.env.TDX_CLIENT_ID && process.env.TDX_CLIENT_SECRET);
 }
 
-async function token() {
-  if (cachedToken && Date.now() < cachedExp - 60_000) return cachedToken;
+export function tdxRoutingConfigured() {
+  return !!(process.env.TDX_ROUTING_CLIENT_ID && process.env.TDX_ROUTING_CLIENT_SECRET);
+}
+
+async function fetchToken(clientId, clientSecret) {
   const body = new URLSearchParams({
     grant_type: "client_credentials",
-    client_id: process.env.TDX_CLIENT_ID,
-    client_secret: process.env.TDX_CLIENT_SECRET,
+    client_id: clientId,
+    client_secret: clientSecret,
   });
   const res = await fetch(TOKEN_URL, {
     method: "POST",
@@ -23,18 +33,43 @@ async function token() {
   });
   if (!res.ok) throw new Error(`TDX auth ${res.status}`);
   const json = await res.json();
-  cachedToken = json.access_token;
-  cachedExp = Date.now() + (json.expires_in ?? 86400) * 1000;
+  return { token: json.access_token, expiresInMs: (json.expires_in ?? 86400) * 1000 };
+}
+
+async function token() {
+  if (cachedToken && Date.now() < cachedExp - 60_000) return cachedToken;
+  const { token: t, expiresInMs } = await fetchToken(process.env.TDX_CLIENT_ID, process.env.TDX_CLIENT_SECRET);
+  cachedToken = t;
+  cachedExp = Date.now() + expiresInMs;
   return cachedToken;
 }
 
-export async function get(path) {
-  const t = await token();
+async function routingToken() {
+  if (!tdxRoutingConfigured()) return token();
+  if (cachedRoutingToken && Date.now() < cachedRoutingExp - 60_000) return cachedRoutingToken;
+  const { token: t, expiresInMs } = await fetchToken(process.env.TDX_ROUTING_CLIENT_ID, process.env.TDX_ROUTING_CLIENT_SECRET);
+  cachedRoutingToken = t;
+  cachedRoutingExp = Date.now() + expiresInMs;
+  return cachedRoutingToken;
+}
+
+async function fetchWithToken(path, t) {
   const res = await fetch(`${BASE}/${path}${path.includes("?") ? "&" : "?"}$format=JSON`, {
     headers: { authorization: `Bearer ${t}` },
   });
   if (!res.ok) throw new Error(`TDX ${path} ${res.status}`);
   return res.json();
+}
+
+export async function get(path) {
+  const t = await token();
+  return fetchWithToken(path, t);
+}
+
+/** Same as get(), but authenticates with the routing engine's own TDX credentials (if configured). */
+export async function getRouting(path) {
+  const t = await routingToken();
+  return fetchWithToken(path, t);
 }
 
 /** Merged YouBike snapshot for one city: station meta + live availability. */
