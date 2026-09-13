@@ -11,8 +11,11 @@ struct AddLandmarkView: View {
 
     @State private var name = ""
     @State private var description = ""
+    @State private var category: LandmarkCategory = .other
     @State private var photoItem: PhotosPickerItem?
     @State private var photoImage: UIImage?
+    @State private var isBusinessClaim = false
+    @State private var businessHours = ""
     @State private var isSubmitting = false
 
     var body: some View {
@@ -20,6 +23,11 @@ struct AddLandmarkView: View {
             Form {
                 Section {
                     TextField("地標名稱", text: $name)
+                    Picker("類型", selection: $category) {
+                        ForEach(LandmarkCategory.allCases) { c in
+                            Label(c.label, systemImage: c.icon).tag(c)
+                        }
+                    }
                     TextField("簡介（可留空）", text: $description, axis: .vertical)
                         .lineLimit(2...5)
                 } header: {
@@ -45,6 +53,17 @@ struct AddLandmarkView: View {
                         }
                     }
                 }
+                Section {
+                    Toggle("我是這裡的店家", isOn: $isBusinessClaim)
+                    if isBusinessClaim {
+                        TextField("營業時間，例如：週一至週日 11:00–21:00", text: $businessHours, axis: .vertical)
+                            .lineLimit(2...4)
+                    }
+                } footer: {
+                    Text(isBusinessClaim
+                         ? "店家身分需要後台人工審核通過後，營業時間才會顯示給其他使用者——任何人都能新增地標，所以未經驗證的內容不會直接視為真實店家資訊。"
+                         : "如果你是這個地點的店家本人，可以打開這個選項填寫營業時間（需審核）。")
+                }
             }
             .navigationTitle("新增地標")
             .navigationBarTitleDisplayMode(.inline)
@@ -57,7 +76,11 @@ struct AddLandmarkView: View {
                         Button("送出") {
                             isSubmitting = true
                             let photo = photoImage.flatMap { PhotoUpload.encode($0) }
-                            UserLandmarkService.submit(name: name, description: description, coordinate: coordinate, photo: photo)
+                            UserLandmarkService.submit(
+                                name: name, description: description, category: category, coordinate: coordinate,
+                                photo: photo, isBusinessClaim: isBusinessClaim,
+                                businessHours: isBusinessClaim ? businessHours : nil
+                            )
                             onDone()
                         }
                         .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)

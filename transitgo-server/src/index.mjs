@@ -23,6 +23,7 @@ import {
   listApprovedLandmarksNear,
   listAllUserLandmarks,
   approveUserLandmark,
+  verifyUserLandmarkBusiness,
   deleteUserLandmark,
   createObservation,
   listObservations,
@@ -166,7 +167,8 @@ app.post("/v1/places/reviews/:id/report", (req, res) => {
 
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
-  const ok = reportPlaceReview(id);
+  const reason = typeof req.body?.reason === "string" ? req.body.reason : "other";
+  const ok = reportPlaceReview(id, reason, req.clientIp);
   if (!ok) return res.status(404).json({ error: "not found" });
   res.json({ ok: true });
 });
@@ -184,11 +186,11 @@ app.post("/v1/landmarks", (req, res) => {
   hist.push(now);
   landmarkBucket.set(req.clientIp, hist);
 
-  const { name, description, lat, lon, photo, appVersion, device } = req.body || {};
+  const { name, description, category, lat, lon, photo, isBusinessClaim, businessHours, appVersion, device } = req.body || {};
   if (!name || typeof name !== "string") return res.status(400).json({ error: "name required" });
   if (typeof lat !== "number" || typeof lon !== "number") return res.status(400).json({ error: "lat/lon required" });
   if (!validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
-  createUserLandmark({ name, description, lat, lon, photo, appVersion, device, ip: req.clientIp });
+  createUserLandmark({ name, description, category, lat, lon, photo, isBusinessClaim, businessHours, appVersion, device, ip: req.clientIp });
   res.json({ ok: true });
 });
 
@@ -209,6 +211,13 @@ app.post("/v1/admin/landmarks/:id/approve", requireAdmin, (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
   res.json({ ok: approveUserLandmark(id) });
+});
+
+/** Admin has manually confirmed (outside the app) that this submitter really is the business owner. */
+app.post("/v1/admin/landmarks/:id/verify-business", requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
+  res.json({ ok: verifyUserLandmarkBusiness(id) });
 });
 
 app.delete("/v1/admin/landmarks/:id", requireAdmin, (req, res) => {

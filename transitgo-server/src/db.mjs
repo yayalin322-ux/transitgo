@@ -103,21 +103,37 @@ CREATE TABLE IF NOT EXISTS place_reviews (
 );
 CREATE INDEX IF NOT EXISTS idx_place_reviews_key ON place_reviews (place_key, created_at);
 
+-- One row per report, with a reason — lets admins triage by category (廣告/不當言論/
+-- 色情/其他) at a glance instead of just an opaque total count.
+CREATE TABLE IF NOT EXISTS place_review_reports (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  review_id  INTEGER NOT NULL,
+  reason     TEXT NOT NULL DEFAULT 'other',
+  device     TEXT,
+  ip         TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_place_review_reports_review ON place_review_reports (review_id);
+
 -- User-submitted custom landmarks (not from Apple's POI index) — held for admin
 -- approval before appearing to anyone else, same "never show unmoderated content as if
 -- it were verified" principle as the rest of this app's real-data-only approach.
 CREATE TABLE IF NOT EXISTS user_landmarks (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  name        TEXT NOT NULL,
-  description TEXT NOT NULL DEFAULT '',
-  lat         REAL NOT NULL,
-  lon         REAL NOT NULL,
-  photo       TEXT,
-  app_version TEXT,
-  device      TEXT,
-  ip          TEXT,
-  approved    INTEGER NOT NULL DEFAULT 0,
-  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  name              TEXT NOT NULL,
+  description       TEXT NOT NULL DEFAULT '',
+  category          TEXT NOT NULL DEFAULT 'other',
+  lat               REAL NOT NULL,
+  lon               REAL NOT NULL,
+  photo             TEXT,
+  is_business_claim INTEGER NOT NULL DEFAULT 0,
+  business_verified INTEGER NOT NULL DEFAULT 0,
+  business_hours    TEXT,
+  app_version       TEXT,
+  device            TEXT,
+  ip                TEXT,
+  approved          INTEGER NOT NULL DEFAULT 0,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_user_landmarks_approved ON user_landmarks (approved, created_at);
 
@@ -140,6 +156,21 @@ ensureGtfsSchema(db);
   if (!cols.includes("photo")) {
     db.exec(`ALTER TABLE place_reviews ADD COLUMN photo TEXT`);
   }
+  // One review per (place, device) — without this, a single phone could post an
+  // unlimited number of 5-star reviews for the same place. Existing duplicates (from
+  // before this was enforced) keep only the most recent one so the unique index below
+  // can actually be created.
+  db.exec(`
+    DELETE FROM place_reviews WHERE device IS NOT NULL AND id NOT IN (
+      SELECT MAX(id) FROM place_reviews WHERE device IS NOT NULL GROUP BY place_key, device
+    )
+  `);
+  // Not partial (node:sqlite's ON CONFLICT matching doesn't resolve to a partial
+  // index) — fine because NULL device rows never collide under a UNIQUE index anyway
+  // (SQLite treats every NULL as distinct), so this only ever actually constrains rows
+  // that do have a device id, same effect as a WHERE device IS NOT NULL index would give.
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_place_reviews_one_per_device
+    ON place_reviews (place_key, device)`);
 }
 
 // ---- devices ----
@@ -320,22 +351,38 @@ export function getSpeedcamCache() {
 }
 
 // ---- place reviews (real user-submitted, no external API) ----
+/**
+ * Re-submitting from the same device for the same place UPDATES that device's existing
+ * review instead of adding a new one — the `idx_place_reviews_one_per_device` unique
+ * index is what makes this a real constraint and not just app-side politeness. A
+ * `device` of null (very old client) falls back to insert-only, since there's nothing
+ * to key an upsert on.
+ */
 export function createPlaceReview(r) {
-  db.prepare(`
-    INSERT INTO place_reviews (place_key, place_name, lat, lon, stars, comment, photo, app_version, device, ip)
-    VALUES (:place_key, :place_name, :lat, :lon, :stars, :comment, :photo, :app_version, :device, :ip)
-  `).run({
-    place_key: r.placeKey,
-    place_name: r.placeName,
-    lat: r.lat ?? null,
-    lon: r.lon ?? null,
-    stars: Math.max(1, Math.min(5, parseInt(r.stars, 10) || 0)),
-    comment: (r.comment ?? "").slice(0, 500),
-    photo: r.photo ?? null,
-    app_version: r.appVersion ?? null,
-    device: r.device ?? null,
-    ip: r.ip ?? null,
-  });
+  const stars = Math.max(1, Math.min(5, parseInt(r.stars, 10) || 0));
+  const comment = (r.comment ?? "").slice(0, 500);
+  if (r.device) {
+    db.prepare(`
+      INSERT INTO place_reviews (place_key, place_name, lat, lon, stars, comment, photo, app_version, device, ip)
+      VALUES (:place_key, :place_name, :lat, :lon, :stars, :comment, :photo, :app_version, :device, :ip)
+      ON CONFLICT(place_key, device) DO UPDATE SET
+        stars = excluded.stars, comment = excluded.comment, photo = excluded.photo,
+        app_version = excluded.app_version, ip = excluded.ip,
+        reported = 0, created_at = datetime('now')
+    `).run({
+      place_key: r.placeKey, place_name: r.placeName, lat: r.lat ?? null, lon: r.lon ?? null,
+      stars, comment, photo: r.photo ?? null, app_version: r.appVersion ?? null,
+      device: r.device, ip: r.ip ?? null,
+    });
+  } else {
+    db.prepare(`
+      INSERT INTO place_reviews (place_key, place_name, lat, lon, stars, comment, photo, app_version, device, ip)
+      VALUES (:place_key, :place_name, :lat, :lon, :stars, :comment, :photo, :app_version, NULL, :ip)
+    `).run({
+      place_key: r.placeKey, place_name: r.placeName, lat: r.lat ?? null, lon: r.lon ?? null,
+      stars, comment, photo: r.photo ?? null, app_version: r.appVersion ?? null, ip: r.ip ?? null,
+    });
+  }
 }
 
 export function listPlaceReviews(placeKey, limit = 50) {
@@ -348,38 +395,65 @@ export function listPlaceReviews(placeKey, limit = 50) {
 }
 
 /** A user flagged a review as inappropriate/spam — bumps a visible-to-admin counter, doesn't hide it automatically. */
-export function reportPlaceReview(id) {
+// Fixed reason taxonomy — keep in sync with Swift's ReportReason.
+export const REPORT_REASONS = ["spam", "offensive", "sexual", "harassment", "other"];
+
+/** Logs a real reported reason (not just a bare +1) so admins can triage by category. */
+export function reportPlaceReview(id, reason, ip) {
   const info = db.prepare(`UPDATE place_reviews SET reported = reported + 1 WHERE id = ?`).run(id);
-  return info.changes > 0;
+  if (info.changes === 0) return false;
+  db.prepare(`INSERT INTO place_review_reports (review_id, reason, ip) VALUES (?, ?, ?)`)
+    .run(id, REPORT_REASONS.includes(reason) ? reason : "other", ip ?? null);
+  return true;
 }
 
 export function deletePlaceReview(id) {
   const info = db.prepare(`DELETE FROM place_reviews WHERE id = ?`).run(id);
+  db.prepare(`DELETE FROM place_review_reports WHERE review_id = ?`).run(id);
   return info.changes > 0;
 }
 
-/** Admin moderation view — most-reported first, so the ones needing attention surface. */
+/** Admin moderation view — most-reported first, each with a real reason breakdown
+ * (e.g. {spam: 3, other: 1}) so a report count isn't just an opaque number. */
 export function listAllPlaceReviews(limit = 200) {
-  return db.prepare(`
+  const rows = db.prepare(`
     SELECT * FROM place_reviews ORDER BY reported DESC, created_at DESC LIMIT ?
-  `).all(limit).map((r) => ({
+  `).all(limit);
+  const reasonRows = db.prepare(`SELECT review_id, reason, COUNT(*) n FROM place_review_reports GROUP BY review_id, reason`).all();
+  const reasonsByReview = new Map();
+  for (const r of reasonRows) {
+    if (!reasonsByReview.has(r.review_id)) reasonsByReview.set(r.review_id, {});
+    reasonsByReview.get(r.review_id)[r.reason] = r.n;
+  }
+  return rows.map((r) => ({
     id: r.id, placeKey: r.place_key, placeName: r.place_name,
     stars: r.stars, comment: r.comment, reported: r.reported,
+    reportReasons: reasonsByReview.get(r.id) ?? {},
     appVersion: r.app_version, createdAt: isoZ(r.created_at),
   }));
 }
 
 // ---- user-submitted landmarks (real user content, held for admin approval) ----
+// Fixed taxonomy the app's picker uses — keep in sync with Swift's LandmarkCategory.
+export const LANDMARK_CATEGORIES = [
+  "foodDrink", "medical", "shopping", "transportation", "education", "finance",
+  "government", "recreation", "sports", "lodging", "religion", "personalServices", "other",
+];
+
 export function createUserLandmark(r) {
+  const category = LANDMARK_CATEGORIES.includes(r.category) ? r.category : "other";
   db.prepare(`
-    INSERT INTO user_landmarks (name, description, lat, lon, photo, app_version, device, ip)
-    VALUES (:name, :description, :lat, :lon, :photo, :app_version, :device, :ip)
+    INSERT INTO user_landmarks (name, description, category, lat, lon, photo, is_business_claim, business_hours, app_version, device, ip)
+    VALUES (:name, :description, :category, :lat, :lon, :photo, :is_business_claim, :business_hours, :app_version, :device, :ip)
   `).run({
     name: r.name,
     description: (r.description ?? "").slice(0, 500),
+    category,
     lat: r.lat,
     lon: r.lon,
     photo: r.photo ?? null,
+    is_business_claim: r.isBusinessClaim ? 1 : 0,
+    business_hours: (r.businessHours ?? "").slice(0, 500) || null,
     app_version: r.appVersion ?? null,
     device: r.device ?? null,
     ip: r.ip ?? null,
@@ -395,7 +469,12 @@ export function listApprovedLandmarksNear(lat, lon, radiusMeters = 1000) {
       + (Math.cos(lat * p) * Math.cos(r.lat * p) * (1 - Math.cos((r.lon - lon) * p))) / 2;
     return 2 * R * Math.asin(Math.sqrt(x)) <= radiusMeters;
   }).map((r) => ({
-    id: r.id, name: r.name, description: r.description, lat: r.lat, lon: r.lon, photo: r.photo,
+    id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
+    // Business hours/menu only shown once an admin has actually verified the claim —
+    // an unverified "isBusinessClaim" submitter could type anything, so it can't be
+    // presented to other users as real until checked.
+    businessHours: r.business_verified ? r.business_hours : null,
+    businessVerified: !!r.business_verified,
   }));
 }
 
@@ -404,13 +483,22 @@ export function listAllUserLandmarks(limit = 200) {
   return db.prepare(`
     SELECT * FROM user_landmarks ORDER BY approved ASC, created_at DESC LIMIT ?
   `).all(limit).map((r) => ({
-    id: r.id, name: r.name, description: r.description, lat: r.lat, lon: r.lon, photo: r.photo,
+    id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
+    isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified, businessHours: r.business_hours,
     approved: !!r.approved, appVersion: r.app_version, createdAt: isoZ(r.created_at),
   }));
 }
 
 export function approveUserLandmark(id) {
   const info = db.prepare(`UPDATE user_landmarks SET approved = 1 WHERE id = ?`).run(id);
+  return info.changes > 0;
+}
+
+/** Admin manually confirmed this really is the business owner — e.g. checked a business
+ * registration or matching contact info outside the app. There's no automated identity
+ * verification here; this is a human decision the admin panel just records. */
+export function verifyUserLandmarkBusiness(id) {
+  const info = db.prepare(`UPDATE user_landmarks SET business_verified = 1 WHERE id = ?`).run(id);
   return info.changes > 0;
 }
 

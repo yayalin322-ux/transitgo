@@ -49,6 +49,7 @@ struct NearbyLandmark: Identifiable {
     let subtitle: String?
     let coordinate: CLLocationCoordinate2D
     var distance: CLLocationDistance = 0
+    var category: LandmarkCategory = .other
 }
 
 /// Real nearby points of interest (Apple's own POI index, via the dedicated
@@ -73,7 +74,8 @@ final class LandmarkNearbyViewModel {
                 guard let name = item.name else { return nil }
                 let c = item.placemark.coordinate
                 let d = CLLocation(latitude: c.latitude, longitude: c.longitude).distance(from: location)
-                return NearbyLandmark(name: name, subtitle: item.placemark.title, coordinate: c, distance: d)
+                return NearbyLandmark(name: name, subtitle: item.placemark.title, coordinate: c, distance: d,
+                                       category: LandmarkCategory(appleCategory: item.pointOfInterestCategory))
             }
         }()
         // Our own users' real submitted landmarks (admin-approved only) — merged in
@@ -83,11 +85,36 @@ final class LandmarkNearbyViewModel {
             return own.map {
                 NearbyLandmark(name: $0.name, subtitle: $0.description.isEmpty ? "使用者新增地標" : $0.description,
                                coordinate: $0.coordinate,
-                               distance: CLLocation(latitude: $0.lat, longitude: $0.lon).distance(from: location))
+                               distance: CLLocation(latitude: $0.lat, longitude: $0.lon).distance(from: location),
+                               category: $0.category)
             }
         }()
         let (apple, own) = await (appleTask, ownTask)
         items = (apple + own).sorted { $0.distance < $1.distance }
+    }
+
+    /// Keyword search (unlike `load`, which only browses Apple's POI index by radius) —
+    /// same idea as the transfer planner's landmark search, scoped to a wider region so
+    /// searching by name can find something further than the passive-browse radius.
+    func search(_ keyword: String, near location: CLLocation) async {
+        isLoading = true
+        errorText = nil
+        defer { isLoading = false }
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = keyword
+        request.region = MKCoordinateRegion(center: location.coordinate, latitudinalMeters: 5000, longitudinalMeters: 5000)
+        request.resultTypes = [.pointOfInterest, .address]
+        guard let response = try? await MKLocalSearch(request: request).start() else {
+            errorText = "搜尋時發生錯誤"
+            return
+        }
+        items = response.mapItems.compactMap { item -> NearbyLandmark? in
+            guard let name = item.name else { return nil }
+            let c = item.placemark.coordinate
+            let d = CLLocation(latitude: c.latitude, longitude: c.longitude).distance(from: location)
+            return NearbyLandmark(name: name, subtitle: item.placemark.title, coordinate: c, distance: d,
+                                   category: LandmarkCategory(appleCategory: item.pointOfInterestCategory))
+        }.sorted { $0.distance < $1.distance }
     }
 }
 
@@ -352,6 +379,8 @@ struct NearbyStopsView: View {
     @State private var landmarkVM = LandmarkNearbyViewModel()
     @State private var placeDetailTarget: NearbyLandmark?
     @State private var showAddLandmark = false
+    @State private var landmarkQuery = ""
+    @State private var landmarkSearchTask: Task<Void, Never>?
 
     private var region: LocalRegion? { resolver.region }
     private var modes: [NearbyMode] { region?.availableModes ?? [.bus] }
@@ -476,8 +505,8 @@ struct NearbyStopsView: View {
                 }
             case .landmark:
                 ForEach(landmarkVM.items.prefix(30)) { landmark in
-                    Marker(landmark.name, systemImage: "mappin", coordinate: landmark.coordinate)
-                        .tint(.red)
+                    Marker(landmark.name, systemImage: landmark.category.icon, coordinate: landmark.coordinate)
+                        .tint(landmark.category.color)
                 }
             }
         }
@@ -490,6 +519,13 @@ struct NearbyStopsView: View {
             withAnimation(.easeInOut(duration: 0.3)) {
                 visibleSpan = context.region.span
             }
+            // Landmarks were only ever loaded around the device's own location — panning
+            // the map elsewhere showed nothing new there. Re-center the search on
+            // wherever the user actually panned to, same as scrolling a real map app.
+            if mode == .landmark {
+                let center = CLLocation(latitude: context.region.center.latitude, longitude: context.region.center.longitude)
+                Task { await landmarkVM.load(near: center) }
+            }
         }
         .mapStyle(.standard(elevation: .flat))
     }
@@ -501,6 +537,22 @@ struct NearbyStopsView: View {
         List {
             if let err = errorText {
                 Text(err).font(.footnote).foregroundStyle(.red)
+            }
+            if mode == .landmark {
+                TextField("搜尋地標，例如店名", text: $landmarkQuery)
+                    .onChange(of: landmarkQuery) { _, keyword in
+                        landmarkSearchTask?.cancel()
+                        let trimmed = keyword.trimmingCharacters(in: .whitespaces)
+                        landmarkSearchTask = Task {
+                            try? await Task.sleep(for: .milliseconds(400))
+                            guard !Task.isCancelled else { return }
+                            if trimmed.isEmpty {
+                                await landmarkVM.load(near: loc)
+                            } else {
+                                await landmarkVM.search(trimmed, near: loc)
+                            }
+                        }
+                    }
             }
             switch mode {
             case .bus:

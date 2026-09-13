@@ -802,13 +802,37 @@ struct InAppNavigationView: View {
     /// when "where do I actually put the car" matters most — a couple of nearby parking
     /// options right on the arrival card beats making the user open Maps separately.
     private func loadNearbyParking() async {
-        let request = MKLocalSearch.Request()
-        request.naturalLanguageQuery = "停車場"
-        request.region = MKCoordinateRegion(center: destination, latitudinalMeters: 800, longitudinalMeters: 800)
-        request.resultTypes = [.pointOfInterest]
-        guard let response = try? await MKLocalSearch(request: request).start() else { return }
+        let region = MKCoordinateRegion(center: destination, latitudinalMeters: 800, longitudinalMeters: 800)
         let destLoc = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
-        nearbyParking = Array(response.mapItems.sorted {
+
+        // Two real sources, merged: Apple's own "停車場" text search (catches places
+        // literally named that) AND its dedicated .parking category filter (catches
+        // real parking lots Apple has categorized but didn't name "停車場" — a plain
+        // keyword search misses those).
+        async let byName: [MKMapItem] = {
+            let request = MKLocalSearch.Request()
+            request.naturalLanguageQuery = "停車場"
+            request.region = region
+            request.resultTypes = [.pointOfInterest]
+            return (try? await MKLocalSearch(request: request).start())?.mapItems ?? []
+        }()
+        async let byCategory: [MKMapItem] = {
+            let request = MKLocalPointsOfInterestRequest(center: destination, radius: 800)
+            var withFilter = request
+            withFilter.pointOfInterestFilter = MKPointOfInterestFilter(including: [.parking])
+            return (try? await MKLocalSearch(request: withFilter).start())?.mapItems ?? []
+        }()
+        let (a, b) = await (byName, byCategory)
+
+        var seen = Set<String>()
+        var merged: [MKMapItem] = []
+        for item in a + b {
+            let key = "\(item.placemark.coordinate.latitude)_\(item.placemark.coordinate.longitude)_\(item.name ?? "")"
+            guard !seen.contains(key) else { continue }
+            seen.insert(key)
+            merged.append(item)
+        }
+        nearbyParking = Array(merged.sorted {
             CLLocation(latitude: $0.placemark.coordinate.latitude, longitude: $0.placemark.coordinate.longitude).distance(from: destLoc)
                 < CLLocation(latitude: $1.placemark.coordinate.latitude, longitude: $1.placemark.coordinate.longitude).distance(from: destLoc)
         }.prefix(8))

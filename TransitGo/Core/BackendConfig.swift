@@ -1,6 +1,14 @@
 import Foundation
+import UIKit
 
 enum BackendConfig {
+    /// Stable per-install identifier (resets only if the app is deleted+reinstalled) —
+    /// used to enforce "one review per device" server-side. Not used for any tracking
+    /// beyond that; never sent anywhere except our own backend.
+    static var deviceID: String {
+        UIDevice.current.identifierForVendor?.uuidString ?? "unknown"
+    }
+
     static var baseURL: URL? {
         guard var host = Bundle.main.object(forInfoDictionaryKey: "BackendHost") as? String else { return nil }
         host = host.trimmingCharacters(in: .whitespaces)

@@ -55,6 +55,7 @@ enum PlaceReviewService {
             "stars": stars,
             "comment": comment,
             "appVersion": BackendConfig.appVersion,
+            "device": BackendConfig.deviceID,
         ]
         if let photo { payload["photo"] = photo }
         Task {
@@ -66,14 +67,32 @@ enum PlaceReviewService {
         }
     }
 
-    /// Flags a review as inappropriate/spam — visible to admins as a report count, not
-    /// an automatic takedown (see transitgo-server's /v1/admin/place-reviews).
-    static func report(id: Int) {
+    /// Flags a review as inappropriate — visible to admins as a categorized report
+    /// (not just a bare count), so they can triage quickly. Not an automatic takedown
+    /// (see transitgo-server's /v1/admin/place-reviews).
+    static func report(id: Int, reason: ReportReason) {
         guard let base = BackendConfig.baseURL else { return }
         Task {
             var req = URLRequest(url: base.appendingPathComponent("v1/places/reviews/\(id)/report"))
             req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: ["reason": reason.rawValue])
             _ = try? await URLSession.shared.data(for: req)
+        }
+    }
+}
+
+/// Matches transitgo-server's REPORT_REASONS exactly.
+enum ReportReason: String, CaseIterable, Identifiable {
+    case spam, offensive, sexual, harassment, other
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .spam: return "廣告／垃圾訊息"
+        case .offensive: return "不當言論"
+        case .sexual: return "色情內容"
+        case .harassment: return "騷擾／人身攻擊"
+        case .other: return "其他"
         }
     }
 }

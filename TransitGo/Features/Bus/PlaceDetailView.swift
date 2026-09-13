@@ -88,13 +88,16 @@ struct PlaceDetailView: View {
                                 if reportedReviewIDs.contains(r.id) {
                                     Text("已檢舉").font(.caption2).foregroundStyle(.secondary)
                                 } else {
-                                    Button {
-                                        PlaceReviewService.report(id: r.id)
-                                        reportedReviewIDs.insert(r.id)
+                                    Menu {
+                                        ForEach(ReportReason.allCases) { reason in
+                                            Button(reason.label) {
+                                                PlaceReviewService.report(id: r.id, reason: reason)
+                                                reportedReviewIDs.insert(r.id)
+                                            }
+                                        }
                                     } label: {
                                         Image(systemName: "flag").font(.caption)
                                     }
-                                    .buttonStyle(.plain)
                                     .foregroundStyle(.secondary)
                                 }
                             }
