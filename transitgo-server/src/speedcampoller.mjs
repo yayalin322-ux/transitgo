@@ -50,6 +50,20 @@ const SOURCES = [
     url: "https://openapi.kcg.gov.tw/Api/Service/Get/6c5ed27d-0b48-44a5-9e06-b1dc7e558aed",
     parse: (text) => parseKcgJson(text, "pedestrian", "不停讓行人照相"),
   },
+  {
+    // 新竹縣「路口多功能科技執法」— a third, distinct Hsinchu County dataset (redirects
+    // off www.hsinchu.gov.tw) from the county speed/violation ones above.
+    id: "hsinchu-county-intersection",
+    url: "https://ws.hsinchu.gov.tw/001/Upload/1/opendata/8774/297/f65385d7-f178-4cee-8ccc-053c14aadfdb.json",
+    parse: parseHsinchuIntersectionJson,
+  },
+  {
+    // 新北市 區間測速 (section/average-speed cameras) — a start+end coordinate PAIR
+    // defining a road segment, not a single point like every other source here.
+    id: "ntpc-section-speed",
+    url: "https://data.ntpc.gov.tw/api/datasets/27b97ad9-9dba-4ca9-b0ed-14b29000ffec/csv/file",
+    parse: parseNtpcSectionSpeedCsv,
+  },
 ];
 
 export function startSpeedcamPoller() {
@@ -164,6 +178,86 @@ function parseKcgJson(text, kind, defaultNote) {
       source: `kcg-${kind}`,
     };
   }).filter(Boolean);
+}
+
+function parseHsinchuIntersectionJson(text) {
+  const rows = JSON.parse(text);
+  return rows.map((r) => {
+    const la = num(r["緯度"]), lo = num(r["經度"]);
+    if (!validPoint(la, lo)) return null;
+    return {
+      lat: la, lon: lo, kind: "intersection",
+      address: r["設置地點"] || null, city: "新竹縣",
+      direction: r["拍攝方向"] || null,   // "路口" here — omnidirectional, the app's direction parser treats unrecognized text as "always applies"
+      note: r["取締項目"] || null,
+      source: "hsinchu-county-intersection",
+    };
+  }).filter(Boolean);
+}
+
+/** First numeric token in a space-separated cell like "24.9569297 24.953133". */
+function firstNumber(v) {
+  if (!v) return null;
+  const token = String(v).trim().split(/\s+/)[0];
+  return num(token);
+}
+
+/** Minimal quote-aware CSV parser — MOI's parser above skips this since its fields never
+ * contain a comma inside quotes, but NTPC's does (Chinese full-width commas aside, the
+ * quoted "往新店方向：... 往宜蘭方向：..." cells are quoted specifically because of the
+ * space, and to be safe this doesn't assume otherwise). */
+function parseGenericCsv(text) {
+  const lines = text.replace(/^﻿/, "").split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return [];
+  const split = (line) => {
+    const out = []; let cur = "", inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (inQuotes) {
+        if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; }
+        else if (ch === '"') { inQuotes = false; }
+        else cur += ch;
+      } else if (ch === '"') { inQuotes = true; }
+      else if (ch === ",") { out.push(cur); cur = ""; }
+      else cur += ch;
+    }
+    out.push(cur);
+    return out;
+  };
+  const headers = split(lines[0]);
+  return lines.slice(1).map((line) => {
+    const cols = split(line);
+    const row = {};
+    headers.forEach((h, i) => { row[h] = cols[i]; });
+    return row;
+  });
+}
+
+/** 新北市 區間測速 — a start+end coordinate PAIR per row (a road segment), not one point.
+ * Each cell can hold more than one number space-separated (multiple sub-directions on the
+ * same segment) — this takes the first as a representative point for that end. */
+function parseNtpcSectionSpeedCsv(text) {
+  const rows = parseGenericCsv(text);
+  const out = [];
+  for (const r of rows) {
+    const startLat = firstNumber(r["start latitude"]);
+    const startLon = firstNumber(r["start longitude"]);
+    const endLat = firstNumber(r["end latitude"]);
+    const endLon = firstNumber(r["end longitude"]);
+    const limitDigits = (r.limit || "").match(/\d+/);
+    const common = {
+      kind: "speed",
+      address: r.location || null,
+      city: r.cityname || null,
+      direction: r.direct || null,
+      speedLimit: limitDigits ? parseInt(limitDigits[0], 10) : null,
+      note: `區間測速（${r.deptnm || ""}${r.branchnm || ""}）`,
+      source: "ntpc-section-speed",
+    };
+    if (validPoint(startLat, startLon)) out.push({ lat: startLat, lon: startLon, ...common });
+    if (validPoint(endLat, endLon) && (endLat !== startLat || endLon !== startLon)) out.push({ lat: endLat, lon: endLon, ...common });
+  }
+  return out;
 }
 
 const R = 6371000;
