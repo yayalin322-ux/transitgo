@@ -385,6 +385,7 @@ struct NearbyStopsView: View {
     @State private var landmarkVM = LandmarkNearbyViewModel()
     @State private var placeDetailTarget: NearbyLandmark?
     @State private var showAddLandmark = false
+    @State private var showMyLandmarks = false
     @State private var landmarkQuery = ""
     @State private var landmarkSearchTask: Task<Void, Never>?
 
@@ -411,6 +412,9 @@ struct NearbyStopsView: View {
                     ToolbarItem(placement: .primaryAction) {
                         Button { showAddLandmark = true } label: { Image(systemName: "plus.circle") }
                     }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { showMyLandmarks = true } label: { Image(systemName: "person.crop.circle") }
+                    }
                 }
             }
             .sheet(isPresented: $showAddLandmark) {
@@ -419,6 +423,9 @@ struct NearbyStopsView: View {
                         showAddLandmark = false
                     }
                 }
+            }
+            .sheet(isPresented: $showMyLandmarks) {
+                MyLandmarksView()
             }
             .onAppear { location.request() }
             .onChange(of: modes.map(\.rawValue)) { _, available in

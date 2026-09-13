@@ -117,6 +117,11 @@ struct UserLandmark: Decodable, Identifiable {
     /// never shown to other users before that (see server's business_verified gate).
     let businessHours: String?
     let businessVerified: Bool
+    /// Only present from GET /v1/landmarks/mine (this device's own submissions) — nil
+    /// when decoded from the public nearby-landmarks endpoint, which only ever returns
+    /// already-approved, non-business-claim-specific entries.
+    let approved: Bool?
+    let isBusinessClaim: Bool?
 
     var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: lat, longitude: lon) }
 }
