@@ -8,14 +8,16 @@ import { Mode } from "../graph/model.mjs";
  * reconstruct the actual route once the destination is reached.
  */
 class RoutingState {
-  constructor({ nodeId, time, walkingSeconds = 0, waitingSeconds = 0, transitSeconds = 0, transfers = 0, lastMode = null, previousState = null, previousEdge = null }) {
+  constructor({ nodeId, time, cost = 0, walkingSeconds = 0, waitingSeconds = 0, transitSeconds = 0, transfers = 0, fare = 0, lastTripKey = null, previousState = null, previousEdge = null }) {
     this.nodeId = nodeId;
-    this.time = time;               // clock time (seconds since midnight) at this node
+    this.time = time;               // real clock time (seconds since midnight) — drives which real trips/headway windows are reachable
+    this.cost = cost;               // accumulated g(n) under the active RoutingProfile's weights — drives ranking/pruning, not real time
     this.walkingSeconds = walkingSeconds;
     this.waitingSeconds = waitingSeconds;
     this.transitSeconds = transitSeconds;
     this.transfers = transfers;
-    this.lastMode = lastMode;
+    this.fare = fare;
+    this.lastTripKey = lastTripKey;
     this.previousState = previousState;
     this.previousEdge = previousEdge;
   }
@@ -31,19 +33,22 @@ class RoutingState {
  * route; too high just explores a bit more before converging, still correct. Defaults to
  * 70 m/s (~252 km/h, above THSR's real top speed) for exactly that reason.
  *
- * "Basic" here (Phase 4) means: it already respects real per-edge departure times (an
- * edge is only usable if its departureSeconds >= the arrival time at its from-node) and
- * counts a transfer only between two non-WALK edges of different modes (section 7) — but
- * it does not yet apply calendar/service-day filtering, realtime delays, or
- * headway-based edges (none exist in the graph yet — see Phase 2's warnings). That's
- * Phase 5.
+ * Respects real per-edge departure times (an edge is only usable if its departureSeconds
+ * is at or after the arrival time at its from-node) and real headway service windows.
+ * Counts a transfer whenever the *ride* changes (different mode, or same mode but a
+ * different route — e.g. bus route 1 to bus route 5 is a transfer even though both are
+ * Mode.BUS), never for a WALK leg (section 7). Does not yet apply calendar/service-day
+ * filtering or realtime delays — that's Phase 8 (Realtime).
  */
 export function findRoute(graph, originId, destinationId, departureTimeSeconds, options = {}) {
   const {
     maxWalkingSeconds = Infinity,
     maxTransfers = Infinity,
     heuristicSpeedMps = 70,
-    transferPenaltySeconds = 0,   // added to g(n) per transfer — Phase 8's RoutingProfile will make this configurable per profile
+    // RoutingProfile (architecture doc section 8) — every weight configurable, never
+    // hardcoded into the search itself. Defaults to an unweighted "just minimize real
+    // elapsed time" profile when the caller doesn't pass one.
+    profile = { timeWeight: 1, walkingWeight: 1, waitingWeight: 1, transferPenaltySeconds: 0, fareWeight: 0 },
   } = options;
 
   if (originId === destinationId) {
@@ -61,7 +66,9 @@ export function findRoute(graph, originId, destinationId, departureTimeSeconds, 
   const startState = new RoutingState({ nodeId: originId, time: departureTimeSeconds });
   const open = new MinHeap();
   open.push({ priority: heuristic(originId), state: startState });
-  const bestTimeAt = new Map([[originId, departureTimeSeconds]]);
+  // Pruning is on accumulated *cost* (profile-weighted), not raw arrival time — under
+  // e.g. LEAST_WALKING, an earlier-arriving-but-more-walking path is not "better".
+  const bestCostAt = new Map([[originId, 0]]);
 
   let expanded = 0;
   const MAX_EXPANSIONS = 200_000;   // circuit breaker, not a tuning knob — section 18's "找不到路線" must terminate, not hang
@@ -71,65 +78,70 @@ export function findRoute(graph, originId, destinationId, departureTimeSeconds, 
     const { state } = open.pop();
 
     if (state.nodeId === destinationId) return { route: reconstruct(state) };
-    if (state.time > (bestTimeAt.get(state.nodeId) ?? Infinity)) continue;   // stale queue entry, a better path to this node already won
+    if (state.cost > (bestCostAt.get(state.nodeId) ?? Infinity)) continue;   // stale queue entry, a better path to this node already won
 
     for (const edge of graph.neighbors(state.nodeId)) {
-      let nextTime, walkingSeconds = state.walkingSeconds, waitingSeconds = state.waitingSeconds,
-        transitSeconds = state.transitSeconds, transfers = state.transfers;
+      let nextTime, addedCost, walkingSeconds = state.walkingSeconds, waitingSeconds = state.waitingSeconds,
+        transitSeconds = state.transitSeconds, transfers = state.transfers, fare = state.fare;
 
       if (edge.mode === Mode.WALK) {
         if (edge.travelSeconds == null) continue;
         if (walkingSeconds + edge.travelSeconds > maxWalkingSeconds) continue;
         nextTime = state.time + edge.travelSeconds;
         walkingSeconds += edge.travelSeconds;
-      } else if (edge.isTimeDependent) {
-        if (edge.departureSeconds < state.time) continue;   // real trip, already departed relative to this state — can't catch it
-        const wait = edge.departureSeconds - state.time;
-        const ride = edge.travelSeconds ?? (edge.arrivalSeconds - edge.departureSeconds);
-        const isTransfer = state.lastMode != null && state.lastMode !== Mode.WALK && state.lastMode !== edge.mode;
+        addedCost = profile.walkingWeight * edge.travelSeconds;
+      } else if (edge.isTimeDependent || edge.isHeadwayBased) {
+        let wait, ride;
+        if (edge.isTimeDependent) {
+          if (edge.departureSeconds < state.time) continue;   // real trip, already departed relative to this state — can't catch it
+          wait = edge.departureSeconds - state.time;
+          ride = edge.travelSeconds ?? (edge.arrivalSeconds - edge.departureSeconds);
+          nextTime = edge.arrivalSeconds;
+        } else {
+          // Real headway band, real service window (e.g. TDX's own "07:00"-"09:00" peak
+          // band) — outside it this route/direction isn't running at that frequency
+          // (may not be running at all), so the edge simply isn't usable then.
+          const timeOfDay = state.time % 86400;
+          if (edge.windowStartSeconds != null && timeOfDay < edge.windowStartSeconds) continue;
+          if (edge.windowEndSeconds != null && timeOfDay > edge.windowEndSeconds) continue;
+          // Expected wait under an assumption of uniform arrivals relative to the bus
+          // schedule (half the real headway) — a standard, documented approximation
+          // for headway-based routing, not an arbitrary number.
+          wait = edge.headwaySeconds / 2;
+          ride = edge.travelSeconds ?? 0;
+          nextTime = state.time + wait + ride;
+        }
+        // A transfer is boarding a *different ride* than the one you were just on — not
+        // merely a different Mode enum value. Switching from bus route 1 to bus route 5
+        // is a real transfer even though both are Mode.BUS; comparing by mode alone
+        // missed exactly that case.
+        const tripKey = `${edge.mode}:${edge.routeId ?? ""}`;
+        const isTransfer = state.lastTripKey != null && state.lastTripKey !== tripKey;
         if (isTransfer) {
           transfers += 1;
           if (transfers > maxTransfers) continue;
         }
         waitingSeconds += wait;
         transitSeconds += ride;
-        nextTime = edge.arrivalSeconds;
-      } else if (edge.isHeadwayBased) {
-        // Real headway band, real service window (e.g. TDX's own "07:00"-"09:00" peak
-        // band) — outside it this route/direction isn't running at that frequency
-        // (may not be running at all), so the edge simply isn't usable then.
-        const timeOfDay = state.time % 86400;
-        if (edge.windowStartSeconds != null && timeOfDay < edge.windowStartSeconds) continue;
-        if (edge.windowEndSeconds != null && timeOfDay > edge.windowEndSeconds) continue;
-        // Expected wait under an assumption of uniform arrivals relative to the bus
-        // schedule (half the real headway) — a standard, documented approximation for
-        // headway-based routing, not an arbitrary number.
-        const wait = edge.headwaySeconds / 2;
-        const ride = edge.travelSeconds ?? 0;
-        const isTransfer = state.lastMode != null && state.lastMode !== Mode.WALK && state.lastMode !== edge.mode;
-        if (isTransfer) {
-          transfers += 1;
-          if (transfers > maxTransfers) continue;
-        }
-        waitingSeconds += wait;
-        transitSeconds += ride;
-        nextTime = state.time + wait + ride;
+        fare += edge.fare ?? 0;
+        addedCost = profile.timeWeight * ride + profile.waitingWeight * wait
+          + (isTransfer ? profile.transferPenaltySeconds : 0) + profile.fareWeight * (edge.fare ?? 0);
       } else {
         continue;
       }
 
-      const known = bestTimeAt.get(edge.toNodeId);
-      if (known != null && nextTime >= known) continue;   // dominated — a strictly-as-good-or-better arrival already found
-      bestTimeAt.set(edge.toNodeId, nextTime);
+      const nextCost = state.cost + addedCost;
+      const known = bestCostAt.get(edge.toNodeId);
+      if (known != null && nextCost >= known) continue;   // dominated — a strictly-as-good-or-better cost already found
+      bestCostAt.set(edge.toNodeId, nextCost);
 
       const nextState = new RoutingState({
-        nodeId: edge.toNodeId, time: nextTime,
-        walkingSeconds, waitingSeconds, transitSeconds, transfers,
-        lastMode: edge.mode,
+        nodeId: edge.toNodeId, time: nextTime, cost: nextCost,
+        walkingSeconds, waitingSeconds, transitSeconds, transfers, fare,
+        lastTripKey: edge.mode === Mode.WALK ? null : `${edge.mode}:${edge.routeId ?? ""}`,
         previousState: state, previousEdge: edge,
       });
-      const g = (nextTime - departureTimeSeconds) + transfers * transferPenaltySeconds;
-      open.push({ priority: g + heuristic(edge.toNodeId), state: nextState });
+      open.push({ priority: nextCost + heuristic(edge.toNodeId), state: nextState });
     }
   }
   return { error: "NO_ROUTE" };
@@ -164,6 +176,8 @@ function reconstruct(finalState) {
     waitingSeconds: finalState.waitingSeconds,
     transitSeconds: finalState.transitSeconds,
     transfers: finalState.transfers,
+    fare: finalState.fare,
+    cost: finalState.cost,
     legs,
   };
 }
