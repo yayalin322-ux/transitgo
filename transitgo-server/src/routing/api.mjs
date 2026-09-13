@@ -107,30 +107,76 @@ export function planRoute(graph, requestBody) {
     result = { routes: match ? [match] : result.routes.slice(0, 1) };
   }
 
-  const routes = result.routes.map((r, i) => ({
-    routeId: `R${String(i + 1).padStart(3, "0")}`,
-    label: r.label,
-    durationSeconds: r.route.durationSeconds,
-    departureTime: secondsToIso(departure.baseDate, r.route.departureTime),
-    arrivalTime: secondsToIso(departure.baseDate, r.route.arrivalTime),
-    walkingSeconds: r.route.walkingSeconds,
-    waitingSeconds: r.route.waitingSeconds,
-    transitSeconds: r.route.transitSeconds,
-    transfers: r.route.transfers,
-    fare: r.route.fare,
-    legs: r.route.legs.map((l) => ({
+  const routes = result.routes.map((r, i) => {
+    const legs = r.route.legs.map((l) => ({
       mode: l.mode,
       routeId: l.routeId,
       from: l.fromNodeId,
       to: l.toNodeId,
+      fromName: graph.nodes.get(l.fromNodeId)?.name ?? null,
+      toName: graph.nodes.get(l.toNodeId)?.name ?? null,
       departureTime: secondsToIso(departure.baseDate, l.departureSeconds),
       arrivalTime: secondsToIso(departure.baseDate, l.arrivalSeconds),
       durationSeconds: l.arrivalSeconds - l.departureSeconds,
       isEstimated: l.isEstimated ?? false,
-    })),
-  }));
+    }));
+    return {
+      routeId: `R${String(i + 1).padStart(3, "0")}`,
+      label: r.label,
+      durationSeconds: r.route.durationSeconds,
+      departureTime: secondsToIso(departure.baseDate, r.route.departureTime),
+      arrivalTime: secondsToIso(departure.baseDate, r.route.arrivalTime),
+      walkingSeconds: r.route.walkingSeconds,
+      waitingSeconds: r.route.waitingSeconds,
+      transitSeconds: r.route.transitSeconds,
+      transfers: r.route.transfers,
+      fare: r.route.fare,
+      legs,
+      // One entry per real boarding, not per graph edge — the router's own edges are
+      // one per stop-to-stop hop (so a 9-stop bus ride is 9 edges), which is correct for
+      // routing but unreadable as a itinerary; this collapses consecutive same
+      // mode+route edges into "board at X, ride N stops, alight at Y".
+      segments: collapseToSegments(legs),
+    };
+  });
 
   return { status: 200, body: { requestId, routes } };
+}
+
+/**
+ * Collapses per-edge legs into one entry per real boarding: consecutive legs with the
+ * same (mode, routeId) merge into a single "board at the first one's origin, alight at
+ * the last one's destination" segment. A WALK leg is always its own segment (there's no
+ * "route" to merge it with). `stopsPassed` is the real number of intermediate hops —
+ * useful context ("經過6站"), not the real per-stop names (those stay in `legs` for
+ * anyone who wants the detail).
+ */
+function collapseToSegments(legs) {
+  const segments = [];
+  for (const leg of legs) {
+    const last = segments[segments.length - 1];
+    if (last && leg.mode !== "WALK" && last.mode === leg.mode && last.routeId === leg.routeId) {
+      last.to = leg.to;
+      last.toName = leg.toName;
+      last.arrivalTime = leg.arrivalTime;
+      last.durationSeconds = (Date.parse(leg.arrivalTime) - Date.parse(last.departureTime)) / 1000;
+      last.stopsPassed += 1;
+      last.isEstimated = last.isEstimated || leg.isEstimated;
+    } else {
+      segments.push({
+        mode: leg.mode,
+        routeId: leg.routeId,
+        from: leg.from, fromName: leg.fromName,
+        to: leg.to, toName: leg.toName,
+        departureTime: leg.departureTime,
+        arrivalTime: leg.arrivalTime,
+        durationSeconds: leg.durationSeconds,
+        stopsPassed: 1,
+        isEstimated: leg.isEstimated,
+      });
+    }
+  }
+  return segments;
 }
 
 /** Virtual nodes/edges are per-request — never let them leak into the shared graph past this call. */
