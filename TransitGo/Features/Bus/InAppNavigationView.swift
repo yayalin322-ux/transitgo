@@ -63,6 +63,23 @@ final class NavigationLocationTracker: NSObject, CLLocationManagerDelegate {
     }
 }
 
+/// Reference-counted screen-stays-awake lock — a parking leg can open a second
+/// `InAppNavigationView` on top of the first (see `navigateToParking`), and naive
+/// true/false toggling would let the inner screen's dismissal re-enable auto-lock while
+/// the outer navigation session is still very much active underneath it.
+@MainActor
+enum IdleTimerLock {
+    private static var count = 0
+    static func acquire() {
+        count += 1
+        UIApplication.shared.isIdleTimerDisabled = true
+    }
+    static func release() {
+        count = max(0, count - 1)
+        UIApplication.shared.isIdleTimerDisabled = count > 0
+    }
+}
+
 /// One leg of a (possibly multi-leg) in-app navigation trip — a "waypoint" is just where
 /// the transport mode changes (e.g. walk → YouBike → walk), not a place navigation stops
 /// and needs to be manually restarted.
@@ -143,6 +160,9 @@ struct InAppNavigationView: View {
     @State private var maneuverPassStreak = 0
     @State private var followResumeTask: Task<Void, Never>?
     @State private var nearbyParking: [MKMapItem] = []
+    @State private var parkingLeg: NavigationLeg?
+    @State private var photoSpots: [RoutePhotoSpot] = []
+    @State private var photoFetchCenter: CLLocationCoordinate2D?
     private let speech = AVSpeechSynthesizer()
     private let maneuverHaptic = UIImpactFeedbackGenerator(style: .light)
     private let notificationHaptic = UINotificationFeedbackGenerator()
@@ -183,9 +203,25 @@ struct InAppNavigationView: View {
             Map(position: $camera) {
                 UserAnnotation()
                 if let route {
-                    MapPolyline(route.polyline).stroke(.blue, lineWidth: 7)
+                    // A white "casing" under the blue line — same trick real nav apps use
+                    // so the route stays visible against both light and dark roads/water.
+                    MapPolyline(route.polyline).stroke(.white, style: StrokeStyle(lineWidth: 11, lineCap: .round, lineJoin: .round))
+                    MapPolyline(route.polyline).stroke(.blue, style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
                 }
                 Marker(destinationName, coordinate: destination).tint(.red)
+                ForEach(photoSpots) { spot in
+                    Annotation(spot.name, coordinate: spot.coordinate) {
+                        AsyncImage(url: spot.imageURL) { image in
+                            image.resizable().scaledToFill()
+                        } placeholder: {
+                            Color.gray.opacity(0.3)
+                        }
+                        .frame(width: 40, height: 40)
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(.white, lineWidth: 2))
+                        .shadow(radius: 2)
+                    }
+                }
             }
             .mapControls { MapCompass() }
             .mapStyle(.standard(elevation: .realistic, pointsOfInterest: .excludingAll, showsTraffic: transportType == .automobile))
@@ -348,8 +384,15 @@ struct InAppNavigationView: View {
             maneuverHaptic.prepare()
             notificationHaptic.prepare()
             legTransitionHaptic.prepare()
+            // The whole point of this screen is running unattended while driving/walking —
+            // the screen auto-locking mid-navigation (killing the live map + voice) is a
+            // real bug, not acceptable default iOS behaviour here.
+            IdleTimerLock.acquire()
         }
-        .onDisappear { tracker.stop() }
+        .onDisappear {
+            tracker.stop()
+            IdleTimerLock.release()
+        }
         .task { await computeRoute(from: tracker.location?.coordinate) }
         .onChange(of: tracker.updateTick) { _, _ in
             guard let newLoc = tracker.location else { return }
@@ -358,6 +401,10 @@ struct InAppNavigationView: View {
             handleLocationUpdate(newLoc)
             checkManeuvers(newLoc)
             checkSpeedCams(newLoc)
+            checkRoutePhotos(newLoc)
+        }
+        .fullScreenCover(item: $parkingLeg) { leg in
+            InAppNavigationView(destination: leg.coordinate, destinationName: leg.name, transportType: leg.transportType)
         }
     }
 
@@ -454,9 +501,12 @@ struct InAppNavigationView: View {
         withAnimation {
             camera = .camera(MapCamera(
                 centerCoordinate: loc.coordinate,
-                distance: transportType == .walking ? 350 : 700,
+                // Tighter and more tilted than before — a close, steep 3D follow view
+                // (closer to how Apple/Google Maps actually look while turn-by-turn) reads
+                // the road ahead more clearly than a flatter, more zoomed-out one.
+                distance: transportType == .walking ? 220 : 420,
                 heading: heading,
-                pitch: 55
+                pitch: 70
             ))
         }
     }
@@ -467,11 +517,14 @@ struct InAppNavigationView: View {
         dismiss()
     }
 
-    /// This is a final-mile "park the car" errand after the main trip is already done —
-    /// handing off to Apple Maps here is fine, unlike the primary trip which draws its
-    /// own route so it can reroute/speak/track live.
+    /// Same in-app navigation as the primary trip — our own drawn route, live tracking,
+    /// voice, reroute — rather than handing off to Apple Maps for this last stretch.
     private func navigateToParking(_ item: MKMapItem) {
-        item.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving])
+        parkingLeg = NavigationLeg(
+            coordinate: item.placemark.coordinate,
+            name: item.name ?? "停車場",
+            transportType: .automobile
+        )
     }
 
     // MARK: - Voice announcements
@@ -735,5 +788,19 @@ struct InAppNavigationView: View {
             }
         }
         upcomingCam = stillAhead
+    }
+
+    // MARK: - Route photos
+
+    /// Same "refetch only after moving far enough" pattern as speed cams — this data
+    /// barely exists anywhere yet (one city's dataset), so the fetch is cheap and the
+    /// filtering is the only real per-tick cost.
+    private func checkRoutePhotos(_ loc: CLLocation) {
+        if photoFetchCenter == nil || loc.distance(from: CLLocation(latitude: photoFetchCenter!.latitude, longitude: photoFetchCenter!.longitude)) > 800 {
+            photoFetchCenter = loc.coordinate
+            Task {
+                photoSpots = await RoutePhotoService.nearby(loc.coordinate, radius: 600)
+            }
+        }
     }
 }
