@@ -242,6 +242,7 @@ struct TransferPlannerView: View {
 
     private var effectiveOrigin: CLLocationCoordinate2D { model.originOverride?.coordinate ?? origin }
     @State private var editingSavedPlaceRole: SavedPlaceRole?
+    @State private var placeDetailTarget: DestinationCandidate?
 
     @ViewBuilder
     private func savedPlaceChips(onSelect: @escaping (SavedPlace) -> Void) -> some View {
@@ -311,17 +312,37 @@ struct TransferPlannerView: View {
                     TextField("站名或地標，例如 台北101、台北車站", text: $model.destinationText)
                         .onChange(of: model.destinationText) { _, v in model.searchDestination(v, city: city, near: effectiveOrigin) }
                     if let d = model.destination {
-                        Label(d.name, systemImage: d.isLandmark ? "mappin.circle.fill" : "bus.fill")
-                            .foregroundStyle(.blue)
+                        HStack {
+                            Label(d.name, systemImage: d.isLandmark ? "mappin.circle.fill" : "bus.fill")
+                                .foregroundStyle(.blue)
+                            if d.isLandmark {
+                                Spacer()
+                                Button { placeDetailTarget = d } label: {
+                                    Image(systemName: "info.circle")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                            }
+                        }
                     }
                     ForEach(model.destinationResults) { candidate in
-                        Button {
-                            model.destination = candidate
-                            model.destinationText = candidate.name
-                            model.destinationResults = []
-                            Task { await model.planAll(city: city, metroOperator: metroOperator, from: effectiveOrigin) }
-                        } label: {
-                            candidateLabel(candidate)
+                        HStack {
+                            Button {
+                                model.destination = candidate
+                                model.destinationText = candidate.name
+                                model.destinationResults = []
+                                Task { await model.planAll(city: city, metroOperator: metroOperator, from: effectiveOrigin) }
+                            } label: {
+                                candidateLabel(candidate)
+                            }
+                            if candidate.isLandmark {
+                                Spacer()
+                                Button { placeDetailTarget = candidate } label: {
+                                    Image(systemName: "info.circle")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
@@ -398,6 +419,9 @@ struct TransferPlannerView: View {
             }
             .sheet(item: $editingSavedPlaceRole) { role in
                 SetSavedPlaceView(role: role, near: origin)
+            }
+            .sheet(item: $placeDetailTarget) { candidate in
+                PlaceDetailView(name: candidate.name, coordinate: candidate.coordinate, subtitle: candidate.subtitle)
             }
         }
     }
