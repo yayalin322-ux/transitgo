@@ -189,11 +189,11 @@ app.post("/v1/landmarks", (req, res) => {
   hist.push(now);
   landmarkBucket.set(req.clientIp, hist);
 
-  const { name, description, category, lat, lon, photo, isBusinessClaim, businessHours, appVersion, device } = req.body || {};
+  const { name, description, category, lat, lon, photo, isBusinessClaim, businessHours, phone, appVersion, device } = req.body || {};
   if (!name || typeof name !== "string") return res.status(400).json({ error: "name required" });
   if (typeof lat !== "number" || typeof lon !== "number") return res.status(400).json({ error: "lat/lon required" });
   if (!validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
-  createUserLandmark({ name, description, category, lat, lon, photo, isBusinessClaim, businessHours, appVersion, device, ip: req.clientIp });
+  createUserLandmark({ name, description, category, lat, lon, photo, isBusinessClaim, businessHours, phone, appVersion, device, ip: req.clientIp });
   res.json({ ok: true });
 });
 
@@ -256,10 +256,10 @@ app.get("/v1/landmarks/mine", (req, res) => {
 app.put("/v1/landmarks/:id", (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
-  const { device, description, businessHours, photo } = req.body || {};
+  const { device, description, businessHours, phone, photo, lat, lon } = req.body || {};
   if (!device) return res.status(400).json({ error: "device required" });
   if (photo !== undefined && !validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
-  const ok = updateMyUserLandmark(id, device, { description, businessHours, photo });
+  const ok = updateMyUserLandmark(id, device, { description, businessHours, phone, photo, lat, lon });
   if (!ok) return res.status(403).json({ error: "not authorized to edit this listing" });
   res.json({ ok: true });
 });

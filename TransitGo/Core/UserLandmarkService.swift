@@ -116,6 +116,7 @@ struct UserLandmark: Decodable, Identifiable {
     /// Only non-nil once an admin has verified the submitter really is the business —
     /// never shown to other users before that (see server's business_verified gate).
     let businessHours: String?
+    let phone: String?
     let businessVerified: Bool
     /// Only present from GET /v1/landmarks/mine (this device's own submissions) — nil
     /// when decoded from the public nearby-landmarks endpoint, which only ever returns
@@ -173,12 +174,17 @@ enum UserLandmarkService {
     /// Editing only actually succeeds server-side for a verified business owner's own
     /// listing — the server checks device + business_verified itself (see
     /// updateMyUserLandmark), this call can't bypass that from the client.
-    static func update(id: Int, description: String?, businessHours: String?, photo: String?) async -> Bool {
+    static func update(
+        id: Int, description: String?, businessHours: String?, phone: String? = nil,
+        photo: String?, coordinate: CLLocationCoordinate2D? = nil
+    ) async -> Bool {
         guard let base = BackendConfig.baseURL else { return false }
         var payload: [String: Any] = ["device": BackendConfig.deviceID]
         if let description { payload["description"] = description }
         if let businessHours { payload["businessHours"] = businessHours }
+        if let phone { payload["phone"] = phone }
         if let photo { payload["photo"] = photo }
+        if let coordinate { payload["lat"] = coordinate.latitude; payload["lon"] = coordinate.longitude }
         var req = URLRequest(url: base.appendingPathComponent("v1/landmarks/\(id)"))
         req.httpMethod = "PUT"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -189,7 +195,7 @@ enum UserLandmarkService {
 
     static func submit(
         name: String, description: String, category: LandmarkCategory, coordinate: CLLocationCoordinate2D,
-        photo: String?, isBusinessClaim: Bool = false, businessHours: String? = nil
+        photo: String?, isBusinessClaim: Bool = false, businessHours: String? = nil, phone: String? = nil
     ) {
         guard let base = BackendConfig.baseURL else { return }
         var payload: [String: Any] = [
@@ -204,6 +210,7 @@ enum UserLandmarkService {
         ]
         if let photo { payload["photo"] = photo }
         if let businessHours, !businessHours.isEmpty { payload["businessHours"] = businessHours }
+        if let phone, !phone.isEmpty { payload["phone"] = phone }
         Task {
             var req = URLRequest(url: base.appendingPathComponent("v1/landmarks"))
             req.httpMethod = "POST"

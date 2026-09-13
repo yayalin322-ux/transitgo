@@ -16,7 +16,15 @@ struct AddLandmarkView: View {
     @State private var photoImage: UIImage?
     @State private var isBusinessClaim = false
     @State private var businessHours = ""
+    @State private var phone = ""
     @State private var isSubmitting = false
+    @State private var pinCoordinate: CLLocationCoordinate2D
+
+    init(coordinate: CLLocationCoordinate2D, onDone: @escaping () -> Void) {
+        self.coordinate = coordinate
+        self.onDone = onDone
+        self._pinCoordinate = State(initialValue: coordinate)
+    }
 
     var body: some View {
         NavigationStack {
@@ -33,7 +41,12 @@ struct AddLandmarkView: View {
                 } header: {
                     Text("新增地標")
                 } footer: {
-                    Text("會先送到後台審核，核准後其他使用者才會在「附近」看到。位置使用你目前的定位。")
+                    Text("會先送到後台審核，核准後其他使用者才會在「附近」看到。")
+                }
+                Section("地址") {
+                    AddressPickerMap(coordinate: $pinCoordinate)
+                        .listRowInsets(EdgeInsets())
+                    Text("拖動地圖調整地址位置，圖釘固定在畫面中心").font(.caption2).foregroundStyle(.secondary)
                 }
                 Section {
                     PhotosPicker(selection: $photoItem, matching: .images) {
@@ -58,6 +71,8 @@ struct AddLandmarkView: View {
                     if isBusinessClaim {
                         TextField("營業時間，例如：週一至週日 11:00–21:00", text: $businessHours, axis: .vertical)
                             .lineLimit(2...4)
+                        TextField("電話", text: $phone)
+                            .keyboardType(.phonePad)
                     }
                 } footer: {
                     Text(isBusinessClaim
@@ -77,9 +92,10 @@ struct AddLandmarkView: View {
                             isSubmitting = true
                             let photo = photoImage.flatMap { PhotoUpload.encode($0) }
                             UserLandmarkService.submit(
-                                name: name, description: description, category: category, coordinate: coordinate,
+                                name: name, description: description, category: category, coordinate: pinCoordinate,
                                 photo: photo, isBusinessClaim: isBusinessClaim,
-                                businessHours: isBusinessClaim ? businessHours : nil
+                                businessHours: isBusinessClaim ? businessHours : nil,
+                                phone: isBusinessClaim ? phone : nil
                             )
                             onDone()
                         }

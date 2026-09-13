@@ -13,6 +13,7 @@ struct PlaceDetailView: View {
     /// (those can only be reviewed, not reported/edited — we don't own that data).
     var landmarkID: Int?
     var businessHours: String?
+    var businessPhone: String?
     var businessVerified = false
 
     @Environment(\.dismiss) private var dismiss
@@ -53,6 +54,13 @@ struct PlaceDetailView: View {
                     }
                     if let hours = businessHours {
                         Label(hours, systemImage: "clock.fill")
+                    }
+                    if let bPhone = businessPhone {
+                        Link(destination: URL(string: "tel:\(bPhone.filter { $0.isNumber })") ?? URL(string: "tel:")!) {
+                            Label(bPhone, systemImage: "phone.fill")
+                        }
+                    }
+                    if businessHours != nil || businessPhone != nil {
                         Text("店家自行提供，已由管理員驗證").font(.caption2).foregroundStyle(.secondary)
                     }
                     if mapItem == nil, !loading {
@@ -168,7 +176,10 @@ struct PlaceDetailView: View {
             }
             .sheet(isPresented: $showEditLandmark) {
                 if let landmarkID {
-                    EditLandmarkView(landmarkID: landmarkID, description: subtitle ?? "", businessHours: businessHours ?? "") {
+                    EditLandmarkView(
+                        landmarkID: landmarkID, description: subtitle ?? "", businessHours: businessHours ?? "",
+                        phone: businessPhone ?? "", coordinate: coordinate
+                    ) {
                         showEditLandmark = false
                     }
                 }
@@ -264,12 +275,25 @@ private struct EditLandmarkView: View {
     let landmarkID: Int
     @State var description: String
     @State var businessHours: String
+    @State var phone: String
+    let coordinate: CLLocationCoordinate2D
     var onDone: () -> Void
 
     @State private var photoItem: PhotosPickerItem?
     @State private var photoImage: UIImage?
     @State private var isSubmitting = false
     @State private var errorText: String?
+    @State private var pinCoordinate: CLLocationCoordinate2D
+
+    init(landmarkID: Int, description: String, businessHours: String, phone: String, coordinate: CLLocationCoordinate2D, onDone: @escaping () -> Void) {
+        self.landmarkID = landmarkID
+        self._description = State(initialValue: description)
+        self._businessHours = State(initialValue: businessHours)
+        self._phone = State(initialValue: phone)
+        self.coordinate = coordinate
+        self.onDone = onDone
+        self._pinCoordinate = State(initialValue: coordinate)
+    }
 
     var body: some View {
         NavigationStack {
@@ -279,6 +303,14 @@ private struct EditLandmarkView: View {
                 }
                 Section("營業時間") {
                     TextField("例如：週一至週日 11:00–21:00", text: $businessHours, axis: .vertical).lineLimit(2...4)
+                }
+                Section("電話") {
+                    TextField("電話", text: $phone).keyboardType(.phonePad)
+                }
+                Section("地址") {
+                    AddressPickerMap(coordinate: $pinCoordinate)
+                        .listRowInsets(EdgeInsets())
+                    Text("拖動地圖調整地址位置，圖釘固定在畫面中心").font(.caption2).foregroundStyle(.secondary)
                 }
                 Section("照片") {
                     PhotosPicker(selection: $photoItem, matching: .images) {
@@ -314,7 +346,10 @@ private struct EditLandmarkView: View {
                             isSubmitting = true
                             Task {
                                 let photo = photoImage.flatMap { PhotoUpload.encode($0) }
-                                let ok = await UserLandmarkService.update(id: landmarkID, description: description, businessHours: businessHours, photo: photo)
+                                let ok = await UserLandmarkService.update(
+                                    id: landmarkID, description: description, businessHours: businessHours,
+                                    phone: phone, photo: photo, coordinate: pinCoordinate
+                                )
                                 if ok {
                                     onDone()
                                 } else {

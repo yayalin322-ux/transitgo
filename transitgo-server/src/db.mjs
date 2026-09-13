@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS user_landmarks (
   is_business_claim INTEGER NOT NULL DEFAULT 0,
   business_verified INTEGER NOT NULL DEFAULT 0,
   business_hours    TEXT,
+  phone             TEXT,
   app_version       TEXT,
   device            TEXT,
   ip                TEXT,
@@ -454,8 +455,8 @@ export const LANDMARK_CATEGORIES = [
 export function createUserLandmark(r) {
   const category = LANDMARK_CATEGORIES.includes(r.category) ? r.category : "other";
   db.prepare(`
-    INSERT INTO user_landmarks (name, description, category, lat, lon, photo, is_business_claim, business_hours, app_version, device, ip)
-    VALUES (:name, :description, :category, :lat, :lon, :photo, :is_business_claim, :business_hours, :app_version, :device, :ip)
+    INSERT INTO user_landmarks (name, description, category, lat, lon, photo, is_business_claim, business_hours, phone, app_version, device, ip)
+    VALUES (:name, :description, :category, :lat, :lon, :photo, :is_business_claim, :business_hours, :phone, :app_version, :device, :ip)
   `).run({
     name: r.name,
     description: (r.description ?? "").slice(0, 500),
@@ -465,6 +466,7 @@ export function createUserLandmark(r) {
     photo: r.photo ?? null,
     is_business_claim: r.isBusinessClaim ? 1 : 0,
     business_hours: (r.businessHours ?? "").slice(0, 500) || null,
+    phone: (r.phone ?? "").slice(0, 50) || null,
     app_version: r.appVersion ?? null,
     device: r.device ?? null,
     ip: r.ip ?? null,
@@ -485,6 +487,7 @@ export function listApprovedLandmarksNear(lat, lon, radiusMeters = 1000) {
     // an unverified "isBusinessClaim" submitter could type anything, so it can't be
     // presented to other users as real until checked.
     businessHours: r.business_verified ? r.business_hours : null,
+    phone: r.business_verified ? r.phone : null,
     businessVerified: !!r.business_verified,
   }));
 }
@@ -502,7 +505,7 @@ export function listAllUserLandmarks(limit = 200) {
   }
   return rows.map((r) => ({
     id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
-    isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified, businessHours: r.business_hours,
+    isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified, businessHours: r.business_hours, phone: r.phone,
     approved: !!r.approved, reported: r.reported, reportReasons: reasonsByLandmark.get(r.id) ?? {},
     appVersion: r.app_version, createdAt: isoZ(r.created_at),
   }));
@@ -543,7 +546,7 @@ export function listMyUserLandmarks(device) {
     SELECT * FROM user_landmarks WHERE device = ? ORDER BY created_at DESC
   `).all(device).map((r) => ({
     id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
-    isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified, businessHours: r.business_hours,
+    isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified, businessHours: r.business_hours, phone: r.phone,
     approved: !!r.approved, createdAt: isoZ(r.created_at),
   }));
 }
@@ -564,6 +567,11 @@ export function updateMyUserLandmark(id, device, fields) {
   if (typeof fields.description === "string") { sets.push("description = :description"); params.description = fields.description.slice(0, 500); }
   if (typeof fields.businessHours === "string") { sets.push("business_hours = :business_hours"); params.business_hours = fields.businessHours.slice(0, 500); }
   if (typeof fields.photo === "string") { sets.push("photo = :photo"); params.photo = fields.photo; }
+  if (typeof fields.phone === "string") { sets.push("phone = :phone"); params.phone = fields.phone.slice(0, 50); }
+  if (typeof fields.lat === "number" && typeof fields.lon === "number") {
+    sets.push("lat = :lat", "lon = :lon");
+    params.lat = fields.lat; params.lon = fields.lon;
+  }
   if (sets.length === 0) return false;
   db.prepare(`UPDATE user_landmarks SET ${sets.join(", ")} WHERE id = :id`).run(params);
   return true;

@@ -54,6 +54,7 @@ struct NearbyLandmark: Identifiable {
     /// PlaceDetailView offer "report this landmark" and, for a verified business, editing.
     var landmarkID: Int?
     var businessHours: String?
+    var businessPhone: String?
     var businessVerified = false
 }
 
@@ -92,7 +93,7 @@ final class LandmarkNearbyViewModel {
                                coordinate: $0.coordinate,
                                distance: CLLocation(latitude: $0.lat, longitude: $0.lon).distance(from: location),
                                category: $0.category, landmarkID: $0.id,
-                               businessHours: $0.businessHours, businessVerified: $0.businessVerified)
+                               businessHours: $0.businessHours, businessPhone: $0.phone, businessVerified: $0.businessVerified)
             }
         }()
         let (apple, own) = await (appleTask, ownTask)
@@ -447,7 +448,7 @@ struct NearbyStopsView: View {
             .sheet(item: $placeDetailTarget) { landmark in
                 PlaceDetailView(name: landmark.name, coordinate: landmark.coordinate, subtitle: landmark.subtitle,
                                  landmarkID: landmark.landmarkID, businessHours: landmark.businessHours,
-                                 businessVerified: landmark.businessVerified)
+                                 businessPhone: landmark.businessPhone, businessVerified: landmark.businessVerified)
             }
         }
     }

@@ -216,6 +216,7 @@ async function loadLandmarks() {
        ${l.reported > 0 ? `<span class="warn">被檢舉 ${l.reported} 次（${Object.entries(l.reportReasons).map(([k,v]) => `${reasonLabel[k]||k} x${v}`).join("、")}）</span>` : ""}
        <br>${l.description || ""}
        ${l.businessHours ? `<br>營業時間：${l.businessHours}` : ""}
+       ${l.phone ? `<br>電話：${l.phone}` : ""}
        ${l.photo ? `<br><img src="${l.photo}" style="max-width:160px;border-radius:8px;margin-top:6px">` : ""}
        <br><small style="opacity:.6">${l.lat.toFixed(5)}, ${l.lon.toFixed(5)} · ${l.createdAt} · ${l.appVersion || "?"}</small>
        <br>
