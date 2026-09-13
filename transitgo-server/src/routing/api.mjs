@@ -88,7 +88,10 @@ export function planRoute(graph, requestBody) {
 
   let result;
   try {
-    result = rankRoutes(graph, originId, destinationId, departure.secondsOfDay, { maxResults: 5, searchOptions: { maxWalkingSeconds, maxTransfers } });
+    result = rankRoutes(graph, originId, destinationId, departure.secondsOfDay, {
+      maxResults: 5,
+      searchOptions: { maxWalkingSeconds, maxTransfers, dateStr: departure.dateStr.replace(/-/g, "") },
+    });
   } finally {
     cleanupVirtualNode(graph, originId);
     cleanupVirtualNode(graph, destinationId);

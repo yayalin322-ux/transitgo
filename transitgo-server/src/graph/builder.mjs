@@ -1,5 +1,6 @@
 import { MultimodalGraph, TransitNode, TransitEdge, NodeType, Mode, parseGtfsTime } from "./model.mjs";
 import { haversineMeters } from "./virtual.mjs";
+import { loadServiceCalendar } from "./calendar.mjs";
 
 /**
  * No verified TDX endpoint gives real stop-to-stop bus travel time (S2STravelTime exists
@@ -37,6 +38,11 @@ export function buildGraph(db, { feedIds = null, dataVersion = null } = {}) {
   const feedClause = feedIds ? `WHERE feed_id IN (${feedIds.map(() => "?").join(",")})` : "";
   const feedArgs = feedIds ?? [];
 
+  // Kept on the graph itself (not baked into edges at build time) — findRoute checks
+  // this against the actual query date, so a real 停駛/holiday/weekday-only service
+  // works correctly for any date without needing the whole graph rebuilt.
+  graph.serviceCalendar = loadServiceCalendar(db, feedClause, feedArgs);
+
   const routeType = new Map();  // "feedId:routeId" -> gtfs route_type
   for (const r of db.prepare(`SELECT feed_id, route_id, route_type FROM gtfs_routes ${feedClause}`).all(...feedArgs)) {
     routeType.set(`${r.feed_id}:${r.route_id}`, r.route_type);
@@ -66,7 +72,7 @@ export function buildGraph(db, { feedIds = null, dataVersion = null } = {}) {
     }));
   }
 
-  const trips = db.prepare(`SELECT feed_id, trip_id, route_id FROM gtfs_trips ${feedClause}`).all(...feedArgs);
+  const trips = db.prepare(`SELECT feed_id, trip_id, route_id, service_id FROM gtfs_trips ${feedClause}`).all(...feedArgs);
   const stopTimesStmt = db.prepare(`
     SELECT stop_id, arrival_time, departure_time, stop_sequence
     FROM gtfs_stop_times WHERE feed_id = ? AND trip_id = ? ORDER BY stop_sequence
@@ -93,6 +99,7 @@ export function buildGraph(db, { feedIds = null, dataVersion = null } = {}) {
         departureSeconds: dep,
         arrivalSeconds: arr,
         travelSeconds,
+        serviceKey: trip.service_id ? `${trip.feed_id}:${trip.service_id}` : null,
         source: "TDX real timetable",
       }));
     }

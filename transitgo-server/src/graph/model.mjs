@@ -48,6 +48,11 @@ export class TransitEdge {
     // frequency (might not be running at all), so the edge must not be used.
     windowStartSeconds = null, windowEndSeconds = null,
     distanceMeters = null, fare = null, source,
+    // "feedId:service_id" — looked up against the graph's serviceCalendar at search
+    // time (not build time) to honor real calendar/calendar_dates data (weekday
+    // patterns, holidays, 停駛 cancellations). Only meaningful for time-dependent
+    // (real-trip) edges — headway edges aren't tied to one gtfs_trips row.
+    serviceKey = null,
   }) {
     this.id = id;
     this.fromNodeId = fromNodeId;
@@ -63,6 +68,7 @@ export class TransitEdge {
     this.distanceMeters = distanceMeters;
     this.fare = fare;
     this.source = source;   // e.g. "TDX real timetable", "TDX real headway", "walk estimate"
+    this.serviceKey = serviceKey;
   }
   get isTimeDependent() { return this.departureSeconds != null; }
   get isHeadwayBased() { return this.headwaySeconds != null; }

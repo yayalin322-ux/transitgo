@@ -1,6 +1,7 @@
 import { MinHeap } from "./heap.mjs";
 import { haversineMeters } from "../graph/virtual.mjs";
 import { Mode } from "../graph/model.mjs";
+import { isServiceActiveOn } from "../graph/calendar.mjs";
 
 /**
  * One point in the search — architecture doc section 5: "State = Node + Time", not just
@@ -49,6 +50,11 @@ export function findRoute(graph, originId, destinationId, departureTimeSeconds, 
     // hardcoded into the search itself. Defaults to an unweighted "just minimize real
     // elapsed time" profile when the caller doesn't pass one.
     profile = { timeWeight: 1, walkingWeight: 1, waitingWeight: 1, transferPenaltySeconds: 0, fareWeight: 0 },
+    // "YYYYMMDD" — which real calendar date this search is for, checked against
+    // gtfs_calendar/gtfs_calendar_dates per edge (weekday pattern, holidays, real 停駛
+    // cancellations). No date = no calendar filtering (useful for synthetic/test graphs
+    // that don't model calendars at all).
+    dateStr = null,
   } = options;
 
   if (originId === destinationId) {
@@ -93,6 +99,7 @@ export function findRoute(graph, originId, destinationId, departureTimeSeconds, 
       } else if (edge.isTimeDependent || edge.isHeadwayBased) {
         let wait, ride;
         if (edge.isTimeDependent) {
+          if (dateStr && edge.serviceKey && !isServiceActiveOn(graph.serviceCalendar?.get(edge.serviceKey), dateStr)) continue;   // real 停駛/off-calendar — this specific trip isn't running on this date
           if (edge.departureSeconds < state.time) continue;   // real trip, already departed relative to this state — can't catch it
           wait = edge.departureSeconds - state.time;
           ride = edge.travelSeconds ?? (edge.arrivalSeconds - edge.departureSeconds);

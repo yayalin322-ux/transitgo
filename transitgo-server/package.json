@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/index.mjs",
     "dev": "node --watch src/index.mjs",
-    "test": "node test/gtfs_import.test.mjs && node test/tdx_normalize.test.mjs && node test/graph_builder.test.mjs && node test/virtual_od.test.mjs && node test/astar.test.mjs && node test/headway_routing.test.mjs && node test/route_ranking.test.mjs && node test/api.test.mjs"
+    "test": "node test/gtfs_import.test.mjs && node test/tdx_normalize.test.mjs && node test/graph_builder.test.mjs && node test/virtual_od.test.mjs && node test/astar.test.mjs && node test/headway_routing.test.mjs && node test/route_ranking.test.mjs && node test/api.test.mjs && node test/scenarios.test.mjs"
   },
   "engines": {
     "node": ">=22.5"
