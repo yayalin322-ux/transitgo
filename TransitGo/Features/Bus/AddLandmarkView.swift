@@ -45,8 +45,6 @@ struct AddLandmarkView: View {
                 }
                 Section("地址") {
                     AddressPickerMap(coordinate: $pinCoordinate)
-                        .listRowInsets(EdgeInsets())
-                    Text("拖動地圖調整地址位置，圖釘固定在畫面中心").font(.caption2).foregroundStyle(.secondary)
                 }
                 Section {
                     PhotosPicker(selection: $photoItem, matching: .images) {
