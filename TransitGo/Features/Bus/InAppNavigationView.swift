@@ -219,7 +219,20 @@ struct InAppNavigationView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             Map(position: $camera, scope: mapScope) {
-                UserAnnotation()
+                // `UserAnnotation()` draws its own heading cone on the blue dot — but the
+                // camera itself is already rotated to match travel direction (see
+                // recenter()), so that cone plus the MapCompass button both showing
+                // direction at once read as two redundant compasses. A plain dot with no
+                // heading indicator of its own removes the duplicate.
+                if let userCoord = tracker.location?.coordinate {
+                    Annotation("", coordinate: userCoord) {
+                        Circle()
+                            .fill(.blue)
+                            .frame(width: 16, height: 16)
+                            .overlay(Circle().stroke(.white, lineWidth: 3))
+                            .shadow(radius: 2)
+                    }
+                }
                 if let route {
                     // A white "casing" under the blue line — same trick real nav apps use
                     // so the route stays visible against both light and dark roads/water.
