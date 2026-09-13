@@ -206,6 +206,7 @@ struct TransferPlannerView: View {
         let coordinate: CLLocationCoordinate2D
         let name: String
         let transportType: MKDirectionsTransportType
+        var avoidsHighways: Bool? = nil
     }
 
     private var effectiveOrigin: CLLocationCoordinate2D { model.originOverride?.coordinate ?? origin }
@@ -325,7 +326,7 @@ struct TransferPlannerView: View {
                 }
             }
             .fullScreenCover(item: $navTarget) { target in
-                InAppNavigationView(destination: target.coordinate, destinationName: target.name, transportType: target.transportType)
+                InAppNavigationView(destination: target.coordinate, destinationName: target.name, transportType: target.transportType, avoidsHighways: target.avoidsHighways)
             }
         }
     }
@@ -433,7 +434,10 @@ struct TransferPlannerView: View {
                     navigate(mode: .automobile)
                 }
                 travelTimeRow("騎機車", minutes: t.scooterMinutes, icon: "figure.outdoor.cycle", color: .orange) {
-                    navigate(mode: .automobile)
+                    // Scooters are legally banned from Taiwan's freeways — same
+                    // .automobile transport type as 開車 (MapKit has no scooter mode),
+                    // but this leg must avoid 國道 unlike an actual car trip.
+                    navigate(mode: .automobile, avoidsHighways: true)
                 }
                 travelTimeRow("YouBike", minutes: t.bikeMinutes, icon: "bicycle", color: .green) {
                     showBikePicker = true
@@ -452,10 +456,10 @@ struct TransferPlannerView: View {
         }
     }
 
-    private func navigate(mode: MKDirectionsTransportType) {
+    private func navigate(mode: MKDirectionsTransportType, avoidsHighways: Bool? = nil) {
         guard let dest = model.travelDestination else { return }
         let name = model.destination?.name ?? "目的地"
-        navTarget = NavTarget(coordinate: dest, name: name, transportType: mode)
+        navTarget = NavTarget(coordinate: dest, name: name, transportType: mode, avoidsHighways: avoidsHighways)
     }
 
     private func travelTimeRow(_ label: String, minutes: Int?, icon: String, color: Color, onNavigate: @escaping () -> Void) -> some View {

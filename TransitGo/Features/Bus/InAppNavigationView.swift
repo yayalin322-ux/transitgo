@@ -93,12 +93,24 @@ struct NavigationLeg: Identifiable {
     /// Spoken on reaching this leg's waypoint, right before continuing to the next leg.
     /// Only used for non-final legs — the final leg always gets the generic arrival line.
     var waypointAnnouncement: String?
+    /// Taiwan law bans scooters/motorcycles, bicycles, and pedestrians from freeways
+    /// (國道) — but MapKit has no separate scooter transport type (騎機車 uses
+    /// `.automobile` same as 開車) and no public "avoid highways" request flag at all, so
+    /// this can't be expressed to MKDirections directly. computeRoute checks the
+    /// resulting route's steps for highway wording and, when this is true, tries
+    /// alternates that avoid it instead of just accepting whatever MapKit picked first.
+    /// Defaults to true for anything that isn't `.automobile` (walking/cycling routes
+    /// already shouldn't include one, but this is a real legal-safety issue, not just a
+    /// preference, so it gets checked regardless of whether MapKit "should" have avoided
+    /// it already) — pass `false` explicitly for an actual car trip.
+    var avoidsHighways: Bool
 
-    init(coordinate: CLLocationCoordinate2D, name: String, transportType: MKDirectionsTransportType, waypointAnnouncement: String? = nil) {
+    init(coordinate: CLLocationCoordinate2D, name: String, transportType: MKDirectionsTransportType, waypointAnnouncement: String? = nil, avoidsHighways: Bool? = nil) {
         self.coordinate = coordinate
         self.name = name
         self.transportType = transportType
         self.waypointAnnouncement = waypointAnnouncement
+        self.avoidsHighways = avoidsHighways ?? (transportType != .automobile)
     }
 }
 
@@ -120,8 +132,8 @@ struct InAppNavigationView: View {
     /// stays fixed across leg transitions.
     let tripName: String
 
-    init(destination: CLLocationCoordinate2D, destinationName: String, transportType: MKDirectionsTransportType) {
-        self.legs = [NavigationLeg(coordinate: destination, name: destinationName, transportType: transportType)]
+    init(destination: CLLocationCoordinate2D, destinationName: String, transportType: MKDirectionsTransportType, avoidsHighways: Bool? = nil) {
+        self.legs = [NavigationLeg(coordinate: destination, name: destinationName, transportType: transportType, avoidsHighways: avoidsHighways)]
         self.tripName = destinationName
     }
 
@@ -201,9 +213,11 @@ struct InAppNavigationView: View {
     /// bigger GPS error) or it'll false-positive on every street crossing.
     private var offRouteThreshold: CLLocationDistance { transportType == .walking ? 40 : 80 }
 
+    @Namespace private var mapScope
+
     var body: some View {
         ZStack(alignment: .bottom) {
-            Map(position: $camera) {
+            Map(position: $camera, scope: mapScope) {
                 UserAnnotation()
                 if let route {
                     // A white "casing" under the blue line — same trick real nav apps use
@@ -239,7 +253,6 @@ struct InAppNavigationView: View {
                     }
                 }
             }
-            .mapControls { MapCompass() }
             .mapStyle(.standard(elevation: .realistic, pointsOfInterest: .excludingAll, showsTraffic: transportType == .automobile))
             .onMapCameraChange(frequency: .continuous) { _ in
                 // A manual drag pauses auto-follow so the user can look around, but this
@@ -388,6 +401,16 @@ struct InAppNavigationView: View {
                 ProgressView("規劃路線中…")
                     .padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
             }
+
+            // MapKit's default .mapControls placement (top-trailing) sat right under the
+            // leg-progress/turn/camera banners stacked at the top — moved to the trailing
+            // edge, vertically centered, well clear of both those and the bottom card.
+            HStack {
+                Spacer()
+                MapCompass(scope: mapScope)
+                    .padding(.trailing, 10)
+            }
+            .frame(maxHeight: .infinity, alignment: .center)
         }
         .navigationBarBackButtonHidden()
         .onAppear {
@@ -509,6 +532,15 @@ struct InAppNavigationView: View {
         let lat2 = asin(sin(lat1) * cos(angularDistance) + cos(lat1) * sin(angularDistance) * cos(bearing))
         let lon2 = lon1 + atan2(sin(bearing) * sin(angularDistance) * cos(lat1), cos(angularDistance) - sin(lat1) * sin(lat2))
         return CLLocationCoordinate2D(latitude: lat2 * 180 / .pi, longitude: lon2 * 180 / .pi)
+    }
+
+    /// Best-effort detection since MapKit exposes no "this route uses a controlled-access
+    /// highway" flag — Taiwan's freeway step instructions reliably name the road (e.g.
+    /// "走 國道1號" / "Merge onto 國道3號"), which is what this actually checks for.
+    private static func usesHighway(_ route: MKRoute) -> Bool {
+        route.steps.contains {
+            $0.instructions.contains("國道") || $0.instructions.contains("快速道路") || $0.instructions.contains("高速公路")
+        }
     }
 
     private func recenter() {
@@ -696,11 +728,25 @@ struct InAppNavigationView: View {
         request.source = MKMapItem(placemark: MKPlacemark(coordinate: effectiveOrigin))
         request.destination = MKMapItem(placemark: MKPlacemark(coordinate: destination))
         request.transportType = transportType
-        guard let response = try? await MKDirections(request: request).calculate(), let first = response.routes.first else {
+        // MapKit's public API has no "avoid highways" flag — the only lever is asking for
+        // alternates and picking one ourselves that doesn't use one.
+        request.requestsAlternateRoutes = currentLeg.avoidsHighways
+        guard let response = try? await MKDirections(request: request).calculate(), !response.routes.isEmpty else {
             errorText = "找不到路線"
             return
         }
-        errorText = nil
+        var first = response.routes[0]
+        var highwayWarning: String?
+        if currentLeg.avoidsHighways {
+            if let highwayFree = response.routes.first(where: { !Self.usesHighway($0) }) {
+                first = highwayFree
+            } else if Self.usesHighway(first) {
+                // Legally can't use the only route MapKit found (機車/腳踏車/行人 on a
+                // 國道) — say so plainly rather than silently sending them onto it.
+                highwayWarning = "找不到避開國道的路線，請注意目前路線可能不適用於您的交通方式"
+            }
+        }
+        errorText = highwayWarning
         route = first
         let wasOffRoute = offRoute
         offRoute = false
@@ -805,7 +851,16 @@ struct InAppNavigationView: View {
                 announcedCamIDs.insert(cam.id)
                 notificationHaptic.notificationOccurred(.warning)
                 notificationHaptic.prepare()
-                speak(cam.announcement)
+                var text = cam.announcement
+                // Only a real, current GPS speed compared against this camera's own real
+                // posted limit — never a guessed or rounded-for-effect number.
+                if let limit = cam.speedLimit, loc.speed >= 0 {
+                    let currentKmh = Int((loc.speed * 3.6).rounded())
+                    if currentKmh > limit {
+                        text += "，您已超速，目前時速\(currentKmh)公里，測速限速\(limit)公里"
+                    }
+                }
+                speak(text)
             }
             if announcedCamIDs.contains(cam.id), d <= announceThreshold, d > passThreshold {
                 // Prefer the closest still-relevant camera for the on-screen banner.
