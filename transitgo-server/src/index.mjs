@@ -29,6 +29,8 @@ import { startSpeedcamPoller, nearestCams } from "./speedcampoller.mjs";
 import { db } from "./db.mjs";
 import { buildGraph } from "./graph/builder.mjs";
 import { planRoute } from "./routing/api.mjs";
+import { TDXProvider } from "./tdx/adapter.mjs";
+import { ingestTRAStations, ingestBusRouteSchedule } from "./tdx/ingest.mjs";
 
 // load .env (no dependency)
 try {
@@ -279,6 +281,45 @@ app.get("/v1/admin/routing/tdx-check", requireAdmin, async (_req, res) => {
     const { getRouting, tdxRoutingConfigured } = await import("./tdx.mjs");
     const d = await getRouting("v3/Rail/TRA/Station");
     res.json({ ok: true, usingRoutingCredentials: tdxRoutingConfigured(), stationCount: d?.Stations?.length ?? 0 });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
+const routingProvider = new TDXProvider();
+
+/** Lists TDX's real bus routes for one scope (e.g. "City/Hsinchu") — used to pick real routeIds to ingest. */
+app.get("/v1/admin/routing/tdx/bus-routes", requireAdmin, async (req, res) => {
+  const scopePath = req.query.scope;
+  if (!scopePath) return res.status(400).json({ ok: false, error: "missing ?scope=City/Hsinchu" });
+  try {
+    const raw = await routingProvider.getBusRoutes(scopePath);
+    const routes = (raw ?? []).map((r) => ({ routeId: r.RouteUID ?? r.RouteID, routeNameZh: r.RouteName?.Zh_tw ?? null }));
+    res.json({ ok: true, count: routes.length, routes });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
+/** Ingests one real bus route's real stops + schedule/headway for one date. Body: {feedId, scopePath, routeId, routeNameZh, date}. */
+app.post("/v1/admin/routing/ingest/bus-route", requireAdmin, async (req, res) => {
+  const { feedId, scopePath, routeId, routeNameZh, date } = req.body || {};
+  if (!feedId || !scopePath || !routeId || !routeNameZh || !date) {
+    return res.status(400).json({ ok: false, error: "need feedId, scopePath, routeId, routeNameZh, date" });
+  }
+  try {
+    const result = await ingestBusRouteSchedule(db, feedId, scopePath, routeId, routeNameZh, date);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
+/** Ingests the real nationwide TRA station list (stops only, no schedule — cheap, one TDX call). */
+app.post("/v1/admin/routing/ingest/tra-stations", requireAdmin, async (_req, res) => {
+  try {
+    const result = await ingestTRAStations(db, "TRA");
+    res.json({ ok: true, ...result });
   } catch (e) {
     res.status(502).json({ ok: false, error: e.message });
   }
