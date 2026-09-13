@@ -26,6 +26,9 @@ import { pushAnnouncement } from "./push.mjs";
 import { startAlertPoller } from "./alerts.mjs";
 import { startBikePoller, nearestFrom, bikePollStatus } from "./bikepoller.mjs";
 import { startSpeedcamPoller, nearestCams } from "./speedcampoller.mjs";
+import { db } from "./db.mjs";
+import { buildGraph } from "./graph/builder.mjs";
+import { planRoute } from "./routing/api.mjs";
 
 // load .env (no dependency)
 try {
@@ -246,6 +249,29 @@ app.get("/v1/admin/reports", requireAdmin, (req, res) => {
 
 // ---- tiny admin page ----
 app.get("/admin", (_req, res) => res.sendFile(join(__dirname, "..", "public", "admin.html")));
+
+// ---- Multimodal Routing Engine (architecture doc section 11) ----
+// Graph is built once from the DB and kept in memory (section 17 — Routing never
+// queries SQL mid-search); rebuilt on demand via the admin endpoint below once new
+// GTFS/TDX data has actually been ingested. Right now (pre-live-TDX-verification) this
+// graph is empty or test-only, so every /api/v1/routes call will correctly return
+// NO_ORIGIN_NEARBY/NO_DESTINATION_NEARBY until real ingestion runs — that's honest
+// behavior, not a bug: there's no real route data in it yet.
+let routingGraph = buildGraph(db);
+console.log(`[routing] graph built: ${routingGraph.nodeCount} nodes, ${routingGraph.edgeCount} edges`);
+if (routingGraph.warnings.length > 0) {
+  for (const w of routingGraph.warnings) console.log(`[routing] warning: ${w}`);
+}
+
+app.post("/api/v1/routes", (req, res) => {
+  const result = planRoute(routingGraph, req.body);
+  res.status(result.status).json(result.body);
+});
+
+app.post("/v1/admin/routing/rebuild", requireAdmin, (_req, res) => {
+  routingGraph = buildGraph(db);
+  res.json({ ok: true, nodeCount: routingGraph.nodeCount, edgeCount: routingGraph.edgeCount, warnings: routingGraph.warnings });
+});
 
 app.listen(PORT, () => {
   console.log(`[transitgo-server] listening on :${PORT}`);
