@@ -115,6 +115,10 @@ export function planRoute(graph, requestBody) {
       to: l.toNodeId,
       fromName: graph.nodes.get(l.fromNodeId)?.name ?? null,
       toName: graph.nodes.get(l.toNodeId)?.name ?? null,
+      fromLat: graph.nodes.get(l.fromNodeId)?.lat ?? null,
+      fromLng: graph.nodes.get(l.fromNodeId)?.lon ?? null,
+      toLat: graph.nodes.get(l.toNodeId)?.lat ?? null,
+      toLng: graph.nodes.get(l.toNodeId)?.lon ?? null,
       departureTime: secondsToIso(departure.baseDate, l.departureSeconds),
       arrivalTime: secondsToIso(departure.baseDate, l.arrivalSeconds),
       durationSeconds: l.arrivalSeconds - l.departureSeconds,
@@ -158,6 +162,8 @@ function collapseToSegments(legs) {
     if (last && leg.mode !== "WALK" && last.mode === leg.mode && last.routeId === leg.routeId) {
       last.to = leg.to;
       last.toName = leg.toName;
+      last.toLat = leg.toLat;
+      last.toLng = leg.toLng;
       last.arrivalTime = leg.arrivalTime;
       last.durationSeconds = (Date.parse(leg.arrivalTime) - Date.parse(last.departureTime)) / 1000;
       last.stopsPassed += 1;
@@ -166,8 +172,8 @@ function collapseToSegments(legs) {
       segments.push({
         mode: leg.mode,
         routeId: leg.routeId,
-        from: leg.from, fromName: leg.fromName,
-        to: leg.to, toName: leg.toName,
+        from: leg.from, fromName: leg.fromName, fromLat: leg.fromLat, fromLng: leg.fromLng,
+        to: leg.to, toName: leg.toName, toLat: leg.toLat, toLng: leg.toLng,
         departureTime: leg.departureTime,
         arrivalTime: leg.arrivalTime,
         durationSeconds: leg.durationSeconds,
