@@ -270,6 +270,21 @@ app.post("/api/v1/routes", (req, res) => {
   res.status(result.status).json(result.body);
 });
 
+/** Debug: nearest real ingested stops to a point, with real distances — for diagnosing NO_ORIGIN_NEARBY. */
+app.get("/v1/admin/routing/debug/nearby-stops", requireAdmin, async (req, res) => {
+  const lat = parseFloat(req.query.lat);
+  const lng = parseFloat(req.query.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return res.status(400).json({ ok: false, error: "need ?lat=&lng=" });
+  const { haversineMeters } = await import("./graph/virtual.mjs");
+  const hits = [];
+  for (const node of routingGraph.nodes.values()) {
+    if (node.lat == null || node.lon == null) continue;
+    hits.push({ id: node.id, name: node.name, lat: node.lat, lon: node.lon, distanceMeters: Math.round(haversineMeters(lat, lng, node.lat, node.lon)) });
+  }
+  hits.sort((a, b) => a.distanceMeters - b.distanceMeters);
+  res.json({ ok: true, nearest: hits.slice(0, 10) });
+});
+
 app.post("/v1/admin/routing/rebuild", requireAdmin, (_req, res) => {
   routingGraph = buildGraph(db);
   res.json({ ok: true, nodeCount: routingGraph.nodeCount, edgeCount: routingGraph.edgeCount, warnings: routingGraph.warnings });
