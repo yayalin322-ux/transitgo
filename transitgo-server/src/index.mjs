@@ -273,6 +273,17 @@ app.post("/v1/admin/routing/rebuild", requireAdmin, (_req, res) => {
   res.json({ ok: true, nodeCount: routingGraph.nodeCount, edgeCount: routingGraph.edgeCount, warnings: routingGraph.warnings });
 });
 
+/** Confirms the routing engine's TDX credentials actually work — never echoes the credentials themselves. */
+app.get("/v1/admin/routing/tdx-check", requireAdmin, async (_req, res) => {
+  try {
+    const { getRouting, tdxRoutingConfigured } = await import("./tdx.mjs");
+    const d = await getRouting("v3/Rail/TRA/Station");
+    res.json({ ok: true, usingRoutingCredentials: tdxRoutingConfigured(), stationCount: d?.Stations?.length ?? 0 });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`[transitgo-server] listening on :${PORT}`);
   startBikePoller();
