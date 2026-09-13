@@ -605,12 +605,11 @@ struct InAppNavigationView: View {
         withAnimation {
             camera = .camera(MapCamera(
                 centerCoordinate: loc.coordinate,
-                // Tighter and more tilted than before — a close, steep 3D follow view
-                // (closer to how Apple/Google Maps actually look while turn-by-turn) reads
-                // the road ahead more clearly than a flatter, more zoomed-out one.
                 distance: transportType == .walking ? 220 : 420,
                 heading: heading,
-                pitch: 70
+                // 70° read as too extreme/disorienting — 25° is a gentler 3D tilt, closer
+                // to a normal turn-by-turn view than an almost-horizon-level angle.
+                pitch: 25
             ))
         }
     }
