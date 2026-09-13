@@ -551,6 +551,41 @@ struct InAppNavigationView: View {
         }
     }
 
+    /// The real camera data's `direction` field is free-text Chinese from several
+    /// different sources (MOI: "東向西"/"往南"/"北上"/"南下"; Kaohsiung: "南向北"; Hsinchu:
+    /// "雙向") — it was never actually checked against the way the user is driving, which
+    /// is exactly why a camera facing the opposite direction still triggered a warning.
+    /// This parses out a target compass bearing and compares it to the real current
+    /// heading; anything bidirectional, unparseable, or with no heading data yet falls
+    /// back to "applies" — a false alert once in a while is far better than silently
+    /// dropping a real speed-camera warning because the text didn't match a pattern.
+    private static func speedCamDirectionApplies(_ direction: String?, heading: CLLocationDirection?) -> Bool {
+        guard let direction, !direction.isEmpty, direction != "雙向" else { return true }
+        guard let target = speedCamTargetBearing(direction) else { return true }
+        guard let heading, heading >= 0 else { return true }
+        let diff = abs((heading - target).truncatingRemainder(dividingBy: 360))
+        let angularDiff = min(diff, 360 - diff)
+        return angularDiff <= 70   // generous — GPS heading noise + road curvature, not a precise compass reading
+    }
+
+    private static let compassBearings: [(String, Double)] = [
+        ("東北", 45), ("東南", 135), ("西南", 225), ("西北", 315),
+        ("北", 0), ("南", 180), ("東", 90), ("西", 270),
+    ]
+
+    /// "東向西"/"西往東" style: the SECOND direction is the one the camera watches traffic
+    /// travel toward. "北上"/"南下" are highway-specific shorthand for the same idea.
+    private static func speedCamTargetBearing(_ direction: String) -> Double? {
+        if direction.contains("北上") { return 0 }
+        if direction.contains("南下") { return 180 }
+        if let range = direction.range(of: "向") ?? direction.range(of: "往") {
+            let after = String(direction[range.upperBound...])
+            for (name, bearing) in compassBearings where after.hasPrefix(name) { return bearing }
+        }
+        for (name, bearing) in compassBearings where direction == name { return bearing }
+        return nil   // e.g. "往國道二號方向" — no cardinal direction to parse, treat as always-applies
+    }
+
     private func recenter() {
         guard let loc = tracker.location else { return }
         let heading: CLLocationDirection = tracker.headingDegrees ?? (loc.course >= 0 ? loc.course : 0)
@@ -852,8 +887,10 @@ struct InAppNavigationView: View {
 
         let announceThreshold: CLLocationDistance = 300
         let passThreshold: CLLocationDistance = 60
+        let heading: CLLocationDirection? = tracker.headingDegrees ?? (loc.course >= 0 ? loc.course : nil)
         var stillAhead: SpeedCam?
         for cam in nearbyCams {
+            guard Self.speedCamDirectionApplies(cam.direction, heading: heading) else { continue }
             let d = loc.distance(from: CLLocation(latitude: cam.lat, longitude: cam.lon))
             if d <= announceThreshold, !announcedCamIDs.contains(cam.id) {
                 announcedCamIDs.insert(cam.id)
