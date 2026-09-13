@@ -225,6 +225,19 @@ struct InAppNavigationView: View {
                         .shadow(radius: 2)
                     }
                 }
+                // Every known camera nearby gets a marker, not just the one currently
+                // close enough to alert about — seeing them ahead of time on the map is
+                // the point, the voice/banner alert is just the "right now" reminder.
+                ForEach(nearbyCams) { cam in
+                    Annotation("", coordinate: cam.coordinate) {
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 26, height: 26)
+                            .background(cam.kind == "speed" ? .red : .orange, in: Circle())
+                            .overlay(Circle().stroke(.white, lineWidth: 1.5))
+                    }
+                }
             }
             .mapControls { MapCompass() }
             .mapStyle(.standard(elevation: .realistic, pointsOfInterest: .excludingAll, showsTraffic: transportType == .automobile))
