@@ -13,6 +13,9 @@ import {
   listRatings,
   ratingStats,
   routeRatingStats,
+  createPlaceReview,
+  listPlaceReviews,
+  placeReviewStats,
   createObservation,
   listObservations,
   getBikeCache,
@@ -104,6 +107,29 @@ app.get("/v1/ratings/route", (req, res) => {
   if (!route) return res.status(400).json({ error: "route required" });
   const system = typeof req.query.system === "string" ? req.query.system : null;
   res.json(routeRatingStats(kind, route, system));
+});
+
+// ---- place reviews (real user-submitted content, no external Places API) ----
+const placeReviewBucket = new Map();
+app.post("/v1/places/reviews", (req, res) => {
+  const now = Date.now();
+  const hist = (placeReviewBucket.get(req.clientIp) || []).filter((t) => now - t < 60_000);
+  if (hist.length >= 10) return res.status(429).json({ error: "rate limited" });
+  hist.push(now);
+  placeReviewBucket.set(req.clientIp, hist);
+
+  const { placeKey, placeName, lat, lon, stars, comment, appVersion, device } = req.body || {};
+  const n = parseInt(stars, 10);
+  if (!placeKey || !placeName) return res.status(400).json({ error: "placeKey and placeName required" });
+  if (!(n >= 1 && n <= 5)) return res.status(400).json({ error: "stars 1-5 required" });
+  createPlaceReview({ placeKey, placeName, lat, lon, stars: n, comment, appVersion, device, ip: req.clientIp });
+  res.json({ ok: true });
+});
+
+app.get("/v1/places/reviews", (req, res) => {
+  const placeKey = typeof req.query.placeKey === "string" ? req.query.placeKey : null;
+  if (!placeKey) return res.status(400).json({ error: "placeKey required" });
+  res.json({ stats: placeReviewStats(placeKey), reviews: listPlaceReviews(placeKey) });
 });
 
 // ---- crowd-sourced observations (from Live Activity board/alight buttons) ----

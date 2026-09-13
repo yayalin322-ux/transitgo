@@ -86,6 +86,21 @@ CREATE TABLE IF NOT EXISTS bike_cache (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS place_reviews (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  place_key   TEXT NOT NULL,
+  place_name  TEXT NOT NULL,
+  lat         REAL,
+  lon         REAL,
+  stars       INTEGER NOT NULL,
+  comment     TEXT NOT NULL DEFAULT '',
+  app_version TEXT,
+  device      TEXT,
+  ip          TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_place_reviews_key ON place_reviews (place_key, created_at);
+
 CREATE TABLE IF NOT EXISTS speedcam_cache (
   id         TEXT PRIMARY KEY DEFAULT 'all',
   json       TEXT NOT NULL,
@@ -270,6 +285,38 @@ export function getSpeedcamCache() {
   const r = db.prepare(`SELECT json, updated_at FROM speedcam_cache WHERE id = 'all'`).get();
   if (!r) return null;
   return { cams: JSON.parse(r.json), updatedAt: isoZ(r.updated_at) };
+}
+
+// ---- place reviews (real user-submitted, no external API) ----
+export function createPlaceReview(r) {
+  db.prepare(`
+    INSERT INTO place_reviews (place_key, place_name, lat, lon, stars, comment, app_version, device, ip)
+    VALUES (:place_key, :place_name, :lat, :lon, :stars, :comment, :app_version, :device, :ip)
+  `).run({
+    place_key: r.placeKey,
+    place_name: r.placeName,
+    lat: r.lat ?? null,
+    lon: r.lon ?? null,
+    stars: Math.max(1, Math.min(5, parseInt(r.stars, 10) || 0)),
+    comment: (r.comment ?? "").slice(0, 500),
+    app_version: r.appVersion ?? null,
+    device: r.device ?? null,
+    ip: r.ip ?? null,
+  });
+}
+
+export function listPlaceReviews(placeKey, limit = 50) {
+  return db.prepare(`
+    SELECT stars, comment, created_at FROM place_reviews
+    WHERE place_key = ? ORDER BY created_at DESC LIMIT ?
+  `).all(placeKey, limit).map((row) => ({
+    stars: row.stars, comment: row.comment, createdAt: isoZ(row.created_at),
+  }));
+}
+
+export function placeReviewStats(placeKey) {
+  const row = db.prepare(`SELECT COUNT(*) n, AVG(stars) avg FROM place_reviews WHERE place_key = ?`).get(placeKey);
+  return { count: row.n, avg: row.avg ? Number(row.avg.toFixed(1)) : null };
 }
 
 export function ratingStats() {
