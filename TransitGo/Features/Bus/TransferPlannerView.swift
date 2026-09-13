@@ -210,11 +210,43 @@ struct TransferPlannerView: View {
     }
 
     private var effectiveOrigin: CLLocationCoordinate2D { model.originOverride?.coordinate ?? origin }
+    @State private var editingSavedPlaceRole: SavedPlaceRole?
+
+    @ViewBuilder
+    private func savedPlaceChips(onSelect: @escaping (SavedPlace) -> Void) -> some View {
+        HStack(spacing: 8) {
+            ForEach(SavedPlaceRole.allCases) { role in
+                Button {
+                    if let place = SavedPlaceStore.get(role) {
+                        onSelect(place)
+                    } else {
+                        editingSavedPlaceRole = role
+                    }
+                } label: {
+                    Label(SavedPlaceStore.get(role)?.name ?? "設定\(role.label)", systemImage: role.icon)
+                        .font(.caption).lineLimit(1)
+                }
+                .buttonStyle(.bordered)
+                .contextMenu {
+                    if SavedPlaceStore.get(role) != nil {
+                        Button("重新設定") { editingSavedPlaceRole = role }
+                        Button("清除", role: .destructive) { SavedPlaceStore.clear(role) }
+                    }
+                }
+            }
+        }
+        .listRowSeparator(.hidden)
+    }
 
     var body: some View {
         NavigationStack(path: $path) {
             List {
                 Section("起點") {
+                    savedPlaceChips { place in
+                        model.originOverride = DestinationCandidate(name: place.name, subtitle: nil, coordinate: place.coordinate, isLandmark: true)
+                        model.originText = place.name
+                        if model.destination != nil { Task { await model.planAll(city: city, metroOperator: metroOperator, from: effectiveOrigin) } }
+                    }
                     TextField("預設為目前位置，可改搜尋站名或地標", text: $model.originText)
                         .onChange(of: model.originText) { _, v in model.searchOrigin(v, city: city, near: origin) }
                     Label(model.originOverride?.name ?? "目前位置",
@@ -240,6 +272,11 @@ struct TransferPlannerView: View {
                 }
 
                 Section("目的地") {
+                    savedPlaceChips { place in
+                        model.destination = DestinationCandidate(name: place.name, subtitle: nil, coordinate: place.coordinate, isLandmark: true)
+                        model.destinationText = place.name
+                        Task { await model.planAll(city: city, metroOperator: metroOperator, from: effectiveOrigin) }
+                    }
                     TextField("站名或地標，例如 台北101、台北車站", text: $model.destinationText)
                         .onChange(of: model.destinationText) { _, v in model.searchDestination(v, city: city, near: effectiveOrigin) }
                     if let d = model.destination {
@@ -327,6 +364,9 @@ struct TransferPlannerView: View {
             }
             .fullScreenCover(item: $navTarget) { target in
                 InAppNavigationView(destination: target.coordinate, destinationName: target.name, transportType: target.transportType, avoidsHighways: target.avoidsHighways)
+            }
+            .sheet(item: $editingSavedPlaceRole) { role in
+                SetSavedPlaceView(role: role, near: origin)
             }
         }
     }

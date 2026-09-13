@@ -24,6 +24,25 @@ enum RatingService {
         return stats
     }
 
+    /// Real free-text feedback tied to one trip — goes through the same `/v1/reports`
+    /// endpoint the app already uses for crash/bug reports, just a different `type`.
+    static func submitFeedback(message: String, context: [String: Any]) {
+        guard let base = BackendConfig.baseURL else { return }
+        let payload: [String: Any] = [
+            "type": "trip_feedback",
+            "message": message,
+            "context": context,
+            "appVersion": BackendConfig.appVersion,
+        ]
+        Task {
+            var req = URLRequest(url: base.appendingPathComponent("v1/reports"))
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+            _ = try? await URLSession.shared.data(for: req)
+        }
+    }
+
     static func submit(stars: Int, kind: String, route: String, from: String, to: String, system: String) {
         guard let base = BackendConfig.baseURL else { return }
         let payload: [String: Any] = [

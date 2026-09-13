@@ -176,6 +176,7 @@ struct InAppNavigationView: View {
     @State private var followResumeTask: Task<Void, Never>?
     @State private var nearbyParking: [MKMapItem] = []
     @State private var parkingLeg: NavigationLeg?
+    @State private var showRating = false
     @State private var photoSpots: [RoutePhotoSpot] = []
     @State private var photoFetchCenter: CLLocationCoordinate2D?
     private let speech = AVSpeechSynthesizer()
@@ -336,7 +337,7 @@ struct InAppNavigationView: View {
                         .padding(.vertical, 4)
                     }
 
-                    Button { finish() } label: {
+                    Button { showRating = true } label: {
                         Label("完成", systemImage: "checkmark").frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
@@ -444,6 +445,13 @@ struct InAppNavigationView: View {
         }
         .fullScreenCover(item: $parkingLeg) { leg in
             InAppNavigationView(destination: leg.coordinate, destinationName: leg.name, transportType: leg.transportType)
+        }
+        .sheet(isPresented: $showRating) {
+            TripRatingSheet(tripName: tripName, modeLabel: modeLabel) {
+                showRating = false
+                finish()
+            }
+            .presentationDetents([.medium])
         }
     }
 
