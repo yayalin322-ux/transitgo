@@ -152,6 +152,9 @@ struct InAppNavigationView: View {
     @State private var upcomingCam: SpeedCam?
     @State private var camFetchCenter: CLLocationCoordinate2D?
     @State private var legInitialDistance: CLLocationDistance?
+    /// Guards handleLocationUpdate's milestone/arrival logic until premarking has
+    /// actually run — see computeRoute's comment on why this matters for short trips.
+    @State private var milestonesInitialized = false
     /// How many consecutive fixes have read "close enough to arrive/advance" — GPS in
     /// dense areas easily reports 10-30m of error, so a single close reading isn't
     /// trusted for anything irreversible (arriving, advancing past a turn). This is what
@@ -541,6 +544,10 @@ struct InAppNavigationView: View {
         if transportType == .walking, loc.speed >= 0 {
             WalkingSpeedLearner.record(loc.speed)
         }
+        // computeRoute hasn't premarked the starting milestones yet (still awaiting the
+        // first MKDirections response) — acting on distance now would announce every
+        // milestone a short trip already starts inside of, all at once.
+        guard milestonesInitialized else { return }
         let distance = loc.distance(from: CLLocation(latitude: destination.latitude, longitude: destination.longitude))
         // A noisy fix (common between buildings) can read 20-30m closer than reality —
         // trusting a single such reading is exactly what caused "already arrived" to
@@ -650,6 +657,23 @@ struct InAppNavigationView: View {
         }
         isRouting = true
         defer { isRouting = false }
+
+        // Pre-mark milestones the trip *starts* inside of BEFORE the network round-trip
+        // below, not after. GPS updates (and handleLocationUpdate's milestone check) keep
+        // firing the whole time this function awaits MKDirections — if premarking waited
+        // until the response came back, a short trip would see every applicable milestone
+        // fire back-to-back off an empty `announcedMilestones` set in the meantime, which
+        // is exactly what was happening.
+        if !milestonesInitialized {
+            milestonesInitialized = true
+            let initialDistance = CLLocation(latitude: origin.latitude, longitude: origin.longitude)
+                .distance(from: CLLocation(latitude: destination.latitude, longitude: destination.longitude))
+            for m in Self.milestones where Double(m) >= initialDistance {
+                announcedMilestones.insert(m)
+            }
+            legInitialDistance = initialDistance
+        }
+
         var effectiveOrigin = origin
         if preferContinueForward, transportType != .walking,
            let heading = tracker.headingDegrees ?? (tracker.location?.course).flatMap({ $0 >= 0 ? $0 : nil }) {
@@ -675,16 +699,6 @@ struct InAppNavigationView: View {
         if followUser { recenter() }
         if !announcedStart {
             announcedStart = true
-            // Milestones the trip *starts* inside of aren't a real "crossing" — pre-mark
-            // them done so e.g. starting 600m away doesn't immediately announce "1 km"
-            // (there was no approach from beyond 1 km to announce).
-            if let loc = tracker.location {
-                let initialDistance = loc.distance(from: CLLocation(latitude: destination.latitude, longitude: destination.longitude))
-                for m in Self.milestones where Double(m) >= initialDistance {
-                    announcedMilestones.insert(m)
-                }
-                legInitialDistance = initialDistance
-            }
             speak("開始導航前往\(tripName)")
             startActivityIfNeeded()
         } else {
