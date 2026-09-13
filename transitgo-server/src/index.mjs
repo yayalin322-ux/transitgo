@@ -266,7 +266,7 @@ if (routingGraph.warnings.length > 0) {
 }
 
 app.post("/api/v1/routes", (req, res) => {
-  const result = planRoute(routingGraph, req.body);
+  const result = planRoute(routingGraph, req.body, db);
   res.status(result.status).json(result.body);
 });
 

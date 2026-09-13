@@ -4,6 +4,16 @@ import { TransitEdge, Mode } from "../graph/model.mjs";
 import { rankRoutes } from "./rank.mjs";
 import { PROFILES } from "./profiles.mjs";
 
+// Real TDX scope path for each feed this engine has ever ingested from — same
+// scopePath value the ingest admin endpoints were actually called with (see
+// hsinchu_routes.json / the THB5900 ingest), not a guess. Extend this when a new feed
+// gets ingested from a new scope.
+const FEED_SCOPE_PATHS = {
+  HSZ: "City/Hsinchu",
+  HSQ: "City/HsinchuCounty",
+  THB: "InterCity",
+};
+
 const ERROR_MESSAGES = {
   SAME_ORIGIN_DESTINATION: "起點與終點相同",
   NO_ORIGIN_NEARBY: "起點附近找不到可用的大眾運輸站點",
@@ -36,9 +46,11 @@ function secondsToIso(baseDate, seconds) {
 /**
  * POST /api/v1/routes — architecture doc section 11/12. Pure function (no Express
  * req/res) so it's directly testable: takes the already-built in-memory graph and the
- * parsed request body, returns { status, body } for the caller to send as-is.
+ * parsed request body, returns { status, body } for the caller to send as-is. `db` is
+ * optional (tests can omit it) — only used to resolve each leg's real route_short_name
+ * for the client to look up live vehicle positions with; omitted, those fields are null.
  */
-export function planRoute(graph, requestBody) {
+export function planRoute(graph, requestBody, db) {
   const body = requestBody || {};
   const origin = body.origin;
   const destination = body.destination;
@@ -107,23 +119,39 @@ export function planRoute(graph, requestBody) {
     result = { routes: match ? [match] : result.routes.slice(0, 1) };
   }
 
+  const routeInfoCache = new Map();
+  const routeInfo = (fromNodeId, routeId) => {
+    if (!db || !routeId) return { routeShortName: null, scopePath: null };
+    const feedId = String(fromNodeId).split(":")[0];
+    const key = `${feedId}:${routeId}`;
+    if (routeInfoCache.has(key)) return routeInfoCache.get(key);
+    const row = db.prepare(`SELECT route_short_name FROM gtfs_routes WHERE feed_id = ? AND route_id = ?`).get(feedId, routeId);
+    const info = { routeShortName: row?.route_short_name ?? null, scopePath: FEED_SCOPE_PATHS[feedId] ?? null };
+    routeInfoCache.set(key, info);
+    return info;
+  };
+
   const routes = result.routes.map((r, i) => {
-    const legs = r.route.legs.map((l) => ({
-      mode: l.mode,
-      routeId: l.routeId,
-      from: l.fromNodeId,
-      to: l.toNodeId,
-      fromName: graph.nodes.get(l.fromNodeId)?.name ?? null,
-      toName: graph.nodes.get(l.toNodeId)?.name ?? null,
-      fromLat: graph.nodes.get(l.fromNodeId)?.lat ?? null,
-      fromLng: graph.nodes.get(l.fromNodeId)?.lon ?? null,
-      toLat: graph.nodes.get(l.toNodeId)?.lat ?? null,
-      toLng: graph.nodes.get(l.toNodeId)?.lon ?? null,
-      departureTime: secondsToIso(departure.baseDate, l.departureSeconds),
-      arrivalTime: secondsToIso(departure.baseDate, l.arrivalSeconds),
-      durationSeconds: l.arrivalSeconds - l.departureSeconds,
-      isEstimated: l.isEstimated ?? false,
-    }));
+    const legs = r.route.legs.map((l) => {
+      const { routeShortName, scopePath } = routeInfo(l.fromNodeId, l.routeId);
+      return {
+        mode: l.mode,
+        routeId: l.routeId,
+        routeShortName, scopePath,
+        from: l.fromNodeId,
+        to: l.toNodeId,
+        fromName: graph.nodes.get(l.fromNodeId)?.name ?? null,
+        toName: graph.nodes.get(l.toNodeId)?.name ?? null,
+        fromLat: graph.nodes.get(l.fromNodeId)?.lat ?? null,
+        fromLng: graph.nodes.get(l.fromNodeId)?.lon ?? null,
+        toLat: graph.nodes.get(l.toNodeId)?.lat ?? null,
+        toLng: graph.nodes.get(l.toNodeId)?.lon ?? null,
+        departureTime: secondsToIso(departure.baseDate, l.departureSeconds),
+        arrivalTime: secondsToIso(departure.baseDate, l.arrivalSeconds),
+        durationSeconds: l.arrivalSeconds - l.departureSeconds,
+        isEstimated: l.isEstimated ?? false,
+      };
+    });
     return {
       routeId: `R${String(i + 1).padStart(3, "0")}`,
       label: r.label,
@@ -172,6 +200,7 @@ function collapseToSegments(legs) {
       segments.push({
         mode: leg.mode,
         routeId: leg.routeId,
+        routeShortName: leg.routeShortName, scopePath: leg.scopePath,
         from: leg.from, fromName: leg.fromName, fromLat: leg.fromLat, fromLng: leg.fromLng,
         to: leg.to, toName: leg.toName, toLat: leg.toLat, toLng: leg.toLng,
         departureTime: leg.departureTime,
