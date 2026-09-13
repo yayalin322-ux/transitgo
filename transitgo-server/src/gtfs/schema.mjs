@@ -130,5 +130,18 @@ export function ensureGtfsSchema(db) {
       imported_at       TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (feed_id, route_id, direction, service_day_label, start_time, end_time)
     );
+
+    -- TDX's real, ordered stop list per route+direction (v2/Bus/StopOfRoute) — this is
+    -- what resolves a bus trip's per-stop TIMES (which come back from v2/Bus/Schedule
+    -- with no StopUID attached to each one) to the actual real station at that position.
+    -- Without this table gtfs_stop_times.stop_id had to stay null for bus.
+    CREATE TABLE IF NOT EXISTS gtfs_route_stops (
+      feed_id        TEXT NOT NULL,
+      route_id       TEXT NOT NULL,
+      direction      INTEGER NOT NULL,
+      stop_sequence  INTEGER NOT NULL,
+      stop_id        TEXT NOT NULL,
+      PRIMARY KEY (feed_id, route_id, direction, stop_sequence)
+    );
   `);
 }

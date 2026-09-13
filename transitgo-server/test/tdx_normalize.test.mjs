@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { ensureGtfsSchema } from "../src/gtfs/schema.mjs";
-import { normalizeTRAStations, normalizeTRATimetable, normalizeBusSchedule } from "../src/tdx/normalizer.mjs";
+import { normalizeTRAStations, normalizeTRATimetable, normalizeBusRouteStopSequence, normalizeBusSchedule } from "../src/tdx/normalizer.mjs";
 import { insertStops, insertTrips, insertStopTimes, insertCalendarDates, insertRoutes, insertFrequencies } from "../src/tdx/ingest.mjs";
 
 // Fixtures shaped exactly like the real TDX responses already verified working in the
@@ -92,6 +92,41 @@ check("Bus route with only Frequencys produces zero fabricated trips", busFreqRe
 const storedFreq = db.prepare("SELECT * FROM transit_route_frequency WHERE feed_id = 'BUS' AND route_id = '307' ORDER BY start_time").all();
 check("Real headway bands stored as-is (8-12 min, then 15-20 min), not averaged into one number", storedFreq.length === 2 && storedFreq[0].min_headway_mins === 8 && storedFreq[1].min_headway_mins === 15);
 check("Headway source is clearly attributed, per the 'no fabricated data' requirement", storedFreq[0].source === "TDX v2/Bus/Schedule Frequencys");
+
+// --- Bus: real per-stop times resolved to real stations via StopOfRoute's own order ---
+const rawStopOfRoute5900 = [
+  {
+    Direction: 0,
+    Stops: [
+      { StopUID: "S1", StopName: { Zh_tw: "高鐵新竹站" }, StopSequence: 1 },
+      { StopUID: "S2", StopName: { Zh_tw: "新竹縣政府" }, StopSequence: 2 },
+      { StopUID: "S3", StopName: { Zh_tw: "竹北火車站" }, StopSequence: 3 },
+    ],
+  },
+];
+const rawScheduleWithStopTimes = [
+  {
+    Direction: 0,
+    Timetables: [{
+      DepartureTime: "08:00",
+      StopTimes: [
+        { ArrivalTime: "08:00", DepartureTime: "08:00" },
+        { ArrivalTime: "08:15", DepartureTime: "08:16" },
+        { ArrivalTime: "08:30", DepartureTime: "08:30" },
+      ],
+    }],
+  },
+];
+const routeStops = normalizeBusRouteStopSequence(rawStopOfRoute5900, "5900");
+check("StopOfRoute normalized with real sequence order", routeStops.length === 3 && routeStops[1].stop_id === "S2" && routeStops[1].stop_sequence === 2);
+
+const seqMap = new Map([[0, ["S1", "S2", "S3"]]]);
+const resolvedResult = normalizeBusSchedule(rawScheduleWithStopTimes, "5900", "2026-09-14", seqMap);
+check("Bus per-trip stop times resolved to REAL station IDs by position (not null anymore)",
+  resolvedResult.stopTimes.length === 3
+  && resolvedResult.stopTimes[0].stop_id === "S1"
+  && resolvedResult.stopTimes[1].stop_id === "S2"
+  && resolvedResult.stopTimes[2].stop_id === "S3");
 
 console.log(failed ? "\nOVERALL: FAIL" : "\nOVERALL: PASS");
 process.exit(failed ? 1 : 0);

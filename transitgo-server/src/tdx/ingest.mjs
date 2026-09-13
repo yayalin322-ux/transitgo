@@ -1,7 +1,7 @@
 import { TDXProvider } from "./adapter.mjs";
 import {
   normalizeTRAStations, normalizeTRATimetable,
-  normalizeBusRoutes, normalizeBusStops, normalizeBusSchedule,
+  normalizeBusRoutes, normalizeBusStops, normalizeBusRouteStopSequence, normalizeBusSchedule,
 } from "./normalizer.mjs";
 
 const provider = new TDXProvider();
@@ -69,6 +69,16 @@ export function insertFrequencies(db, feedId, freqs) {
   }
 }
 
+export function insertRouteStops(db, feedId, routeId, rows) {
+  db.prepare(`DELETE FROM gtfs_route_stops WHERE feed_id = ? AND route_id = ?`).run(feedId, routeId);
+  const ins = db.prepare(`
+    INSERT INTO gtfs_route_stops (feed_id, route_id, direction, stop_sequence, stop_id)
+    VALUES (?,?,?,?,?)
+    ON CONFLICT(feed_id, route_id, direction, stop_sequence) DO UPDATE SET stop_id = excluded.stop_id
+  `);
+  for (const r of rows) ins.run(feedId, r.route_id, r.direction, r.stop_sequence, r.stop_id);
+}
+
 /** Ingests real TRA timetable data for one origin→destination pair on one date. */
 export async function ingestTRAPair(db, feedId, fromStationID, toStationID, dateStr) {
   const raw = await provider.getTRATimetable(fromStationID, toStationID, dateStr);
@@ -108,12 +118,19 @@ export async function ingestBusRouteSchedule(db, feedId, scopePath, routeId, rou
     provider.getBusSchedule(scopePath, routeNameZh),
   ]);
   const stops = normalizeBusStops(rawStops);
-  const { trips, stopTimes, calendarDates, frequencies } = normalizeBusSchedule(rawSchedule, routeId, dateStr);
+  const routeStops = normalizeBusRouteStopSequence(rawStops, routeId);
+  const stopSequenceByDirection = new Map();
+  for (const r of routeStops) {
+    if (!stopSequenceByDirection.has(r.direction)) stopSequenceByDirection.set(r.direction, []);
+    stopSequenceByDirection.get(r.direction)[r.stop_sequence - 1] = r.stop_id;
+  }
+  const { trips, stopTimes, calendarDates, frequencies } = normalizeBusSchedule(rawSchedule, routeId, dateStr, stopSequenceByDirection);
 
   db.exec("BEGIN IMMEDIATE");
   try {
     insertRoutes(db, [{ feed_id: feedId, route_id: routeId, route_short_name: routeNameZh, route_long_name: null, route_type: 3 }]);
     insertStops(db, feedId, stops);
+    insertRouteStops(db, feedId, routeId, routeStops);
     insertTrips(db, feedId, trips);
     insertStopTimes(db, feedId, stopTimes);
     insertCalendarDates(db, feedId, calendarDates);
@@ -123,5 +140,5 @@ export async function ingestBusRouteSchedule(db, feedId, scopePath, routeId, rou
     db.exec("ROLLBACK");
     throw e;
   }
-  return { stops: stops.length, trips: trips.length, stopTimes: stopTimes.length, frequencies: frequencies.length };
+  return { stops: stops.length, trips: trips.length, stopTimes: stopTimes.length, frequencies: frequencies.length, routeStops: routeStops.length };
 }
