@@ -140,6 +140,48 @@ enum UserLandmarkService {
         return decoded.landmarks
     }
 
+    /// Flags a landmark as inappropriate — same categorized-report pattern as place reviews.
+    static func report(id: Int, reason: ReportReason) {
+        guard let base = BackendConfig.baseURL else { return }
+        Task {
+            var req = URLRequest(url: base.appendingPathComponent("v1/landmarks/\(id)/report"))
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: ["reason": reason.rawValue])
+            _ = try? await URLSession.shared.data(for: req)
+        }
+    }
+
+    /// This device's own submitted landmarks — lets the app show submission status and,
+    /// for a verified business, offer editing.
+    static func mine() async -> [UserLandmark] {
+        guard let base = BackendConfig.baseURL else { return [] }
+        var comps = URLComponents(url: base.appendingPathComponent("v1/landmarks/mine"), resolvingAgainstBaseURL: false)
+        comps?.queryItems = [URLQueryItem(name: "device", value: BackendConfig.deviceID)]
+        struct Response: Decodable { let landmarks: [UserLandmark] }
+        guard let url = comps?.url,
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let decoded = try? JSONDecoder().decode(Response.self, from: data) else { return [] }
+        return decoded.landmarks
+    }
+
+    /// Editing only actually succeeds server-side for a verified business owner's own
+    /// listing — the server checks device + business_verified itself (see
+    /// updateMyUserLandmark), this call can't bypass that from the client.
+    static func update(id: Int, description: String?, businessHours: String?, photo: String?) async -> Bool {
+        guard let base = BackendConfig.baseURL else { return false }
+        var payload: [String: Any] = ["device": BackendConfig.deviceID]
+        if let description { payload["description"] = description }
+        if let businessHours { payload["businessHours"] = businessHours }
+        if let photo { payload["photo"] = photo }
+        var req = URLRequest(url: base.appendingPathComponent("v1/landmarks/\(id)"))
+        req.httpMethod = "PUT"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        guard let (_, resp) = try? await URLSession.shared.data(for: req) else { return false }
+        return (resp as? HTTPURLResponse)?.statusCode == 200
+    }
+
     static func submit(
         name: String, description: String, category: LandmarkCategory, coordinate: CLLocationCoordinate2D,
         photo: String?, isBusinessClaim: Bool = false, businessHours: String? = nil

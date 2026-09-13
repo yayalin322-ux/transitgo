@@ -133,9 +133,20 @@ CREATE TABLE IF NOT EXISTS user_landmarks (
   device            TEXT,
   ip                TEXT,
   approved          INTEGER NOT NULL DEFAULT 0,
+  reported          INTEGER NOT NULL DEFAULT 0,
   created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_user_landmarks_approved ON user_landmarks (approved, created_at);
+
+CREATE TABLE IF NOT EXISTS user_landmark_reports (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  landmark_id INTEGER NOT NULL,
+  reason      TEXT NOT NULL DEFAULT 'other',
+  device      TEXT,
+  ip          TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_user_landmark_reports_landmark ON user_landmark_reports (landmark_id);
 
 CREATE TABLE IF NOT EXISTS speedcam_cache (
   id         TEXT PRIMARY KEY DEFAULT 'all',
@@ -480,12 +491,20 @@ export function listApprovedLandmarksNear(lat, lon, radiusMeters = 1000) {
 
 /** Admin moderation queue — pending ones first, since those need a decision. */
 export function listAllUserLandmarks(limit = 200) {
-  return db.prepare(`
+  const rows = db.prepare(`
     SELECT * FROM user_landmarks ORDER BY approved ASC, created_at DESC LIMIT ?
-  `).all(limit).map((r) => ({
+  `).all(limit);
+  const reasonRows = db.prepare(`SELECT landmark_id, reason, COUNT(*) n FROM user_landmark_reports GROUP BY landmark_id, reason`).all();
+  const reasonsByLandmark = new Map();
+  for (const r of reasonRows) {
+    if (!reasonsByLandmark.has(r.landmark_id)) reasonsByLandmark.set(r.landmark_id, {});
+    reasonsByLandmark.get(r.landmark_id)[r.reason] = r.n;
+  }
+  return rows.map((r) => ({
     id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
     isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified, businessHours: r.business_hours,
-    approved: !!r.approved, appVersion: r.app_version, createdAt: isoZ(r.created_at),
+    approved: !!r.approved, reported: r.reported, reportReasons: reasonsByLandmark.get(r.id) ?? {},
+    appVersion: r.app_version, createdAt: isoZ(r.created_at),
   }));
 }
 
@@ -504,7 +523,50 @@ export function verifyUserLandmarkBusiness(id) {
 
 export function deleteUserLandmark(id) {
   const info = db.prepare(`DELETE FROM user_landmarks WHERE id = ?`).run(id);
+  db.prepare(`DELETE FROM user_landmark_reports WHERE landmark_id = ?`).run(id);
   return info.changes > 0;
+}
+
+/** Logs a real report reason for a landmark, same pattern as place reviews. */
+export function reportUserLandmark(id, reason, ip) {
+  const info = db.prepare(`UPDATE user_landmarks SET reported = reported + 1 WHERE id = ?`).run(id);
+  if (info.changes === 0) return false;
+  db.prepare(`INSERT INTO user_landmark_reports (landmark_id, reason, ip) VALUES (?, ?, ?)`)
+    .run(id, REPORT_REASONS.includes(reason) ? reason : "other", ip ?? null);
+  return true;
+}
+
+/** This device's own submitted landmarks (any status) — so a submitter can see
+ * "pending"/"approved"/"verified" and, once verified, actually edit their listing. */
+export function listMyUserLandmarks(device) {
+  return db.prepare(`
+    SELECT * FROM user_landmarks WHERE device = ? ORDER BY created_at DESC
+  `).all(device).map((r) => ({
+    id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
+    isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified, businessHours: r.business_hours,
+    approved: !!r.approved, createdAt: isoZ(r.created_at),
+  }));
+}
+
+/**
+ * A verified business owner editing their own real listing — the ONLY identity check
+ * available without a real account system is "does the device id match the one that
+ * originally submitted this", so that's what gates it, on top of requiring
+ * business_verified (an admin's real, manual confirmation) — an unverified claimant
+ * can't use this to rewrite their listing into something an admin never actually
+ * checked. Only the provided fields are changed.
+ */
+export function updateMyUserLandmark(id, device, fields) {
+  const row = db.prepare(`SELECT device, business_verified FROM user_landmarks WHERE id = ?`).get(id);
+  if (!row || row.device !== device || !row.business_verified) return false;
+  const sets = [];
+  const params = { id };
+  if (typeof fields.description === "string") { sets.push("description = :description"); params.description = fields.description.slice(0, 500); }
+  if (typeof fields.businessHours === "string") { sets.push("business_hours = :business_hours"); params.business_hours = fields.businessHours.slice(0, 500); }
+  if (typeof fields.photo === "string") { sets.push("photo = :photo"); params.photo = fields.photo; }
+  if (sets.length === 0) return false;
+  db.prepare(`UPDATE user_landmarks SET ${sets.join(", ")} WHERE id = :id`).run(params);
+  return true;
 }
 
 export function placeReviewStats(placeKey) {

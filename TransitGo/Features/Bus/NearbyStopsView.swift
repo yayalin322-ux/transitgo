@@ -50,6 +50,11 @@ struct NearbyLandmark: Identifiable {
     let coordinate: CLLocationCoordinate2D
     var distance: CLLocationDistance = 0
     var category: LandmarkCategory = .other
+    /// Non-nil only for our own user-submitted landmarks (not Apple's POIs) — lets
+    /// PlaceDetailView offer "report this landmark" and, for a verified business, editing.
+    var landmarkID: Int?
+    var businessHours: String?
+    var businessVerified = false
 }
 
 /// Real nearby points of interest (Apple's own POI index, via the dedicated
@@ -86,7 +91,8 @@ final class LandmarkNearbyViewModel {
                 NearbyLandmark(name: $0.name, subtitle: $0.description.isEmpty ? "使用者新增地標" : $0.description,
                                coordinate: $0.coordinate,
                                distance: CLLocation(latitude: $0.lat, longitude: $0.lon).distance(from: location),
-                               category: $0.category)
+                               category: $0.category, landmarkID: $0.id,
+                               businessHours: $0.businessHours, businessVerified: $0.businessVerified)
             }
         }()
         let (apple, own) = await (appleTask, ownTask)
@@ -432,7 +438,9 @@ struct NearbyStopsView: View {
                 }
             }
             .sheet(item: $placeDetailTarget) { landmark in
-                PlaceDetailView(name: landmark.name, coordinate: landmark.coordinate, subtitle: landmark.subtitle)
+                PlaceDetailView(name: landmark.name, coordinate: landmark.coordinate, subtitle: landmark.subtitle,
+                                 landmarkID: landmark.landmarkID, businessHours: landmark.businessHours,
+                                 businessVerified: landmark.businessVerified)
             }
         }
     }
@@ -504,9 +512,22 @@ struct NearbyStopsView: View {
                     }
                 }
             case .landmark:
+                // A plain Marker can't be tapped directly — wrapping the pin in a real
+                // Button is what lets tapping the map icon itself open the detail sheet,
+                // not just the list row below.
                 ForEach(landmarkVM.items.prefix(30)) { landmark in
-                    Marker(landmark.name, systemImage: landmark.category.icon, coordinate: landmark.coordinate)
-                        .tint(landmark.category.color)
+                    Annotation(landmark.name, coordinate: landmark.coordinate) {
+                        Button {
+                            placeDetailTarget = landmark
+                        } label: {
+                            Image(systemName: landmark.category.icon)
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(.white)
+                                .frame(width: 28, height: 28)
+                                .background(landmark.category.color, in: Circle())
+                                .overlay(Circle().stroke(.white, lineWidth: 1.5))
+                        }
+                    }
                 }
             }
         }

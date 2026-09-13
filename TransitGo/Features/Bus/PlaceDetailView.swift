@@ -8,14 +8,22 @@ struct PlaceDetailView: View {
     let name: String
     let coordinate: CLLocationCoordinate2D
     var subtitle: String?
+    /// Non-nil only for our own user-submitted landmarks — enables "report this
+    /// landmark" and, for a verified business, an edit button. Nil for Apple's own POIs
+    /// (those can only be reviewed, not reported/edited — we don't own that data).
+    var landmarkID: Int?
+    var businessHours: String?
+    var businessVerified = false
 
     @Environment(\.dismiss) private var dismiss
     @State private var mapItem: MKMapItem?
     @State private var stats: PlaceReviewStats?
     @State private var reviews: [PlaceReview] = []
     @State private var showAddReview = false
+    @State private var showEditLandmark = false
     @State private var loading = true
     @State private var reportedReviewIDs: Set<Int> = []
+    @State private var landmarkReported = false
 
     var body: some View {
         NavigationStack {
@@ -43,8 +51,36 @@ struct PlaceDetailView: View {
                             Label(url.host ?? url.absoluteString, systemImage: "safari.fill")
                         }
                     }
+                    if let hours = businessHours {
+                        Label(hours, systemImage: "clock.fill")
+                        Text("店家自行提供，已由管理員驗證").font(.caption2).foregroundStyle(.secondary)
+                    }
                     if mapItem == nil, !loading {
                         Text("沒有更多 Apple 地圖資訊").font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+
+                if let landmarkID {
+                    Section {
+                        if businessVerified {
+                            Button { showEditLandmark = true } label: {
+                                Label("編輯店家資訊", systemImage: "pencil")
+                            }
+                        }
+                        if landmarkReported {
+                            Text("已檢舉").font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            Menu {
+                                ForEach(ReportReason.allCases) { reason in
+                                    Button(reason.label) {
+                                        UserLandmarkService.report(id: landmarkID, reason: reason)
+                                        landmarkReported = true
+                                    }
+                                }
+                            } label: {
+                                Label("檢舉這個地標", systemImage: "flag")
+                            }
+                        }
                     }
                 }
 
@@ -130,6 +166,13 @@ struct PlaceDetailView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showEditLandmark) {
+                if let landmarkID {
+                    EditLandmarkView(landmarkID: landmarkID, description: subtitle ?? "", businessHours: businessHours ?? "") {
+                        showEditLandmark = false
+                    }
+                }
+            }
         }
     }
 
@@ -210,5 +253,79 @@ private struct AddPlaceReviewView: View {
             }
         }
         .presentationDetents([.medium])
+    }
+}
+
+/// Only reachable from a landmark PlaceDetailView already showed as `businessVerified`
+/// — but the actual write still only succeeds server-side if this device matches the
+/// one that originally submitted it (see UserLandmarkService.update / the server's
+/// updateMyUserLandmark). A mismatch surfaces as a clear error, not a silent no-op.
+private struct EditLandmarkView: View {
+    let landmarkID: Int
+    @State var description: String
+    @State var businessHours: String
+    var onDone: () -> Void
+
+    @State private var photoItem: PhotosPickerItem?
+    @State private var photoImage: UIImage?
+    @State private var isSubmitting = false
+    @State private var errorText: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("簡介") {
+                    TextField("簡介", text: $description, axis: .vertical).lineLimit(2...5)
+                }
+                Section("營業時間") {
+                    TextField("例如：週一至週日 11:00–21:00", text: $businessHours, axis: .vertical).lineLimit(2...4)
+                }
+                Section("照片") {
+                    PhotosPicker(selection: $photoItem, matching: .images) {
+                        if let photoImage {
+                            Image(uiImage: photoImage).resizable().scaledToFill()
+                                .frame(height: 140).frame(maxWidth: .infinity)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                        } else {
+                            Label("更換照片（可留空）", systemImage: "camera")
+                        }
+                    }
+                    .onChange(of: photoItem) { _, item in
+                        Task {
+                            if let data = try? await item?.loadTransferable(type: Data.self), let img = UIImage(data: data) {
+                                photoImage = img
+                            }
+                        }
+                    }
+                }
+                if let errorText {
+                    Text(errorText).font(.footnote).foregroundStyle(.red)
+                }
+            }
+            .navigationTitle("編輯店家資訊")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消", action: onDone) }
+                ToolbarItem(placement: .confirmationAction) {
+                    if isSubmitting {
+                        ProgressView()
+                    } else {
+                        Button("儲存") {
+                            isSubmitting = true
+                            Task {
+                                let photo = photoImage.flatMap { PhotoUpload.encode($0) }
+                                let ok = await UserLandmarkService.update(id: landmarkID, description: description, businessHours: businessHours, photo: photo)
+                                if ok {
+                                    onDone()
+                                } else {
+                                    isSubmitting = false
+                                    errorText = "無法儲存 — 你不是這個地標已驗證的店家擁有者"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

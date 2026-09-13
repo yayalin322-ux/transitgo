@@ -99,6 +99,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+const reasonLabel = { spam: "廣告/垃圾訊息", offensive: "不當言論", sexual: "色情內容", harassment: "騷擾/人身攻擊", other: "其他" };
 $("token").value = localStorage.getItem("tg_admin") || "";
 $("token").oninput = () => localStorage.setItem("tg_admin", $("token").value);
 
@@ -188,7 +189,6 @@ async function loadPlaceReviews() {
   const res = await fetch("/v1/admin/place-reviews", { headers: headers() });
   if (!res.ok) return ($("placeReviews").textContent = "需要正確的權杖");
   const { reviews } = await res.json();
-  const reasonLabel = { spam: "廣告/垃圾訊息", offensive: "不當言論", sexual: "色情內容", harassment: "騷擾/人身攻擊", other: "其他" };
   $("placeReviews").innerHTML = reviews.map((r) =>
     `<div class="item">
        <b>${"★".repeat(r.stars)}</b> ${r.placeName}
@@ -213,6 +213,7 @@ async function loadLandmarks() {
        <b>${l.name}</b> <span style="opacity:.6">[${l.category}]</span>
        ${l.approved ? "" : '<span class="warn">待審核</span>'}
        ${l.isBusinessClaim ? (l.businessVerified ? '<span class="info">已驗證店家</span>' : '<span class="warn">自稱店家（未驗證）</span>') : ""}
+       ${l.reported > 0 ? `<span class="warn">被檢舉 ${l.reported} 次（${Object.entries(l.reportReasons).map(([k,v]) => `${reasonLabel[k]||k} x${v}`).join("、")}）</span>` : ""}
        <br>${l.description || ""}
        ${l.businessHours ? `<br>營業時間：${l.businessHours}` : ""}
        ${l.photo ? `<br><img src="${l.photo}" style="max-width:160px;border-radius:8px;margin-top:6px">` : ""}

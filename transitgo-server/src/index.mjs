@@ -25,6 +25,9 @@ import {
   approveUserLandmark,
   verifyUserLandmarkBusiness,
   deleteUserLandmark,
+  reportUserLandmark,
+  listMyUserLandmarks,
+  updateMyUserLandmark,
   createObservation,
   listObservations,
   getBikeCache,
@@ -224,6 +227,41 @@ app.delete("/v1/admin/landmarks/:id", requireAdmin, (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
   res.json({ ok: deleteUserLandmark(id) });
+});
+
+const landmarkReportBucket = new Map();
+app.post("/v1/landmarks/:id/report", (req, res) => {
+  const now = Date.now();
+  const hist = (landmarkReportBucket.get(req.clientIp) || []).filter((t) => now - t < 60_000);
+  if (hist.length >= 10) return res.status(429).json({ error: "rate limited" });
+  hist.push(now);
+  landmarkReportBucket.set(req.clientIp, hist);
+
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
+  const reason = typeof req.body?.reason === "string" ? req.body.reason : "other";
+  const ok = reportUserLandmark(id, reason, req.clientIp);
+  if (!ok) return res.status(404).json({ error: "not found" });
+  res.json({ ok: true });
+});
+
+/** This device's own submitted landmarks, so the app can show status + let a verified owner edit. */
+app.get("/v1/landmarks/mine", (req, res) => {
+  const device = typeof req.query.device === "string" ? req.query.device : null;
+  if (!device) return res.status(400).json({ error: "device required" });
+  res.json({ landmarks: listMyUserLandmarks(device) });
+});
+
+/** A verified business owner editing their own real listing — see updateMyUserLandmark for the ownership+verification gate. */
+app.put("/v1/landmarks/:id", (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
+  const { device, description, businessHours, photo } = req.body || {};
+  if (!device) return res.status(400).json({ error: "device required" });
+  if (photo !== undefined && !validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
+  const ok = updateMyUserLandmark(id, device, { description, businessHours, photo });
+  if (!ok) return res.status(403).json({ error: "not authorized to edit this listing" });
+  res.json({ ok: true });
 });
 
 app.delete("/v1/admin/place-reviews/:id", requireAdmin, (req, res) => {
