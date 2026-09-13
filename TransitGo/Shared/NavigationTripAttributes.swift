@@ -17,6 +17,16 @@ struct NavigationTripAttributes: ActivityAttributes {
         var modeSymbol: String
         /// "2/3" style progress for a multi-leg trip; nil for a single-leg one (hidden in the UI).
         var legProgress: String?
+        /// Non-nil only while riding a real bus/train leg from the multimodal route
+        /// planner (e.g. "公車 THB5900") — the Dynamic Island shows this instead of the
+        /// usual distance/ETA metrics, since those don't mean much for a passenger.
+        var transitLabel: String?
+        /// The real stop name to get off at, for that same ride leg.
+        var transitAlightName: String?
+        /// Real TDX live-position match, nearest vehicle to the user on this route right
+        /// now — an inference, not a confirmed boarding scan (no such data source
+        /// exists). Nil until resolved, or if TDX has no live position for this route.
+        var transitPlate: String?
     }
 
     /// The trip's overall/final destination — fixed for the whole Live Activity even as

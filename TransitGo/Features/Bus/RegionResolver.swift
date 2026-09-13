@@ -13,6 +13,9 @@ struct LocalRegion: Equatable {
         if busCity != nil { m.append(.bus) }
         if bikeCity != nil { m.append(.bike) }
         if metroOperator != nil { m.append(.metro) }
+        // Apple's POI index has nationwide coverage, unlike TDX transit data — always
+        // available regardless of which transit systems serve this area.
+        m.append(.landmark)
         return m
     }
 }

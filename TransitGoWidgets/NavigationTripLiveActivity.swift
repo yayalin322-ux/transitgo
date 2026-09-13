@@ -24,6 +24,16 @@ struct NavigationTripLiveActivity: Widget {
                 }
                 if context.state.arrived {
                     Text("已抵達目的地").font(.title2.bold()).foregroundStyle(.green)
+                } else if let transitLabel = context.state.transitLabel {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("乘車中：\(transitLabel)").font(.title3.bold())
+                        if let plate = context.state.transitPlate {
+                            Text("推測車牌：\(plate)").font(.caption2).foregroundStyle(.secondary)
+                        }
+                        if let alight = context.state.transitAlightName {
+                            Text("下車：\(alight)").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                 } else {
                     HStack(alignment: .firstTextBaseline, spacing: 16) {
                         VStack(alignment: .leading, spacing: 1) {
@@ -72,6 +82,14 @@ struct NavigationTripLiveActivity: Widget {
                 DynamicIslandExpandedRegion(.bottom) {
                     if context.state.arrived {
                         Text("已抵達目的地").font(.headline).foregroundStyle(.green).padding(.top, 2)
+                    } else if let transitLabel = context.state.transitLabel {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("乘車中：\(transitLabel)").font(.headline)
+                            if let alight = context.state.transitAlightName {
+                                Text("下車：\(alight)").font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.top, 2)
                     } else {
                         HStack(alignment: .firstTextBaseline, spacing: 16) {
                             VStack(alignment: .leading, spacing: 0) {

@@ -81,6 +81,18 @@
 </fieldset>
 
 <fieldset>
+  <legend>地標評論 <button style="background:#8884;color:inherit" onclick="loadPlaceReviews()">重新整理</button></legend>
+  <p style="font-size:12px;opacity:.7">被檢舉次數高的排最前面；使用者在 App 端按「檢舉」會累加次數，不會自動隱藏。</p>
+  <div id="placeReviews"></div>
+</fieldset>
+
+<fieldset>
+  <legend>使用者新增地標（待審核） <button style="background:#8884;color:inherit" onclick="loadLandmarks()">重新整理</button></legend>
+  <p style="font-size:12px;opacity:.7">未核准的地標排最前面；核准後才會出現在 App「附近」頁面的地標清單。</p>
+  <div id="landmarks"></div>
+</fieldset>
+
+<fieldset>
   <legend>用 curl 發佈</legend>
   <pre id="curl"></pre>
 </fieldset>
@@ -172,7 +184,49 @@ async function loadObs() {
        <br><small style="opacity:.6">${o.created_at} · ${o.system || ""}</small></div>`
   ).join("") || "（無）";
 }
-loadAnns(); loadReports(); loadRatings(); loadObs();
+async function loadPlaceReviews() {
+  const res = await fetch("/v1/admin/place-reviews", { headers: headers() });
+  if (!res.ok) return ($("placeReviews").textContent = "需要正確的權杖");
+  const { reviews } = await res.json();
+  $("placeReviews").innerHTML = reviews.map((r) =>
+    `<div class="item">
+       <b>${"★".repeat(r.stars)}</b> ${r.placeName}
+       ${r.reported > 0 ? `<span class="warn">被檢舉 ${r.reported} 次</span>` : ""}
+       <br>${r.comment || "（無文字）"}
+       <br><small style="opacity:.6">${r.createdAt} · ${r.appVersion || "?"}</small>
+       <button style="background:#d70015;padding:3px 8px" onclick="delPlaceReview(${r.id})">刪除</button>
+     </div>`).join("") || "（無）";
+}
+async function delPlaceReview(id) {
+  if (!confirm("確定刪除這則評論？")) return;
+  await fetch("/v1/admin/place-reviews/" + id, { method: "DELETE", headers: headers() });
+  loadPlaceReviews();
+}
+async function loadLandmarks() {
+  const res = await fetch("/v1/admin/landmarks", { headers: headers() });
+  if (!res.ok) return ($("landmarks").textContent = "需要正確的權杖");
+  const { landmarks } = await res.json();
+  $("landmarks").innerHTML = landmarks.map((l) =>
+    `<div class="item">
+       <b>${l.name}</b> ${l.approved ? "" : '<span class="warn">待審核</span>'}
+       <br>${l.description || ""}
+       ${l.photo ? `<br><img src="${l.photo}" style="max-width:160px;border-radius:8px;margin-top:6px">` : ""}
+       <br><small style="opacity:.6">${l.lat.toFixed(5)}, ${l.lon.toFixed(5)} · ${l.createdAt} · ${l.appVersion || "?"}</small>
+       <br>
+       ${l.approved ? "" : `<button onclick="approveLandmark(${l.id})">核准</button>`}
+       <button style="background:#d70015;padding:3px 8px" onclick="delLandmark(${l.id})">刪除</button>
+     </div>`).join("") || "（無）";
+}
+async function approveLandmark(id) {
+  await fetch("/v1/admin/landmarks/" + id + "/approve", { method: "POST", headers: headers() });
+  loadLandmarks();
+}
+async function delLandmark(id) {
+  if (!confirm("確定刪除這個地標？")) return;
+  await fetch("/v1/admin/landmarks/" + id, { method: "DELETE", headers: headers() });
+  loadLandmarks();
+}
+loadAnns(); loadReports(); loadRatings(); loadObs(); loadPlaceReviews(); loadLandmarks();
 </script>
 </body>
 </html>

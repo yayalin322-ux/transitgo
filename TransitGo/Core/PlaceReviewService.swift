@@ -2,10 +2,12 @@ import Foundation
 import CoreLocation
 
 struct PlaceReview: Decodable, Identifiable {
+    let id: Int
     let stars: Int
     let comment: String
+    /// A `data:image/jpeg;base64,...` URI, if the reviewer attached a photo.
+    let photo: String?
     let createdAt: String
-    var id: String { createdAt + comment }
 }
 
 struct PlaceReviewStats: Decodable {
@@ -43,9 +45,9 @@ enum PlaceReviewService {
         return (decoded.stats, decoded.reviews)
     }
 
-    static func submit(name: String, coordinate: CLLocationCoordinate2D, stars: Int, comment: String) {
+    static func submit(name: String, coordinate: CLLocationCoordinate2D, stars: Int, comment: String, photo: String? = nil) {
         guard let base = BackendConfig.baseURL else { return }
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "placeKey": key(name: name, coordinate: coordinate),
             "placeName": name,
             "lat": coordinate.latitude,
@@ -54,11 +56,23 @@ enum PlaceReviewService {
             "comment": comment,
             "appVersion": BackendConfig.appVersion,
         ]
+        if let photo { payload["photo"] = photo }
         Task {
             var req = URLRequest(url: base.appendingPathComponent("v1/places/reviews"))
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+            _ = try? await URLSession.shared.data(for: req)
+        }
+    }
+
+    /// Flags a review as inappropriate/spam — visible to admins as a report count, not
+    /// an automatic takedown (see transitgo-server's /v1/admin/place-reviews).
+    static func report(id: Int) {
+        guard let base = BackendConfig.baseURL else { return }
+        Task {
+            var req = URLRequest(url: base.appendingPathComponent("v1/places/reviews/\(id)/report"))
+            req.httpMethod = "POST"
             _ = try? await URLSession.shared.data(for: req)
         }
     }

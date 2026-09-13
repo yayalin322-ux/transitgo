@@ -23,13 +23,14 @@ struct NearbyStop: Codable, Identifiable, Hashable {
 }
 
 enum NearbyMode: String, CaseIterable, Identifiable {
-    case bus, bike, metro
+    case bus, bike, metro, landmark
     var id: String { rawValue }
     var label: String {
         switch self {
         case .bus: return "公車"
         case .bike: return "YouBike"
         case .metro: return "捷運"
+        case .landmark: return "地標"
         }
     }
     var icon: String {
@@ -37,7 +38,56 @@ enum NearbyMode: String, CaseIterable, Identifiable {
         case .bus: return "bus.fill"
         case .bike: return "bicycle"
         case .metro: return "tram.fill"
+        case .landmark: return "mappin.circle.fill"
         }
+    }
+}
+
+struct NearbyLandmark: Identifiable {
+    let id = UUID()
+    let name: String
+    let subtitle: String?
+    let coordinate: CLLocationCoordinate2D
+    var distance: CLLocationDistance = 0
+}
+
+/// Real nearby points of interest (Apple's own POI index, via the dedicated
+/// `MKLocalPointsOfInterestRequest` API — no arbitrary search keyword needed, unlike
+/// `MKLocalSearch`) — tapping one opens PlaceDetailView so the user can read/write real
+/// reviews for it, same as landmarks found through the transfer planner's search.
+@MainActor
+@Observable
+final class LandmarkNearbyViewModel {
+    var items: [NearbyLandmark] = []
+    var isLoading = false
+    var errorText: String?
+
+    func load(near location: CLLocation) async {
+        isLoading = items.isEmpty
+        errorText = nil
+        defer { isLoading = false }
+        let request = MKLocalPointsOfInterestRequest(center: location.coordinate, radius: 800)
+        async let appleTask: [NearbyLandmark] = {
+            guard let response = try? await MKLocalSearch(request: request).start() else { return [] }
+            return response.mapItems.compactMap { item -> NearbyLandmark? in
+                guard let name = item.name else { return nil }
+                let c = item.placemark.coordinate
+                let d = CLLocation(latitude: c.latitude, longitude: c.longitude).distance(from: location)
+                return NearbyLandmark(name: name, subtitle: item.placemark.title, coordinate: c, distance: d)
+            }
+        }()
+        // Our own users' real submitted landmarks (admin-approved only) — merged in
+        // alongside Apple's POI index, e.g. a small local spot Apple doesn't have.
+        async let ownTask: [NearbyLandmark] = {
+            let own = await UserLandmarkService.nearby(location.coordinate, radiusMeters: 800)
+            return own.map {
+                NearbyLandmark(name: $0.name, subtitle: $0.description.isEmpty ? "使用者新增地標" : $0.description,
+                               coordinate: $0.coordinate,
+                               distance: CLLocation(latitude: $0.lat, longitude: $0.lon).distance(from: location))
+            }
+        }()
+        let (apple, own) = await (appleTask, ownTask)
+        items = (apple + own).sorted { $0.distance < $1.distance }
     }
 }
 
@@ -299,6 +349,9 @@ struct NearbyStopsView: View {
     @State private var busVM = NearbyViewModel()
     @State private var bikeVM = BikeNearbyViewModel()
     @State private var metroVM = MetroNearbyViewModel()
+    @State private var landmarkVM = LandmarkNearbyViewModel()
+    @State private var placeDetailTarget: NearbyLandmark?
+    @State private var showAddLandmark = false
 
     private var region: LocalRegion? { resolver.region }
     private var modes: [NearbyMode] { region?.availableModes ?? [.bus] }
@@ -318,6 +371,20 @@ struct NearbyStopsView: View {
             }
             .navigationTitle(region?.areaName ?? "附近")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if mode == .landmark {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { showAddLandmark = true } label: { Image(systemName: "plus.circle") }
+                    }
+                }
+            }
+            .sheet(isPresented: $showAddLandmark) {
+                if let loc = location.location {
+                    AddLandmarkView(coordinate: loc.coordinate) {
+                        showAddLandmark = false
+                    }
+                }
+            }
             .onAppear { location.request() }
             .onChange(of: modes.map(\.rawValue)) { _, available in
                 if !available.contains(mode.rawValue), let first = modes.first { mode = first }
@@ -334,6 +401,9 @@ struct NearbyStopsView: View {
                 if let op = region?.metroOperator {
                     MetroStationDetailView(operator: op, stationID: station.stationID, stationName: station.name)
                 }
+            }
+            .sheet(item: $placeDetailTarget) { landmark in
+                PlaceDetailView(name: landmark.name, coordinate: landmark.coordinate, subtitle: landmark.subtitle)
             }
         }
     }
@@ -404,6 +474,11 @@ struct NearbyStopsView: View {
                         Marker(item.station.name, systemImage: "tram.fill", coordinate: c).tint(.indigo)
                     }
                 }
+            case .landmark:
+                ForEach(landmarkVM.items.prefix(30)) { landmark in
+                    Marker(landmark.name, systemImage: "mappin", coordinate: landmark.coordinate)
+                        .tint(.red)
+                }
             }
         }
         .mapControls { MapUserLocationButton(); MapCompass() }
@@ -470,6 +545,15 @@ struct NearbyStopsView: View {
                         }
                     }
                 }
+            case .landmark:
+                ForEach(landmarkVM.items) { landmark in
+                    Button {
+                        placeDetailTarget = landmark
+                    } label: {
+                        row(landmark.name, meters: landmark.distance, trailing: nil)
+                    }
+                    .foregroundStyle(.primary)
+                }
             }
         }
         .listStyle(.plain)
@@ -496,6 +580,7 @@ struct NearbyStopsView: View {
         case .bus: return busVM.errorText
         case .bike: return bikeVM.errorText
         case .metro: return metroVM.errorText
+        case .landmark: return landmarkVM.errorText
         }
     }
 
@@ -513,6 +598,8 @@ struct NearbyStopsView: View {
             if let c = region?.bikeCity { await bikeVM.load(near: loc, city: c) }
         case .metro:
             if let op = region?.metroOperator { await metroVM.load(near: loc, operator: op) }
+        case .landmark:
+            await landmarkVM.load(near: loc)
         }
     }
 }

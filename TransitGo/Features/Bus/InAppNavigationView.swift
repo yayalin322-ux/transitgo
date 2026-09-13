@@ -24,6 +24,10 @@ final class NavigationLocationTracker: NSObject, CLLocationManagerDelegate {
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         manager.distanceFilter = 5
+        // Unfiltered heading fires on every tiny magnetometer jitter (many times/sec) —
+        // re-animating the camera that often is wasted battery for no visible benefit.
+        // 3° is well below what's perceptible as "the compass lagging".
+        manager.headingFilter = 3
         manager.activityType = .otherNavigation
         authorization = manager.authorizationStatus
     }
@@ -104,13 +108,30 @@ struct NavigationLeg: Identifiable {
     /// preference, so it gets checked regardless of whether MapKit "should" have avoided
     /// it already) — pass `false` explicitly for an actual car trip.
     var avoidsHighways: Bool
+    /// Non-nil marks this a "ride" leg — the user is a passenger on real public transit
+    /// (e.g. "公車 THB5900"), not someone MapKit can turn-by-turn navigate. There's no
+    /// real route line to draw (this app doesn't have live bus-shape data plugged into
+    /// navigation) and no maneuvers to announce — computeRoute skips the MKDirections
+    /// call entirely for these, and the screen shows a simple "riding" card that
+    /// auto-advances once GPS says you're near the alight stop, same arrival logic as
+    /// any other leg.
+    var transitLabel: String?
+    /// The route's real TDX display name + scope, e.g. ("20", "City/Hsinchu") — needed to
+    /// query TDX's live vehicle-position endpoint for this leg's real plate number.
+    /// Nil if the backend couldn't resolve them; the ride still works, just without a
+    /// plate shown (never guessed).
+    var transitRouteName: String?
+    var transitScopePath: String?
 
-    init(coordinate: CLLocationCoordinate2D, name: String, transportType: MKDirectionsTransportType, waypointAnnouncement: String? = nil, avoidsHighways: Bool? = nil) {
+    init(coordinate: CLLocationCoordinate2D, name: String, transportType: MKDirectionsTransportType, waypointAnnouncement: String? = nil, avoidsHighways: Bool? = nil, transitLabel: String? = nil, transitRouteName: String? = nil, transitScopePath: String? = nil) {
         self.coordinate = coordinate
         self.name = name
         self.transportType = transportType
         self.waypointAnnouncement = waypointAnnouncement
         self.avoidsHighways = avoidsHighways ?? (transportType != .automobile)
+        self.transitLabel = transitLabel
+        self.transitRouteName = transitRouteName
+        self.transitScopePath = transitScopePath
     }
 }
 
@@ -149,6 +170,11 @@ struct InAppNavigationView: View {
     @State private var route: MKRoute?
     @State private var isRouting = true
     @State private var offRoute = false
+    @State private var offRouteStreak = 0
+    /// Real TDX live-position match for a "ride" leg's vehicle — the one currently
+    /// closest to the user, on that real route. This is an inference, not a confirmed
+    /// boarding scan, so the UI always labels it "推測" (inferred).
+    @State private var currentVehiclePlate: String?
     @State private var errorText: String?
     @State private var lastRerouteAt = Date.distantPast
     @State private var followUser = true
@@ -175,6 +201,13 @@ struct InAppNavigationView: View {
     @State private var maneuverPassStreak = 0
     @State private var followResumeTask: Task<Void, Never>?
     @State private var nearbyParking: [MKMapItem] = []
+    private struct ParkingDetailTarget: Identifiable {
+        let id = UUID()
+        let name: String
+        let coordinate: CLLocationCoordinate2D
+        let subtitle: String?
+    }
+    @State private var parkingDetailTarget: ParkingDetailTarget?
     @State private var parkingLeg: NavigationLeg?
     @State private var showRating = false
     @State private var photoSpots: [RoutePhotoSpot] = []
@@ -212,7 +245,14 @@ struct InAppNavigationView: View {
 
     /// Off-route threshold — walking needs a tighter tolerance than driving (bigger roads,
     /// bigger GPS error) or it'll false-positive on every street crossing.
-    private var offRouteThreshold: CLLocationDistance { transportType == .walking ? 40 : 80 }
+    // Driving's threshold is wider than walking's for the same reason maneuver/arrival
+    // decisions elsewhere in this file need a streak, not a single fix: at wide
+    // intersections, highway interchanges, and roads with an elevated/frontage-road
+    // twin running alongside, simply being in a different lane than MapKit's chosen
+    // polyline can momentarily read tens of metres away — that's normal lane choice,
+    // not having left the route.
+    private var offRouteThreshold: CLLocationDistance { transportType == .walking ? 40 : 120 }
+    private static let requiredOffRouteFixes = 3
 
     @Namespace private var mapScope
 
@@ -268,6 +308,11 @@ struct InAppNavigationView: View {
                 }
             }
             .mapStyle(.standard(elevation: .realistic, pointsOfInterest: .excludingAll, showsTraffic: transportType == .automobile))
+            // MapKit adds its own default top-trailing compass automatically unless this
+            // is overridden — left alone, it showed up *alongside* the custom
+            // MapCompass(scope:) below as two redundant compasses. Suppressing the
+            // defaults here leaves exactly the one we've deliberately positioned.
+            .mapControls {}
             .onMapCameraChange(frequency: .continuous) { _ in
                 // A manual drag pauses auto-follow so the user can look around, but this
                 // is navigation — nobody wants to remember to tap "recenter" every time,
@@ -293,6 +338,23 @@ struct InAppNavigationView: View {
                     .padding(.horizontal, 12).padding(.vertical, 6)
                     .background(.black.opacity(0.55), in: Capsule())
                     .padding(.top, 8)
+                }
+                if let transitLabel = currentLeg.transitLabel {
+                    HStack(spacing: 10) {
+                        Image(systemName: "bus.fill").font(.title2)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("乘車中：\(transitLabel)").font(.headline)
+                            if let plate = currentVehiclePlate {
+                                Text("推測車牌：\(plate)").font(.caption)
+                            }
+                            Text("抵達\(destinationName)後會自動繼續").font(.caption2)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(.white)
+                    .padding(14)
+                    .background(.indigo, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .padding(.horizontal)
                 }
                 if let instruction = upcomingInstruction {
                     HStack(spacing: 10) {
@@ -334,17 +396,30 @@ struct InAppNavigationView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("附近停車場").font(.caption).foregroundStyle(.secondary)
                             ForEach(Array(nearbyParking.enumerated()), id: \.offset) { _, item in
-                                Button {
-                                    navigateToParking(item)
-                                } label: {
-                                    HStack {
-                                        Image(systemName: "parkingsign.circle.fill").foregroundStyle(.blue)
-                                        Text(item.name ?? "停車場").lineLimit(1)
-                                        Spacer()
-                                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                                HStack {
+                                    Button {
+                                        navigateToParking(item)
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: "parkingsign.circle.fill").foregroundStyle(.blue)
+                                            Text(item.name ?? "停車場").lineLimit(1)
+                                            Spacer()
+                                            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                                        }
                                     }
+                                    .foregroundStyle(.primary)
+                                    Button {
+                                        parkingDetailTarget = ParkingDetailTarget(
+                                            name: item.name ?? "停車場",
+                                            coordinate: item.placemark.coordinate,
+                                            subtitle: item.placemark.title
+                                        )
+                                    } label: {
+                                        Image(systemName: "info.circle")
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(.secondary)
                                 }
-                                .foregroundStyle(.primary)
                             }
                         }
                         .padding(.vertical, 4)
@@ -441,10 +516,26 @@ struct InAppNavigationView: View {
             // the screen auto-locking mid-navigation (killing the live map + voice) is a
             // real bug, not acceptable default iOS behaviour here.
             IdleTimerLock.acquire()
+            // Without this, backgrounding the app mid-navigation (home button/swipe up)
+            // had no keep-alive running — this screen's own CLLocationManager isn't
+            // background-enabled, so iOS could suspend and, under memory pressure,
+            // terminate the whole app while backgrounded. Reopening it then launched a
+            // fresh process that lands on the main screen instead of resuming navigation,
+            // because there was no state left to resume. Same technique already used for
+            // trip tracking elsewhere (TripKeepAlive) — low-power background location
+            // keeps the process alive for the duration of the nav session.
+            TripKeepAlive.shared.acquire()
+            // Without this, reopening the screen with a location the tracker already has
+            // (e.g. from before it was dismissed) left the camera on `.automatic` — a
+            // generic wide view — until the next fresh GPS fix arrived, which read as
+            // "current location jumped away". Jump straight to the known position now;
+            // .onChange(of: tracker.updateTick) below keeps it current after that.
+            if tracker.location != nil { recenter() }
         }
         .onDisappear {
             tracker.stop()
             IdleTimerLock.release()
+            TripKeepAlive.shared.release()
         }
         .task { await computeRoute(from: tracker.location?.coordinate) }
         .onChange(of: tracker.updateTick) { _, _ in
@@ -456,6 +547,14 @@ struct InAppNavigationView: View {
             checkSpeedCams(newLoc)
             checkRoutePhotos(newLoc)
         }
+        // Location fixes only arrive every `distanceFilter` (5m) of movement, so turning
+        // in place — or moving slowly — left the compass/camera heading frozen until the
+        // next real position change. Heading updates fire far more often; re-rotating the
+        // camera on those too (without re-running the heavier per-location checks above)
+        // is what actually makes the compass track live turning.
+        .onChange(of: tracker.headingDegrees) { _, _ in
+            if followUser { recenter() }
+        }
         .fullScreenCover(item: $parkingLeg) { leg in
             InAppNavigationView(destination: leg.coordinate, destinationName: leg.name, transportType: leg.transportType)
         }
@@ -466,9 +565,13 @@ struct InAppNavigationView: View {
             }
             .presentationDetents([.medium])
         }
+        .sheet(item: $parkingDetailTarget) { target in
+            PlaceDetailView(name: target.name, coordinate: target.coordinate, subtitle: target.subtitle)
+        }
     }
 
     private var modeLabel: String {
+        if let transitLabel = currentLeg.transitLabel { return transitLabel }
         switch transportType {
         case .walking: return "走路"
         case .automobile: return "開車"
@@ -478,6 +581,7 @@ struct InAppNavigationView: View {
     }
 
     private var modeSymbol: String {
+        if currentLeg.transitLabel != nil { return "bus.fill" }
         switch transportType {
         case .walking: return "figure.walk"
         case .automobile: return "car.fill"
@@ -700,10 +804,37 @@ struct InAppNavigationView: View {
     private func loadNearbyParking() async {
         let request = MKLocalSearch.Request()
         request.naturalLanguageQuery = "停車場"
-        request.region = MKCoordinateRegion(center: destination, latitudinalMeters: 400, longitudinalMeters: 400)
+        request.region = MKCoordinateRegion(center: destination, latitudinalMeters: 800, longitudinalMeters: 800)
         request.resultTypes = [.pointOfInterest]
         guard let response = try? await MKLocalSearch(request: request).start() else { return }
-        nearbyParking = Array(response.mapItems.prefix(3))
+        let destLoc = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
+        nearbyParking = Array(response.mapItems.sorted {
+            CLLocation(latitude: $0.placemark.coordinate.latitude, longitude: $0.placemark.coordinate.longitude).distance(from: destLoc)
+                < CLLocation(latitude: $1.placemark.coordinate.latitude, longitude: $1.placemark.coordinate.longitude).distance(from: destLoc)
+        }.prefix(8))
+    }
+
+    /// Real TDX live vehicle positions for this ride leg's real route, filtered to the
+    /// one closest to the user right now — the best available inference for "which bus
+    /// is this", not a confirmed boarding scan (there's no such data source). Silently
+    /// does nothing if the backend couldn't resolve a real route name/scope for this leg,
+    /// or if TDX has no live position for it right now — never fabricates a plate.
+    private func lookupVehiclePlate() async {
+        guard let routeName = currentLeg.transitRouteName, let scopePath = currentLeg.transitScopePath,
+              let userLoc = tracker.location else { return }
+        let escaped = routeName.replacingOccurrences(of: "'", with: "''")
+        guard let list: [BusRealTimeFreq] = try? await TDXClient.shared.get(
+            "v2/Bus/RealTimeByFrequency/\(scopePath)",
+            query: ["$filter": "RouteName/Zh_tw eq '\(escaped)'"]
+        ) else { return }
+        let candidates = list.compactMap { b -> (String, CLLocation)? in
+            guard b.plateNumb != "-1", !b.plateNumb.isEmpty,
+                  let lat = b.busPosition?.positionLat, let lon = b.busPosition?.positionLon else { return nil }
+            return (b.plateNumb, CLLocation(latitude: lat, longitude: lon))
+        }
+        guard let nearest = candidates.min(by: { $0.1.distance(from: userLoc) < $1.1.distance(from: userLoc) }) else { return }
+        currentVehiclePlate = nearest.0
+        updateActivity()
     }
 
     // MARK: - Live Activity
@@ -714,7 +845,9 @@ struct InAppNavigationView: View {
         } ?? 0
         return NavigationTripAttributes.ContentState(
             distanceMeters: meters, etaMinutes: etaMinutes ?? 0, offRoute: offRoute, arrived: arrived,
-            modeLabel: modeLabel, modeSymbol: modeSymbol, legProgress: legProgressText
+            modeLabel: modeLabel, modeSymbol: modeSymbol, legProgress: legProgressText,
+            transitLabel: currentLeg.transitLabel, transitAlightName: currentLeg.transitLabel != nil ? destinationName : nil,
+            transitPlate: currentVehiclePlate
         )
     }
 
@@ -772,6 +905,24 @@ struct InAppNavigationView: View {
                 announcedMilestones.insert(m)
             }
             legInitialDistance = initialDistance
+        }
+
+        // "Ride" legs (real bus/train from the multimodal route planner) have no route for
+        // MapKit to compute — the user is a passenger, not someone to turn-by-turn direct.
+        // Just mark the leg started; handleLocationUpdate's normal arrival-distance check
+        // (same one every other leg uses) is what actually advances past this once GPS
+        // says we're near the alight stop.
+        if let transitLabel = currentLeg.transitLabel {
+            route = nil
+            currentVehiclePlate = nil
+            if !announcedStart {
+                announcedStart = true
+                startActivityIfNeeded()
+            }
+            speak("請搭乘\(transitLabel)，抵達後會自動繼續導航")
+            updateActivity()
+            Task { await lookupVehiclePlate() }
+            return
         }
 
         var effectiveOrigin = origin
@@ -833,7 +984,9 @@ struct InAppNavigationView: View {
             let d = here.distance(to: points[i])
             if d < minDistance { minDistance = d }
         }
-        let strayed = minDistance > offRouteThreshold
+        let strayedThisFix = minDistance > offRouteThreshold
+        offRouteStreak = strayedThisFix ? offRouteStreak + 1 : 0
+        let strayed = offRouteStreak >= Self.requiredOffRouteFixes
         if strayed, !offRoute { speak("已偏離路線，重新規劃路線中") }
         offRoute = strayed
         // Throttle recalculation — don't fire a new MKDirections request on every 5m tick.

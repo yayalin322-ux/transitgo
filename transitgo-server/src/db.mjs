@@ -94,12 +94,32 @@ CREATE TABLE IF NOT EXISTS place_reviews (
   lon         REAL,
   stars       INTEGER NOT NULL,
   comment     TEXT NOT NULL DEFAULT '',
+  photo       TEXT,
   app_version TEXT,
   device      TEXT,
   ip          TEXT,
+  reported    INTEGER NOT NULL DEFAULT 0,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_place_reviews_key ON place_reviews (place_key, created_at);
+
+-- User-submitted custom landmarks (not from Apple's POI index) — held for admin
+-- approval before appearing to anyone else, same "never show unmoderated content as if
+-- it were verified" principle as the rest of this app's real-data-only approach.
+CREATE TABLE IF NOT EXISTS user_landmarks (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  lat         REAL NOT NULL,
+  lon         REAL NOT NULL,
+  photo       TEXT,
+  app_version TEXT,
+  device      TEXT,
+  ip          TEXT,
+  approved    INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_user_landmarks_approved ON user_landmarks (approved, created_at);
 
 CREATE TABLE IF NOT EXISTS speedcam_cache (
   id         TEXT PRIMARY KEY DEFAULT 'all',
@@ -109,6 +129,18 @@ CREATE TABLE IF NOT EXISTS speedcam_cache (
 `);
 
 ensureGtfsSchema(db);
+
+// place_reviews existed before the `reported` column — a plain CREATE TABLE IF NOT
+// EXISTS above won't add it to an already-existing table, so check and migrate.
+{
+  const cols = db.prepare(`PRAGMA table_info(place_reviews)`).all().map((c) => c.name);
+  if (!cols.includes("reported")) {
+    db.exec(`ALTER TABLE place_reviews ADD COLUMN reported INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!cols.includes("photo")) {
+    db.exec(`ALTER TABLE place_reviews ADD COLUMN photo TEXT`);
+  }
+}
 
 // ---- devices ----
 export function upsertDevice({ token, platform, appVersion }) {
@@ -290,8 +322,8 @@ export function getSpeedcamCache() {
 // ---- place reviews (real user-submitted, no external API) ----
 export function createPlaceReview(r) {
   db.prepare(`
-    INSERT INTO place_reviews (place_key, place_name, lat, lon, stars, comment, app_version, device, ip)
-    VALUES (:place_key, :place_name, :lat, :lon, :stars, :comment, :app_version, :device, :ip)
+    INSERT INTO place_reviews (place_key, place_name, lat, lon, stars, comment, photo, app_version, device, ip)
+    VALUES (:place_key, :place_name, :lat, :lon, :stars, :comment, :photo, :app_version, :device, :ip)
   `).run({
     place_key: r.placeKey,
     place_name: r.placeName,
@@ -299,6 +331,7 @@ export function createPlaceReview(r) {
     lon: r.lon ?? null,
     stars: Math.max(1, Math.min(5, parseInt(r.stars, 10) || 0)),
     comment: (r.comment ?? "").slice(0, 500),
+    photo: r.photo ?? null,
     app_version: r.appVersion ?? null,
     device: r.device ?? null,
     ip: r.ip ?? null,
@@ -307,11 +340,83 @@ export function createPlaceReview(r) {
 
 export function listPlaceReviews(placeKey, limit = 50) {
   return db.prepare(`
-    SELECT stars, comment, created_at FROM place_reviews
+    SELECT id, stars, comment, photo, created_at FROM place_reviews
     WHERE place_key = ? ORDER BY created_at DESC LIMIT ?
   `).all(placeKey, limit).map((row) => ({
-    stars: row.stars, comment: row.comment, createdAt: isoZ(row.created_at),
+    id: row.id, stars: row.stars, comment: row.comment, photo: row.photo, createdAt: isoZ(row.created_at),
   }));
+}
+
+/** A user flagged a review as inappropriate/spam — bumps a visible-to-admin counter, doesn't hide it automatically. */
+export function reportPlaceReview(id) {
+  const info = db.prepare(`UPDATE place_reviews SET reported = reported + 1 WHERE id = ?`).run(id);
+  return info.changes > 0;
+}
+
+export function deletePlaceReview(id) {
+  const info = db.prepare(`DELETE FROM place_reviews WHERE id = ?`).run(id);
+  return info.changes > 0;
+}
+
+/** Admin moderation view — most-reported first, so the ones needing attention surface. */
+export function listAllPlaceReviews(limit = 200) {
+  return db.prepare(`
+    SELECT * FROM place_reviews ORDER BY reported DESC, created_at DESC LIMIT ?
+  `).all(limit).map((r) => ({
+    id: r.id, placeKey: r.place_key, placeName: r.place_name,
+    stars: r.stars, comment: r.comment, reported: r.reported,
+    appVersion: r.app_version, createdAt: isoZ(r.created_at),
+  }));
+}
+
+// ---- user-submitted landmarks (real user content, held for admin approval) ----
+export function createUserLandmark(r) {
+  db.prepare(`
+    INSERT INTO user_landmarks (name, description, lat, lon, photo, app_version, device, ip)
+    VALUES (:name, :description, :lat, :lon, :photo, :app_version, :device, :ip)
+  `).run({
+    name: r.name,
+    description: (r.description ?? "").slice(0, 500),
+    lat: r.lat,
+    lon: r.lon,
+    photo: r.photo ?? null,
+    app_version: r.appVersion ?? null,
+    device: r.device ?? null,
+    ip: r.ip ?? null,
+  });
+}
+
+/** Real approved landmarks near a point — Haversine done in JS since this table stays small. */
+export function listApprovedLandmarksNear(lat, lon, radiusMeters = 1000) {
+  const rows = db.prepare(`SELECT * FROM user_landmarks WHERE approved = 1`).all();
+  const R = 6371000, p = Math.PI / 180;
+  return rows.filter((r) => {
+    const x = 0.5 - Math.cos((r.lat - lat) * p) / 2
+      + (Math.cos(lat * p) * Math.cos(r.lat * p) * (1 - Math.cos((r.lon - lon) * p))) / 2;
+    return 2 * R * Math.asin(Math.sqrt(x)) <= radiusMeters;
+  }).map((r) => ({
+    id: r.id, name: r.name, description: r.description, lat: r.lat, lon: r.lon, photo: r.photo,
+  }));
+}
+
+/** Admin moderation queue — pending ones first, since those need a decision. */
+export function listAllUserLandmarks(limit = 200) {
+  return db.prepare(`
+    SELECT * FROM user_landmarks ORDER BY approved ASC, created_at DESC LIMIT ?
+  `).all(limit).map((r) => ({
+    id: r.id, name: r.name, description: r.description, lat: r.lat, lon: r.lon, photo: r.photo,
+    approved: !!r.approved, appVersion: r.app_version, createdAt: isoZ(r.created_at),
+  }));
+}
+
+export function approveUserLandmark(id) {
+  const info = db.prepare(`UPDATE user_landmarks SET approved = 1 WHERE id = ?`).run(id);
+  return info.changes > 0;
+}
+
+export function deleteUserLandmark(id) {
+  const info = db.prepare(`DELETE FROM user_landmarks WHERE id = ?`).run(id);
+  return info.changes > 0;
 }
 
 export function placeReviewStats(placeKey) {

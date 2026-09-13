@@ -1,5 +1,6 @@
 import SwiftUI
 import MapKit
+import PhotosUI
 
 /// A landmark's info page — real MapKit fields (address/phone/website/category; Apple
 /// gives no reviews at all) plus our own user-submitted reviews (see PlaceReviewService).
@@ -14,6 +15,7 @@ struct PlaceDetailView: View {
     @State private var reviews: [PlaceReview] = []
     @State private var showAddReview = false
     @State private var loading = true
+    @State private var reportedReviewIDs: Set<Int> = []
 
     var body: some View {
         NavigationStack {
@@ -65,19 +67,41 @@ struct PlaceDetailView: View {
                 if !reviews.isEmpty {
                     Section {
                         ForEach(reviews) { r in
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(spacing: 2) {
-                                    ForEach(1...5, id: \.self) { n in
-                                        Image(systemName: n <= r.stars ? "star.fill" : "star")
-                                            .font(.caption2).foregroundStyle(.yellow)
+                            HStack(alignment: .top) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(spacing: 2) {
+                                        ForEach(1...5, id: \.self) { n in
+                                            Image(systemName: n <= r.stars ? "star.fill" : "star")
+                                                .font(.caption2).foregroundStyle(.yellow)
+                                        }
+                                    }
+                                    if !r.comment.isEmpty {
+                                        Text(r.comment).font(.subheadline)
+                                    }
+                                    if let photo = r.photo, let image = DataURIImage.decode(photo) {
+                                        Image(uiImage: image).resizable().scaledToFill()
+                                            .frame(width: 120, height: 90)
+                                            .clipShape(RoundedRectangle(cornerRadius: 8))
                                     }
                                 }
-                                if !r.comment.isEmpty {
-                                    Text(r.comment).font(.subheadline)
+                                Spacer()
+                                if reportedReviewIDs.contains(r.id) {
+                                    Text("已檢舉").font(.caption2).foregroundStyle(.secondary)
+                                } else {
+                                    Button {
+                                        PlaceReviewService.report(id: r.id)
+                                        reportedReviewIDs.insert(r.id)
+                                    } label: {
+                                        Image(systemName: "flag").font(.caption)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(.secondary)
                                 }
                             }
                             .padding(.vertical, 2)
                         }
+                    } footer: {
+                        Text("看到不當內容可以按旗子檢舉，管理員會審核處理。")
                     }
                 }
             }
@@ -126,6 +150,9 @@ private struct AddPlaceReviewView: View {
 
     @State private var stars = 0
     @State private var comment = ""
+    @State private var photoItem: PhotosPickerItem?
+    @State private var photoImage: UIImage?
+    @State private var isSubmitting = false
 
     var body: some View {
         NavigationStack {
@@ -144,15 +171,33 @@ private struct AddPlaceReviewView: View {
                 TextField("留下你的評論（可留空）", text: $comment, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(3...6)
+                PhotosPicker(selection: $photoItem, matching: .images) {
+                    if let photoImage {
+                        Image(uiImage: photoImage).resizable().scaledToFill()
+                            .frame(height: 120).frame(maxWidth: .infinity)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    } else {
+                        Label("加一張照片（可留空）", systemImage: "camera")
+                    }
+                }
+                .onChange(of: photoItem) { _, item in
+                    Task {
+                        if let data = try? await item?.loadTransferable(type: Data.self), let img = UIImage(data: data) {
+                            photoImage = img
+                        }
+                    }
+                }
                 Spacer()
                 Button {
-                    if stars > 0 { PlaceReviewService.submit(name: name, coordinate: coordinate, stars: stars, comment: comment) }
+                    isSubmitting = true
+                    let photo = photoImage.flatMap { PhotoUpload.encode($0) }
+                    if stars > 0 { PlaceReviewService.submit(name: name, coordinate: coordinate, stars: stars, comment: comment, photo: photo) }
                     onDone()
                 } label: {
-                    Text("送出").frame(maxWidth: .infinity)
+                    if isSubmitting { ProgressView() } else { Text("送出").frame(maxWidth: .infinity) }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(stars == 0)
+                .disabled(stars == 0 || isSubmitting)
             }
             .padding()
             .navigationTitle("寫評論")

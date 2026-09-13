@@ -16,6 +16,14 @@ import {
   createPlaceReview,
   listPlaceReviews,
   placeReviewStats,
+  reportPlaceReview,
+  deletePlaceReview,
+  listAllPlaceReviews,
+  createUserLandmark,
+  listApprovedLandmarksNear,
+  listAllUserLandmarks,
+  approveUserLandmark,
+  deleteUserLandmark,
   createObservation,
   listObservations,
   getBikeCache,
@@ -45,7 +53,8 @@ const PORT = parseInt(process.env.PORT || "8787", 10);
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 
 const app = express();
-app.use(express.json({ limit: "64kb" }));
+// Raised from 64kb — place-review/landmark submissions can carry a base64-encoded photo.
+app.use(express.json({ limit: "2mb" }));
 app.use((req, _res, next) => {
   req.clientIp = (req.headers["x-forwarded-for"]?.split(",")[0] || req.socket.remoteAddress || "").trim();
   next();
@@ -114,6 +123,15 @@ app.get("/v1/ratings/route", (req, res) => {
   res.json(routeRatingStats(kind, route, system));
 });
 
+// A photo field must be a real data: URI (what the app's own JPEG-compress-then-encode
+// step produces) and under ~1.5MB decoded — rejects garbage/oversized input without
+// silently truncating it into a corrupt image.
+function validPhoto(photo) {
+  if (photo == null) return true;
+  if (typeof photo !== "string" || !photo.startsWith("data:image/")) return false;
+  return photo.length <= 2_000_000;
+}
+
 // ---- place reviews (real user-submitted content, no external Places API) ----
 const placeReviewBucket = new Map();
 app.post("/v1/places/reviews", (req, res) => {
@@ -123,11 +141,12 @@ app.post("/v1/places/reviews", (req, res) => {
   hist.push(now);
   placeReviewBucket.set(req.clientIp, hist);
 
-  const { placeKey, placeName, lat, lon, stars, comment, appVersion, device } = req.body || {};
+  const { placeKey, placeName, lat, lon, stars, comment, photo, appVersion, device } = req.body || {};
   const n = parseInt(stars, 10);
   if (!placeKey || !placeName) return res.status(400).json({ error: "placeKey and placeName required" });
   if (!(n >= 1 && n <= 5)) return res.status(400).json({ error: "stars 1-5 required" });
-  createPlaceReview({ placeKey, placeName, lat, lon, stars: n, comment, appVersion, device, ip: req.clientIp });
+  if (!validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
+  createPlaceReview({ placeKey, placeName, lat, lon, stars: n, comment, photo, appVersion, device, ip: req.clientIp });
   res.json({ ok: true });
 });
 
@@ -135,6 +154,74 @@ app.get("/v1/places/reviews", (req, res) => {
   const placeKey = typeof req.query.placeKey === "string" ? req.query.placeKey : null;
   if (!placeKey) return res.status(400).json({ error: "placeKey required" });
   res.json({ stats: placeReviewStats(placeKey), reviews: listPlaceReviews(placeKey) });
+});
+
+const placeReviewReportBucket = new Map();
+app.post("/v1/places/reviews/:id/report", (req, res) => {
+  const now = Date.now();
+  const hist = (placeReviewReportBucket.get(req.clientIp) || []).filter((t) => now - t < 60_000);
+  if (hist.length >= 10) return res.status(429).json({ error: "rate limited" });
+  hist.push(now);
+  placeReviewReportBucket.set(req.clientIp, hist);
+
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
+  const ok = reportPlaceReview(id);
+  if (!ok) return res.status(404).json({ error: "not found" });
+  res.json({ ok: true });
+});
+
+app.get("/v1/admin/place-reviews", requireAdmin, (_req, res) => {
+  res.json({ reviews: listAllPlaceReviews() });
+});
+
+// ---- user-submitted landmarks (real content, held for admin approval before showing) ----
+const landmarkBucket = new Map();
+app.post("/v1/landmarks", (req, res) => {
+  const now = Date.now();
+  const hist = (landmarkBucket.get(req.clientIp) || []).filter((t) => now - t < 60_000);
+  if (hist.length >= 5) return res.status(429).json({ error: "rate limited" });
+  hist.push(now);
+  landmarkBucket.set(req.clientIp, hist);
+
+  const { name, description, lat, lon, photo, appVersion, device } = req.body || {};
+  if (!name || typeof name !== "string") return res.status(400).json({ error: "name required" });
+  if (typeof lat !== "number" || typeof lon !== "number") return res.status(400).json({ error: "lat/lon required" });
+  if (!validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
+  createUserLandmark({ name, description, lat, lon, photo, appVersion, device, ip: req.clientIp });
+  res.json({ ok: true });
+});
+
+/** Real approved landmarks near a point, to merge into the app's own nearby-landmarks list alongside Apple's POIs. */
+app.get("/v1/landmarks", (req, res) => {
+  const lat = parseFloat(req.query.lat);
+  const lon = parseFloat(req.query.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).json({ error: "lat/lon required" });
+  const radius = Number.isFinite(parseFloat(req.query.radius)) ? parseFloat(req.query.radius) : 1000;
+  res.json({ landmarks: listApprovedLandmarksNear(lat, lon, radius) });
+});
+
+app.get("/v1/admin/landmarks", requireAdmin, (_req, res) => {
+  res.json({ landmarks: listAllUserLandmarks() });
+});
+
+app.post("/v1/admin/landmarks/:id/approve", requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
+  res.json({ ok: approveUserLandmark(id) });
+});
+
+app.delete("/v1/admin/landmarks/:id", requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
+  res.json({ ok: deleteUserLandmark(id) });
+});
+
+app.delete("/v1/admin/place-reviews/:id", requireAdmin, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
+  const ok = deletePlaceReview(id);
+  res.json({ ok });
 });
 
 // ---- crowd-sourced observations (from Live Activity board/alight buttons) ----

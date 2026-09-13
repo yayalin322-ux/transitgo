@@ -23,11 +23,23 @@ final class TransferPlannerViewModel {
     var destinationText = ""
     var destinationResults: [DestinationCandidate] = []
     var destination: DestinationCandidate?
+    /// Shared by the multimodal (new-engine) planner — defaults to "now", but the user
+    /// can move it, e.g. to check tomorrow morning's first bus.
+    var multimodalDepartAt = Date()
 
     var itineraries: [TransferItinerary] = []
     var metroItineraries: [MetroItinerary] = []
     var isPlanning = false
     var errorText: String?
+
+    // The new multimodal routing engine — real data, but only where it's actually been
+    // ingested so far (currently 新竹市/新竹縣公車 only). Empty/nil here means "this
+    // engine has no real data for this area yet", not "no route exists" — the existing
+    // bus/metro/rail sections above stay the primary planners.
+    var multimodalRoutes: [MultimodalRoute] = []
+    // Debug-visible while this feature is new — shows exactly why multimodalRoutes is
+    // empty (unreachable vs. server said no route) instead of leaving it unexplained.
+    var multimodalDebug: String?
 
     // Rail — kept as its own always-visible section, since TRA stations have no
     // coordinate in this app, so there's no way to fold it into the same coordinate
@@ -158,9 +170,12 @@ final class TransferPlannerViewModel {
         travelTimes = nil
         itineraries = []
         metroItineraries = []
+        multimodalRoutes = []
+        multimodalDebug = nil
         defer { isPlanning = false }
 
         async let busResult = TransferPlanner.plan(city: city, from: origin, to: dest)
+        async let multimodalResult = MultimodalRoutingService.plan(from: origin, to: dest, departureTime: multimodalDepartAt)
         let metroResult: [MetroItinerary]
         if let op = metroOperator {
             metroResult = await MetroTransferPlanner.planNearby(operator: op, from: origin, to: dest)
@@ -170,6 +185,15 @@ final class TransferPlannerViewModel {
         let bus = await busResult
         itineraries = bus.itineraries
         metroItineraries = metroResult
+        switch await multimodalResult {
+        case .success(let routes):
+            multimodalRoutes = routes
+            multimodalDebug = routes.isEmpty ? "多模式引擎：此範圍暫無真實路線" : nil
+        case .serverError(let code, let message):
+            multimodalDebug = "多模式引擎：\(code) \(message)\n起點(\(origin.latitude),\(origin.longitude)) 終點(\(dest.latitude),\(dest.longitude))"
+        case .unreachable(let reason):
+            multimodalDebug = "多模式引擎連線失敗：\(reason)"
+        }
 
         if itineraries.isEmpty, metroItineraries.isEmpty {
             // Distinguish "TDX genuinely has nothing" from "TDX didn't actually answer" —
@@ -216,6 +240,35 @@ final class TransferPlannerViewModel {
     }
 }
 
+/// Wraps a multi-leg trip so it can drive `.fullScreenCover(item:)` the same way the
+/// single-destination `NavTarget` does.
+struct MultimodalNavTarget: Identifiable {
+    let id = UUID()
+    let legs: [NavigationLeg]
+    let tripName: String
+}
+
+/// Real per-boarding segments (from the routing engine's own ingested data) → the
+/// sequential legs InAppNavigationView already knows how to run: a WALK segment becomes
+/// a real turn-by-turn walking leg to the next boarding point; a BUS/TRA/METRO segment
+/// becomes a "ride" leg (see NavigationLeg.transitLabel) with no route to draw — just
+/// live-position tracking that auto-advances once GPS says we're near the alight stop.
+/// Segments missing a real coordinate (backend couldn't resolve that stop's lat/lon) are
+/// skipped rather than guessed — the trip still runs, just without a leg for that hop.
+private func navigationLegs(for route: MultimodalRoute) -> [NavigationLeg] {
+    route.segments.compactMap { seg -> NavigationLeg? in
+        guard let coord = seg.toCoordinate else { return nil }
+        let name = seg.toName ?? (seg.mode == "WALK" ? "轉乘點" : "下車站")
+        if seg.mode == "WALK" {
+            return NavigationLeg(coordinate: coord, name: name, transportType: .walking)
+        }
+        return NavigationLeg(
+            coordinate: coord, name: name, transportType: .transit, transitLabel: seg.modeLabel,
+            transitRouteName: seg.routeShortName, transitScopePath: seg.scopePath
+        )
+    }
+}
+
 struct TransferPlannerView: View {
     let city: BusCity
     let origin: CLLocationCoordinate2D
@@ -226,6 +279,7 @@ struct TransferPlannerView: View {
     @State private var path = NavigationPath()
     @State private var showBikePicker = false
     @State private var navTarget: NavTarget?
+    @State private var multimodalNavTarget: MultimodalNavTarget?
     /// Only wired into 台鐵 for now — bus/metro discovery here is built on TDX's *live*
     /// arrival feed, not the schedule timetable, so it can't honestly answer "is there
     /// service at 8am" for a time other than now. To check that, open the route/line from
@@ -347,12 +401,73 @@ struct TransferPlannerView: View {
                     }
                 }
 
+                Section {
+                    DatePicker("多模式出發時間", selection: $model.multimodalDepartAt)
+                        .onChange(of: model.multimodalDepartAt) { _, _ in
+                            if model.destination != nil { Task { await model.planAll(city: city, metroOperator: metroOperator, from: effectiveOrigin) } }
+                        }
+                }
+
                 if model.isPlanning {
                     Section { HStack { Spacer(); ProgressView("規劃路線中…"); Spacer() } }
                 }
                 if let err = model.errorText, !model.isPlanning {
                     Section { Text(err).font(.footnote).foregroundStyle(.secondary) }
                     travelTimesSection
+                }
+
+                if let debug = model.multimodalDebug, !model.isPlanning {
+                    Section { Text(debug).font(.caption2).foregroundStyle(.orange) }
+                }
+
+                ForEach(model.multimodalRoutes) { route in
+                    Section {
+                        ForEach(Array(route.segments.enumerated()), id: \.element.id) { index, seg in
+                            HStack(alignment: .top, spacing: 10) {
+                                stepBadge(index)
+                                Image(systemName: seg.modeIcon).foregroundStyle(.blue).frame(width: 18)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    if seg.mode == "WALK" {
+                                        Text("走路 \(seg.durationSeconds / 60) 分鐘")
+                                            .font(.subheadline)
+                                    } else {
+                                        Text(seg.modeLabel).font(.subheadline.weight(.semibold))
+                                        if let from = seg.fromName {
+                                            Text("上車：\(from)" + (seg.departureClock.map { " (\($0)) " } ?? ""))
+                                                .font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        if let to = seg.toName {
+                                            Text("下車：\(to)" + (seg.arrivalClock.map { " (\($0)) " } ?? "") + (seg.stopsPassed > 1 ? "・經過\(seg.stopsPassed)站" : ""))
+                                                .font(.caption).foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                                Spacer()
+                            }
+                        }
+                        Button {
+                            let legs = navigationLegs(for: route)
+                            guard !legs.isEmpty else { return }
+                            multimodalNavTarget = MultimodalNavTarget(legs: legs, tripName: model.destination?.name ?? "目的地")
+                        } label: {
+                            Label("開始導航", systemImage: "location.fill").frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    } header: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("多模式・\(route.label)")
+                            if let summary = route.summaryText {
+                                Text(summary).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text("共\(route.durationSeconds / 60)分・轉乘\(route.transfers)次")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        .textCase(nil)
+                    } footer: {
+                        if route.id == model.multimodalRoutes.first?.id {
+                            Text("新路線引擎（測試中，目前僅新竹市／縣有真實資料；搭乘段落是被動追蹤，不會畫出公車實際行駛路線）")
+                        }
+                    }
                 }
 
                 ForEach(model.metroItineraries) { itinerary in
@@ -416,6 +531,9 @@ struct TransferPlannerView: View {
             }
             .fullScreenCover(item: $navTarget) { target in
                 InAppNavigationView(destination: target.coordinate, destinationName: target.name, transportType: target.transportType, avoidsHighways: target.avoidsHighways)
+            }
+            .fullScreenCover(item: $multimodalNavTarget) { target in
+                InAppNavigationView(legs: target.legs, tripName: target.tripName)
             }
             .sheet(item: $editingSavedPlaceRole) { role in
                 SetSavedPlaceView(role: role, near: origin)
