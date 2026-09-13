@@ -94,8 +94,28 @@ export function findRoute(graph, originId, destinationId, departureTimeSeconds, 
         waitingSeconds += wait;
         transitSeconds += ride;
         nextTime = edge.arrivalSeconds;
+      } else if (edge.isHeadwayBased) {
+        // Real headway band, real service window (e.g. TDX's own "07:00"-"09:00" peak
+        // band) — outside it this route/direction isn't running at that frequency
+        // (may not be running at all), so the edge simply isn't usable then.
+        const timeOfDay = state.time % 86400;
+        if (edge.windowStartSeconds != null && timeOfDay < edge.windowStartSeconds) continue;
+        if (edge.windowEndSeconds != null && timeOfDay > edge.windowEndSeconds) continue;
+        // Expected wait under an assumption of uniform arrivals relative to the bus
+        // schedule (half the real headway) — a standard, documented approximation for
+        // headway-based routing, not an arbitrary number.
+        const wait = edge.headwaySeconds / 2;
+        const ride = edge.travelSeconds ?? 0;
+        const isTransfer = state.lastMode != null && state.lastMode !== Mode.WALK && state.lastMode !== edge.mode;
+        if (isTransfer) {
+          transfers += 1;
+          if (transfers > maxTransfers) continue;
+        }
+        waitingSeconds += wait;
+        transitSeconds += ride;
+        nextTime = state.time + wait + ride;
       } else {
-        continue;   // headway-only edges have no fixed departure yet — Phase 5
+        continue;
       }
 
       const known = bestTimeAt.get(edge.toNodeId);
@@ -124,8 +144,13 @@ function reconstruct(finalState) {
       routeId: s.previousEdge.routeId,
       fromNodeId: s.previousEdge.fromNodeId,
       toNodeId: s.previousEdge.toNodeId,
-      departureSeconds: s.previousEdge.departureSeconds ?? s.previousState.time,
+      // A headway edge has no fixed departureSeconds of its own — the real boarding
+      // instant is (arrival - ride time), not the previous node's arrival time (that
+      // would wrongly fold the wait into the leg's own duration).
+      departureSeconds: s.previousEdge.departureSeconds
+        ?? (s.previousEdge.travelSeconds != null ? s.time - s.previousEdge.travelSeconds : s.previousState.time),
       arrivalSeconds: s.time,
+      isEstimated: s.previousEdge.isHeadwayBased,
     });
     s = s.previousState;
   }

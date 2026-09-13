@@ -1,4 +1,16 @@
 import { MultimodalGraph, TransitNode, TransitEdge, NodeType, Mode, parseGtfsTime } from "./model.mjs";
+import { haversineMeters } from "./virtual.mjs";
+
+/**
+ * No verified TDX endpoint gives real stop-to-stop bus travel time (S2STravelTime exists
+ * for Metro only — checked the app's own MetroService.swift, nothing equivalent for
+ * bus). Rather than leave headway routes edge-less forever, this uses the same honest
+ * pattern the WALK edges already use: a real measured distance (from real stop
+ * coordinates) divided by a clearly-labeled speed *estimate* — 15 km/h accounts for a
+ * city bus's stops/traffic/signals, not free-flow speed. This is a genuine estimate, not
+ * a real measurement — every such edge's `source` says so explicitly.
+ */
+const ESTIMATED_BUS_SPEED_MPS = 15 / 3.6;
 
 export function nodeId(feedId, stopId) {
   return `${feedId}:${stopId}`;
@@ -89,9 +101,58 @@ export function buildGraph(db, { feedIds = null, dataVersion = null } = {}) {
     graph.warnings.push(`${skippedForMissingStopId} stop_times rows have no resolved stop_id yet (bus per-trip times not yet joined to StopOfRoute sequence) — excluded from edges, not guessed.`);
   }
 
-  const freqCount = db.prepare(`SELECT COUNT(*) c FROM transit_route_frequency ${feedClause}`).get(...feedArgs).c;
-  if (freqCount > 0) {
-    graph.warnings.push(`${freqCount} real TDX headway bands in transit_route_frequency have no edges built yet — needs each route's ordered stop sequence (see module doc comment); tracked as the next increment, not fabricated as edges.`);
+  // Headway-based edges — one per consecutive real stop pair per route+direction that
+  // has a real TDX headway band, active only during that band's own real time window.
+  const freqRows = db.prepare(`SELECT * FROM transit_route_frequency ${feedClause}`).all(...feedArgs);
+  const routeStopStmt = db.prepare(`
+    SELECT stop_id FROM gtfs_route_stops
+    WHERE feed_id = ? AND route_id = ? AND direction = ? ORDER BY stop_sequence
+  `);
+  const stopCoordStmt = db.prepare(`SELECT stop_lat, stop_lon FROM gtfs_stops WHERE feed_id = ? AND stop_id = ?`);
+  const routeStopCache = new Map();
+  let headwayEdgesBuilt = 0, headwaySkippedNoStops = 0;
+
+  for (const f of freqRows) {
+    const cacheKey = `${f.feed_id}|${f.route_id}|${f.direction}`;
+    if (!routeStopCache.has(cacheKey)) {
+      routeStopCache.set(cacheKey, routeStopStmt.all(f.feed_id, f.route_id, f.direction).map((r) => r.stop_id));
+    }
+    const stopIds = routeStopCache.get(cacheKey);
+    if (stopIds.length < 2) { headwaySkippedNoStops++; continue; }
+
+    const startSeconds = parseGtfsTime(f.start_time);
+    const endSeconds = parseGtfsTime(f.end_time);
+    const avgHeadwaySeconds = f.min_headway_mins != null && f.max_headway_mins != null
+      ? ((f.min_headway_mins + f.max_headway_mins) / 2) * 60
+      : (f.min_headway_mins ?? f.max_headway_mins ?? null) * 60;
+    if (avgHeadwaySeconds == null || startSeconds == null || endSeconds == null) continue;
+
+    for (let i = 0; i < stopIds.length - 1; i++) {
+      const a = stopCoordStmt.get(f.feed_id, stopIds[i]);
+      const b = stopCoordStmt.get(f.feed_id, stopIds[i + 1]);
+      if (!a?.stop_lat || !b?.stop_lat) continue;
+      const distanceMeters = haversineMeters(a.stop_lat, a.stop_lon, b.stop_lat, b.stop_lon);
+      graph.addEdge(new TransitEdge({
+        id: `HW_${f.feed_id}_${f.route_id}_${f.direction}_${i}_${f.start_time}`,
+        fromNodeId: nodeId(f.feed_id, stopIds[i]),
+        toNodeId: nodeId(f.feed_id, stopIds[i + 1]),
+        mode: modeFor(f.feed_id, f.route_id),
+        routeId: f.route_id,
+        headwaySeconds: avgHeadwaySeconds,
+        windowStartSeconds: startSeconds,
+        windowEndSeconds: endSeconds,
+        travelSeconds: Math.max(30, Math.round(distanceMeters / ESTIMATED_BUS_SPEED_MPS)),
+        distanceMeters,
+        source: `TDX real headway (${f.min_headway_mins ?? "?"}-${f.max_headway_mins ?? "?"} min, ${f.start_time}-${f.end_time}); travel time estimated from real distance at ${Math.round(ESTIMATED_BUS_SPEED_MPS * 3.6)} km/h`,
+      }));
+      headwayEdgesBuilt++;
+    }
+  }
+  if (headwaySkippedNoStops > 0) {
+    graph.warnings.push(`${headwaySkippedNoStops} headway band(s) skipped — no gtfs_route_stops sequence for that route+direction yet.`);
+  }
+  if (headwayEdgesBuilt > 0) {
+    graph.warnings.push(`${headwayEdgesBuilt} headway-based edges built with an ESTIMATED travel time (real distance / assumed ${Math.round(ESTIMATED_BUS_SPEED_MPS * 3.6)} km/h) — no verified TDX stop-to-stop bus travel time source exists yet.`);
   }
 
   return graph;

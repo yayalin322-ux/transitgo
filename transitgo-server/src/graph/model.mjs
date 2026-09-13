@@ -42,6 +42,11 @@ export class TransitEdge {
     id, fromNodeId, toNodeId, mode, routeId = null,
     departureSeconds = null, arrivalSeconds = null,
     headwaySeconds = null, travelSeconds = null,
+    // Real service window this headway band actually covers (e.g. TDX's own
+    // "07:00"-"09:00" peak band) — a headway edge is only usable when the query time
+    // falls inside it; outside it, this route/direction simply isn't running at that
+    // frequency (might not be running at all), so the edge must not be used.
+    windowStartSeconds = null, windowEndSeconds = null,
     distanceMeters = null, fare = null, source,
   }) {
     this.id = id;
@@ -52,6 +57,8 @@ export class TransitEdge {
     this.departureSeconds = departureSeconds;
     this.arrivalSeconds = arrivalSeconds;
     this.headwaySeconds = headwaySeconds;
+    this.windowStartSeconds = windowStartSeconds;
+    this.windowEndSeconds = windowEndSeconds;
     this.travelSeconds = travelSeconds;
     this.distanceMeters = distanceMeters;
     this.fare = fare;

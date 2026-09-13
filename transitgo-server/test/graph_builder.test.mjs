@@ -73,8 +73,8 @@ check("Bus route with only 1 real stop_time produces zero edges (need 2+ points 
 
 check("Graph flags the real gap: bus per-trip stop_id not yet resolved, not silently dropped without a trace",
   graph.warnings.some((w) => w.includes("no resolved stop_id")));
-check("Graph flags the real gap: headway bands exist but have no edges yet (needs route stop order), not fabricated",
-  graph.warnings.some((w) => w.includes("headway bands")));
+check("Graph flags the real gap: this headway band has no gtfs_route_stops sequence in this test, so no edge is fabricated for it",
+  graph.warnings.some((w) => w.includes("no gtfs_route_stops sequence")));
 
 console.log(`\nnodeCount=${graph.nodeCount} edgeCount=${graph.edgeCount}`);
 console.log(failed ? "\nOVERALL: FAIL" : "\nOVERALL: PASS");
