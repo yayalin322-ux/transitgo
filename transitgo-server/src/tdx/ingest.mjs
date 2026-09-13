@@ -2,6 +2,7 @@ import { TDXProvider } from "./adapter.mjs";
 import {
   normalizeTRAStations, normalizeTRATimetable,
   normalizeBusRoutes, normalizeBusStops, normalizeBusRouteStopSequence, normalizeBusSchedule,
+  normalizeMetroStations, normalizeMetroStationSequence,
 } from "./normalizer.mjs";
 
 const provider = new TDXProvider();
@@ -141,4 +142,39 @@ export async function ingestBusRouteSchedule(db, feedId, scopePath, routeId, rou
     throw e;
   }
   return { stops: stops.length, trips: trips.length, stopTimes: stopTimes.length, frequencies: frequencies.length, routeStops: routeStops.length };
+}
+
+/**
+ * Ingests real MRT/metro station topology for one line — stations + their real ordered
+ * sequence, both directions (the same physical stations, traversed backward for the
+ * opposite direction — TDX's StationOfLine only publishes one order).
+ *
+ * NOTE: this is topology only, no schedule/headway data — TDX's Metro endpoints this
+ * adapter has verified access to (Station, StationOfLine) don't include one. No edges
+ * get built from this alone yet (Graph Builder needs either gtfs_stop_times or
+ * transit_route_frequency to build a time-dependent/headway edge); FirstLastTimetable is
+ * the likely real source for that, not yet wired in — same "structure now, data
+ * later" pattern as the bus stop_id-resolution and headway-edge gaps before it.
+ */
+export async function ingestMetroLine(db, feedId, operatorCode, lineId, lineNameZh) {
+  const [rawStations, rawStationOfLine] = await Promise.all([
+    provider.getMetroStations(operatorCode),
+    provider.getMetroStationOfLine(operatorCode),
+  ]);
+  const stops = normalizeMetroStations(rawStations);
+  const forward = normalizeMetroStationSequence(rawStationOfLine, lineId);
+  const backward = forward.map((r, i, arr) => ({ ...r, direction: 1, stop_sequence: arr.length - i })).reverse();
+  const routeStops = [...forward, ...backward];
+
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    insertRoutes(db, [{ feed_id: feedId, route_id: lineId, route_short_name: lineNameZh ?? lineId, route_long_name: null, route_type: 1 }]);
+    insertStops(db, feedId, stops);
+    insertRouteStops(db, feedId, lineId, routeStops);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  return { stops: stops.length, routeStops: routeStops.length };
 }

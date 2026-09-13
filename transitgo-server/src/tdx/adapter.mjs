@@ -48,6 +48,16 @@ export class TDXProvider extends TransitDataProvider {
   async getBusSchedule(scopePath, routeNameZh) {
     return get(`v2/Bus/Schedule/${scopePath}?${routeFilter(routeNameZh)}`);
   }
+
+  /** `operator` is TDX's own code, e.g. "TRTC" (Taipei Metro), "KRTC" (Kaohsiung). */
+  async getMetroStations(operatorCode) {
+    return get(`v2/Rail/Metro/Station/${operatorCode}`);
+  }
+
+  /** Real ordered station sequence per line — same role as Bus's StopOfRoute. */
+  async getMetroStationOfLine(operatorCode) {
+    return get(`v2/Rail/Metro/StationOfLine/${operatorCode}`);
+  }
 }
 
 function routeFilter(routeNameZh) {

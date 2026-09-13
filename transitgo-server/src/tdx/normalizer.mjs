@@ -5,6 +5,32 @@
  * Routing Engine) only ever sees the internal model.
  */
 
+/** Real MRT/metro stations — same shape as StationPosition everywhere else in TDX. */
+export function normalizeMetroStations(rawStations) {
+  return (rawStations ?? []).map((s) => ({
+    stop_id: s.StationID,
+    stop_name: s.StationName?.Zh_tw ?? null,
+    stop_lat: s.StationPosition?.PositionLat ?? null,
+    stop_lon: s.StationPosition?.PositionLon ?? null,
+  }));
+}
+
+/** Real ordered station list per line (TDX's own Sequence) — same role as Bus's StopOfRoute. */
+export function normalizeMetroStationSequence(rawStationOfLine, lineId) {
+  const rows = [];
+  for (const entry of rawStationOfLine ?? []) {
+    if (entry.LineID !== lineId) continue;
+    for (const s of entry.Stations ?? []) {
+      if (!s.StationID || s.Sequence == null) continue;
+      // Metro has no real "direction" split like bus does at this endpoint — direction 0
+      // covers the line's own published station order; the reverse direction is the
+      // same physical edges traversed backward, added separately by the ingest step.
+      rows.push({ route_id: lineId, direction: 0, stop_sequence: s.Sequence, stop_id: s.StationID });
+    }
+  }
+  return rows;
+}
+
 export function normalizeTRAStations(rawStations) {
   return (rawStations ?? []).map((s) => ({
     stop_id: s.StationID,
