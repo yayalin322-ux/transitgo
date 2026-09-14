@@ -36,14 +36,24 @@ function translate(sql, args) {
 }
 
 class PgStatement {
-  constructor(pool, sql) {
-    this.pool = pool;
+  constructor(db, sql) {
+    this.db = db;
     this.sql = sql;
+  }
+
+  // BEGIN/COMMIT/ROLLBACK pin a single checked-out client on the PgDatabase (see
+  // exec() below); every statement run while that's set must go through the SAME
+  // client, or a multi-statement transaction can land its inserts on a different
+  // pooled connection than its own BEGIN/COMMIT — silently breaking atomicity and,
+  // worse, leaving connections stuck "idle in transaction" until the pool is
+  // exhausted and unrelated requests start timing out (surfaced as 502s upstream).
+  get conn() {
+    return this.db.txClient || this.db.pool;
   }
 
   async run(...args) {
     const { text, values } = translate(this.sql, args);
-    const result = await this.pool.query(text, values);
+    const result = await this.conn.query(text, values);
     return {
       changes: result.rowCount ?? 0,
       // Only meaningful for an INSERT ... RETURNING id — every INSERT in this codebase
@@ -54,13 +64,13 @@ class PgStatement {
 
   async get(...args) {
     const { text, values } = translate(this.sql, args);
-    const result = await this.pool.query(text, values);
+    const result = await this.conn.query(text, values);
     return result.rows[0];
   }
 
   async all(...args) {
     const { text, values } = translate(this.sql, args);
-    const result = await this.pool.query(text, values);
+    const result = await this.conn.query(text, values);
     return result.rows;
   }
 }
@@ -68,16 +78,44 @@ class PgStatement {
 export class PgDatabase {
   constructor(connectionString) {
     this.pool = new Pool({ connectionString, ssl: { rejectUnauthorized: false } });
+    // Set between BEGIN and COMMIT/ROLLBACK to pin every query in an explicit
+    // transaction to one physical connection. Null outside a transaction, when
+    // each statement can use whichever connection the pool hands back.
+    this.txClient = null;
   }
 
   /** Multi-statement DDL/raw SQL — pg's simple query protocol runs every ';'-separated
    * statement in one round trip as long as there are no bound parameters, same as
-   * sqlite's db.exec(). */
+   * sqlite's db.exec(). Also where BEGIN/COMMIT/ROLLBACK are intercepted to pin/release
+   * a single connection for the duration of an explicit transaction. */
   async exec(sql) {
-    await this.pool.query(sql);
+    const trimmed = sql.trim().toUpperCase();
+    if (trimmed === "BEGIN") {
+      const client = await this.pool.connect();
+      try {
+        await client.query(sql);
+      } catch (e) {
+        client.release();
+        throw e;
+      }
+      this.txClient = client;
+      return;
+    }
+    if (trimmed === "COMMIT" || trimmed === "ROLLBACK") {
+      const client = this.txClient;
+      this.txClient = null;
+      if (!client) return;
+      try {
+        await client.query(sql);
+      } finally {
+        client.release();
+      }
+      return;
+    }
+    await (this.txClient || this.pool).query(sql);
   }
 
   prepare(sql) {
-    return new PgStatement(this.pool, sql);
+    return new PgStatement(this, sql);
   }
 }
