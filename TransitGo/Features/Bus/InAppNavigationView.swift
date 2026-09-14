@@ -200,7 +200,11 @@ struct InAppNavigationView: View {
     @State private var closeFixStreak = 0
     @State private var maneuverPassStreak = 0
     @State private var followResumeTask: Task<Void, Never>?
+    /// Camera changes made by recenter() itself (called on every heading/location tick)
+    /// shouldn't be mistaken for a manual drag — see the mapCameraChange comment.
+    @State private var suppressFollowDetectionUntil = Date.distantPast
     @State private var nearbyParking: [MKMapItem] = []
+    @State private var earlyParkingTriggered = false
     private struct ParkingDetailTarget: Identifiable {
         let id = UUID()
         let name: String
@@ -314,9 +318,19 @@ struct InAppNavigationView: View {
             // defaults here leaves exactly the one we've deliberately positioned.
             .mapControls {}
             .onMapCameraChange(frequency: .continuous) { _ in
-                // A manual drag pauses auto-follow so the user can look around, but this
-                // is navigation — nobody wants to remember to tap "recenter" every time,
-                // so it resumes on its own a few seconds after they stop touching the map.
+                // Without the suppression check below, recenter()'s OWN camera update
+                // (every heading tick — several times a second while turning) counted as
+                // a "manual drag" here, which immediately flipped followUser back to
+                // false and cancelled the follow — so the compass/camera only actually
+                // rotated once every ~4s (whenever the resume timer briefly won the
+                // race), not live. `.continuous` fires repeatedly through a single
+                // animated change, so the suppression window has to cover the whole
+                // animation, not just its first frame.
+                guard Date() >= suppressFollowDetectionUntil else { return }
+                // A real manual drag pauses auto-follow so the user can look around, but
+                // this is navigation — nobody wants to remember to tap "recenter" every
+                // time, so it resumes on its own a few seconds after they stop touching
+                // the map.
                 followUser = false
                 followResumeTask?.cancel()
                 followResumeTask = Task {
@@ -442,6 +456,29 @@ struct InAppNavigationView: View {
                             .font(.footnote.weight(.semibold)).foregroundStyle(.white)
                             .padding(.horizontal, 12).padding(.vertical, 6)
                             .background(.orange, in: Capsule())
+                    }
+                    // Shown from 50m out (see handleLocationUpdate) so there's actually
+                    // time to act on it, not just a list that appears once already
+                    // stopped at the destination.
+                    if earlyParkingTriggered, !nearbyParking.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("即將抵達・附近停車場").font(.caption).foregroundStyle(.secondary)
+                            ForEach(Array(nearbyParking.prefix(3).enumerated()), id: \.offset) { _, item in
+                                Button {
+                                    navigateToParking(item)
+                                } label: {
+                                    HStack {
+                                        Image(systemName: "parkingsign.circle.fill").foregroundStyle(.blue)
+                                        Text(item.name ?? "停車場").lineLimit(1)
+                                        Spacer()
+                                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                                    }
+                                }
+                                .foregroundStyle(.primary)
+                            }
+                        }
+                        .padding(12)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
                     if let err = errorText {
                         Text(err).font(.footnote).foregroundStyle(.white)
@@ -706,14 +743,19 @@ struct InAppNavigationView: View {
     private func recenter() {
         guard let loc = tracker.location else { return }
         let heading: CLLocationDirection = tracker.headingDegrees ?? (loc.course >= 0 ? loc.course : 0)
+        // recenter() runs on every heading/location tick — the change handler above
+        // needs to know this particular camera update isn't a manual drag. `withAnimation`
+        // with no explicit duration runs ~0.35s; padding to 0.5s covers it with margin.
+        suppressFollowDetectionUntil = Date().addingTimeInterval(0.5)
         withAnimation {
             camera = .camera(MapCamera(
                 centerCoordinate: loc.coordinate,
-                distance: transportType == .walking ? 220 : 420,
+                // Closer + flatter — a car-nav-style view, not an overview: tighter zoom
+                // and a shallower tilt read as "close to the road ahead" instead of
+                // looking down at the map from height.
+                distance: transportType == .walking ? 160 : 260,
                 heading: heading,
-                // 70° read as too extreme/disorienting — 25° is a gentler 3D tilt, closer
-                // to a normal turn-by-turn view than an almost-horizon-level angle.
-                pitch: 25
+                pitch: 15
             ))
         }
     }
@@ -793,6 +835,14 @@ struct InAppNavigationView: View {
             for m in Self.milestones where distance <= Double(m) && !announcedMilestones.contains(m) {
                 announcedMilestones.insert(m)
                 speak(m >= 1000 ? "距離目的地還有一公里" : "距離目的地還有\(m)公尺")
+            }
+            // Surface parking options a little before arrival, not only after — by the
+            // time you're actually stopped, you'd rather already know where to go than
+            // start searching. 50m still leaves room to react before pulling in.
+            if isLastLeg, transportType == .automobile, distance <= 50, !earlyParkingTriggered {
+                earlyParkingTriggered = true
+                speak("即將抵達，附近有停車場可以選擇")
+                Task { await loadNearbyParking() }
             }
         }
         updateActivity()
@@ -1033,7 +1083,17 @@ struct InAppNavigationView: View {
         let distanceToManeuver = loc.distance(from: CLLocation(latitude: maneuverCoord.latitude, longitude: maneuverCoord.longitude))
         let fixIsTrustworthy = loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy <= Self.maxTrustedAccuracy
 
-        let announceThreshold: CLLocationDistance = transportType == .walking ? 60 : 150
+        // A fixed 150m warning felt premature at low/parking-lot speed and late on a
+        // fast road — scaling it off the real current speed (≈8 real seconds of
+        // lead time, clamped to a sane range) is what turn-by-turn apps actually do.
+        let announceThreshold: CLLocationDistance
+        if transportType == .walking {
+            announceThreshold = 60
+        } else if loc.speed >= 0 {
+            announceThreshold = min(220, max(50, loc.speed * 8))
+        } else {
+            announceThreshold = 150
+        }
         let passThreshold: CLLocationDistance = transportType == .walking ? 20 : 35
 
         if distanceToManeuver <= announceThreshold, !announcedStepIndices.contains(nextIndex), !nextStep.instructions.isEmpty {
