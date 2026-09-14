@@ -544,15 +544,6 @@ struct InAppNavigationView: View {
                     .padding(16).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
             }
 
-            // MapKit's default .mapControls placement (top-trailing) sat right under the
-            // leg-progress/turn/camera banners stacked at the top — moved to the trailing
-            // edge, vertically centered, well clear of both those and the bottom card.
-            HStack {
-                Spacer()
-                MapCompass(scope: mapScope)
-                    .padding(.trailing, 10)
-            }
-            .frame(maxHeight: .infinity, alignment: .center)
         }
         .navigationBarBackButtonHidden()
         .onAppear {
