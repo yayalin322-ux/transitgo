@@ -30,6 +30,7 @@ async function fetchToken(clientId, clientSecret) {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
+    signal: AbortSignal.timeout(20_000),
   });
   if (!res.ok) throw new Error(`TDX auth ${res.status}`);
   const json = await res.json();
@@ -56,6 +57,7 @@ async function routingToken() {
 async function fetchWithToken(path, t) {
   const res = await fetch(`${BASE}/${path}${path.includes("?") ? "&" : "?"}$format=JSON`, {
     headers: { authorization: `Bearer ${t}` },
+    signal: AbortSignal.timeout(20_000),
   });
   if (!res.ok) throw new Error(`TDX ${path} ${res.status}`);
   return res.json();
