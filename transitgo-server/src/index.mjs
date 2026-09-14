@@ -77,6 +77,19 @@ function requireAdmin(req, res, next) {
 // ---- health ----
 app.get("/v1/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
+// Which storage backend is actually active — never echoes the connection string itself,
+// just whether DATABASE_URL was seen and a real query against it succeeds.
+app.get("/v1/health/db", async (_req, res) => {
+  const usingPg = !!process.env.DATABASE_URL;
+  if (!usingPg) return res.json({ backend: "sqlite" });
+  try {
+    const row = await db.prepare(`SELECT current_database() AS db, now() AS t`).get();
+    res.json({ backend: "postgres", database: row.db, serverTime: row.t });
+  } catch (e) {
+    res.status(500).json({ backend: "postgres", error: e.message });
+  }
+});
+
 // ---- devices ----
 app.post("/v1/devices", async (req, res) => {
   const { token, platform, appVersion } = req.body || {};
