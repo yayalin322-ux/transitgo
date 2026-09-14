@@ -12,82 +12,112 @@ const usingPg = !!process.env.DATABASE_URL;
 const BEGIN = usingPg ? "BEGIN" : "BEGIN IMMEDIATE";
 const NOW = usingPg ? "now()" : "datetime('now')";
 
-export async function insertStops(db, feedId, stops) {
-  const ins = db.prepare(`
-    INSERT INTO gtfs_stops (feed_id, stop_id, stop_name, stop_lat, stop_lon, parent_station, location_type)
-    VALUES (?,?,?,?,?,NULL,0)
-    ON CONFLICT(feed_id, stop_id) DO UPDATE SET
-      stop_name = excluded.stop_name, stop_lat = excluded.stop_lat, stop_lon = excluded.stop_lon
-  `);
-  for (const s of stops) {
-    if (!s.stop_id) continue;
-    await ins.run(feedId, s.stop_id, s.stop_name, s.stop_lat, s.stop_lon);
+// Postgres is a real network round trip now (Supabase, not local SQLite) — at ~150-200ms
+// per statement, inserting hundreds/thousands of GTFS rows one at a time could take over
+// a minute for a single busy route, well past Render/Cloudflare's own gateway timeout.
+// That showed up as requests that looked hung forever (client gave up, but the server
+// kept working in the background) rather than a real correctness bug. Folding many rows
+// into one multi-row INSERT cuts that down to a handful of round trips per table. Keeping
+// each row's own `?` count times the batch size comfortably under SQLite's default bound
+// on parameters per statement (~999) is why the sizes below vary by column count.
+async function batchInsert(db, sqlPrefix, tupleTemplate, sqlSuffix, rows, rowToArgs, batchSize) {
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const chunk = rows.slice(i, i + batchSize);
+    const sql = `${sqlPrefix} VALUES ${chunk.map(() => tupleTemplate).join(",")} ${sqlSuffix}`;
+    const args = [];
+    for (const row of chunk) args.push(...rowToArgs(row));
+    await db.prepare(sql).run(...args);
   }
+}
+
+export async function insertStops(db, feedId, stops) {
+  const rows = stops.filter((s) => s.stop_id);
+  await batchInsert(
+    db,
+    `INSERT INTO gtfs_stops (feed_id, stop_id, stop_name, stop_lat, stop_lon, parent_station, location_type)`,
+    `(?,?,?,?,?,NULL,0)`,
+    `ON CONFLICT(feed_id, stop_id) DO UPDATE SET
+      stop_name = excluded.stop_name, stop_lat = excluded.stop_lat, stop_lon = excluded.stop_lon`,
+    rows,
+    (s) => [feedId, s.stop_id, s.stop_name, s.stop_lat, s.stop_lon],
+    150,
+  );
 }
 
 export async function insertTrips(db, feedId, trips) {
-  const ins = db.prepare(`
-    INSERT INTO gtfs_trips (feed_id, trip_id, route_id, service_id, direction_id, trip_headsign, shape_id)
-    VALUES (?,?,?,?,?,?,?)
-    ON CONFLICT(feed_id, trip_id) DO NOTHING
-  `);
-  for (const t of trips) await ins.run(feedId, t.trip_id, t.route_id, t.service_id, t.direction_id, t.trip_headsign, t.shape_id);
+  await batchInsert(
+    db,
+    `INSERT INTO gtfs_trips (feed_id, trip_id, route_id, service_id, direction_id, trip_headsign, shape_id)`,
+    `(?,?,?,?,?,?,?)`,
+    `ON CONFLICT(feed_id, trip_id) DO NOTHING`,
+    trips,
+    (t) => [feedId, t.trip_id, t.route_id, t.service_id, t.direction_id, t.trip_headsign, t.shape_id],
+    100,
+  );
 }
 
 export async function insertStopTimes(db, feedId, stopTimes) {
-  const ins = db.prepare(`
-    INSERT INTO gtfs_stop_times (feed_id, trip_id, stop_id, arrival_time, departure_time, stop_sequence)
-    VALUES (?,?,?,?,?,?)
-    ON CONFLICT(feed_id, trip_id, stop_sequence) DO NOTHING
-  `);
-  let i = 0;
-  for (const st of stopTimes) {
-    if (i > 0 && i % 20 === 0) console.log(`[insertStopTimes] ${i}/${stopTimes.length}`);
-    await ins.run(feedId, st.trip_id, st.stop_id, st.arrival_time, st.departure_time, st.stop_sequence);
-    i++;
-  }
+  await batchInsert(
+    db,
+    `INSERT INTO gtfs_stop_times (feed_id, trip_id, stop_id, arrival_time, departure_time, stop_sequence)`,
+    `(?,?,?,?,?,?)`,
+    `ON CONFLICT(feed_id, trip_id, stop_sequence) DO NOTHING`,
+    stopTimes,
+    (st) => [feedId, st.trip_id, st.stop_id, st.arrival_time, st.departure_time, st.stop_sequence],
+    150,
+  );
 }
 
 export async function insertCalendarDates(db, feedId, calendarDates) {
-  const ins = db.prepare(`
-    INSERT INTO gtfs_calendar_dates (feed_id, service_id, date, exception_type)
-    VALUES (?,?,?,?)
-    ON CONFLICT(feed_id, service_id, date) DO NOTHING
-  `);
-  for (const cd of calendarDates) await ins.run(feedId, cd.service_id, cd.date, cd.exception_type);
+  await batchInsert(
+    db,
+    `INSERT INTO gtfs_calendar_dates (feed_id, service_id, date, exception_type)`,
+    `(?,?,?,?)`,
+    `ON CONFLICT(feed_id, service_id, date) DO NOTHING`,
+    calendarDates,
+    (cd) => [feedId, cd.service_id, cd.date, cd.exception_type],
+    200,
+  );
 }
 
 export async function insertRoutes(db, rows) {
-  const ins = db.prepare(`
-    INSERT INTO gtfs_routes (feed_id, route_id, agency_id, route_short_name, route_long_name, route_type)
-    VALUES (?,?,NULL,?,?,?)
-    ON CONFLICT(feed_id, route_id) DO UPDATE SET route_short_name = excluded.route_short_name
-  `);
-  for (const r of rows) await ins.run(r.feed_id, r.route_id, r.route_short_name, r.route_long_name, r.route_type);
+  await batchInsert(
+    db,
+    `INSERT INTO gtfs_routes (feed_id, route_id, agency_id, route_short_name, route_long_name, route_type)`,
+    `(?,?,NULL,?,?,?)`,
+    `ON CONFLICT(feed_id, route_id) DO UPDATE SET route_short_name = excluded.route_short_name`,
+    rows,
+    (r) => [r.feed_id, r.route_id, r.route_short_name, r.route_long_name, r.route_type],
+    150,
+  );
 }
 
 export async function insertFrequencies(db, feedId, freqs) {
-  const ins = db.prepare(`
-    INSERT INTO transit_route_frequency
-      (feed_id, route_id, direction, sub_route_name, service_day_label, start_time, end_time, min_headway_mins, max_headway_mins)
-    VALUES (?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(feed_id, route_id, direction, service_day_label, start_time, end_time) DO UPDATE SET
+  await batchInsert(
+    db,
+    `INSERT INTO transit_route_frequency
+      (feed_id, route_id, direction, sub_route_name, service_day_label, start_time, end_time, min_headway_mins, max_headway_mins)`,
+    `(?,?,?,?,?,?,?,?,?)`,
+    `ON CONFLICT(feed_id, route_id, direction, service_day_label, start_time, end_time) DO UPDATE SET
       min_headway_mins = excluded.min_headway_mins, max_headway_mins = excluded.max_headway_mins,
-      imported_at = ${NOW}
-  `);
-  for (const f of freqs) {
-    await ins.run(feedId, f.route_id, f.direction, f.sub_route_name, f.service_day_label, f.start_time, f.end_time, f.min_headway_mins, f.max_headway_mins);
-  }
+      imported_at = ${NOW}`,
+    freqs,
+    (f) => [feedId, f.route_id, f.direction, f.sub_route_name, f.service_day_label, f.start_time, f.end_time, f.min_headway_mins, f.max_headway_mins],
+    100,
+  );
 }
 
 export async function insertRouteStops(db, feedId, routeId, rows) {
   await db.prepare(`DELETE FROM gtfs_route_stops WHERE feed_id = ? AND route_id = ?`).run(feedId, routeId);
-  const ins = db.prepare(`
-    INSERT INTO gtfs_route_stops (feed_id, route_id, direction, stop_sequence, stop_id)
-    VALUES (?,?,?,?,?)
-    ON CONFLICT(feed_id, route_id, direction, stop_sequence) DO UPDATE SET stop_id = excluded.stop_id
-  `);
-  for (const r of rows) await ins.run(feedId, r.route_id, r.direction, r.stop_sequence, r.stop_id);
+  await batchInsert(
+    db,
+    `INSERT INTO gtfs_route_stops (feed_id, route_id, direction, stop_sequence, stop_id)`,
+    `(?,?,?,?,?)`,
+    `ON CONFLICT(feed_id, route_id, direction, stop_sequence) DO UPDATE SET stop_id = excluded.stop_id`,
+    rows,
+    (r) => [feedId, r.route_id, r.direction, r.stop_sequence, r.stop_id],
+    150,
+  );
 }
 
 /** Ingests real TRA timetable data for one origin→destination pair on one date. */
