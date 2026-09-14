@@ -337,7 +337,18 @@ if (usingPg) {
 }
 
 if (usingPg) {
-  await ensureGtfsSchema(db);
+  // Idempotent (every statement is CREATE ... IF NOT EXISTS) — so if this boot loses a
+  // lock-contention race against another connection mid-transaction on a gtfs_* table
+  // (e.g. an in-flight ingest request) and Postgres's statement_timeout kills it, that's
+  // safe to skip rather than fatal: the schema already exists from a prior successful
+  // boot, and a later restart will pick up any genuinely new column/table once the
+  // contention clears. Letting this crash the whole process was causing a boot
+  // crash-loop that made the underlying contention worse, not better.
+  try {
+    await ensureGtfsSchema(db);
+  } catch (e) {
+    console.warn(`[db] ensureGtfsSchema skipped this boot: ${e.message}`);
+  }
 }
 
 // ---- devices ----

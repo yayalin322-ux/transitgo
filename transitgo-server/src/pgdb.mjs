@@ -81,6 +81,17 @@ export class PgDatabase {
     // pg's own default is 0 (wait forever), which turns any real leak/exhaustion into
     // a silent permanent hang instead of a clear, fast error.
     this.pool = new Pool({ connectionString, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 15_000 });
+    // If the process holding a transaction open dies uncleanly (container restart
+    // mid-request, OOM kill, etc.) the client-side release() in exec() above never
+    // runs — Postgres has no way to know the other end is gone until it notices the
+    // dead TCP connection, which can take a long time. Left unbounded, that "idle in
+    // transaction" session holds its locks indefinitely and blocks schema DDL on
+    // every later boot. This makes Postgres itself kill any transaction that's been
+    // idle (not actively running a query) for more than 30s, so a crashed process
+    // can no longer wedge the database for longer than that.
+    this.pool.on("connect", (client) => {
+      client.query("SET idle_in_transaction_session_timeout = 30000").catch(() => {});
+    });
     // Set between BEGIN and COMMIT/ROLLBACK to pin every query in an explicit
     // transaction to one physical connection. Null outside a transaction, when
     // each statement can use whichever connection the pool hands back.
