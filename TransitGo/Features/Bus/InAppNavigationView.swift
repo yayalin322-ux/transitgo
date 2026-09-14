@@ -65,6 +65,22 @@ final class NavigationLocationTracker: NSObject, CLLocationManagerDelegate {
         let h = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
         Task { @MainActor in self.headingDegrees = h }
     }
+
+    /// Prefers GPS course-over-ground once actually moving, over the phone's own
+    /// magnetometer compass — a car's engine/body causes real magnetic interference that
+    /// makes the compass heading noisy or flat wrong while driving (this was the actual
+    /// cause behind repeated "the compass doesn't track my direction" reports; a previous
+    /// fix addressed a *different* real bug — a camera-update feedback loop — but this
+    /// magnetometer-over-course priority was still backwards underneath it). GPS course
+    /// is what "which way is the car pointing" concretely means once there's real
+    /// movement to derive it from. Falls back to the compass only when slow/stationary
+    /// (e.g. parking-lot maneuvering) where course is too noisy or unavailable to trust.
+    var effectiveHeading: CLLocationDirection? {
+        if let loc = location, loc.speed >= 2, loc.course >= 0 { return loc.course }
+        if let h = headingDegrees { return h }
+        if let loc = location, loc.course >= 0 { return loc.course }
+        return nil
+    }
 }
 
 /// Reference-counted screen-stays-awake lock — a parking leg can open a second
@@ -742,7 +758,7 @@ struct InAppNavigationView: View {
 
     private func recenter() {
         guard let loc = tracker.location else { return }
-        let heading: CLLocationDirection = tracker.headingDegrees ?? (loc.course >= 0 ? loc.course : 0)
+        let heading: CLLocationDirection = tracker.effectiveHeading ?? 0
         // recenter() runs on every heading/location tick — the change handler above
         // needs to know this particular camera update isn't a manual drag. `withAnimation`
         // with no explicit duration runs ~0.35s; padding to 0.5s covers it with margin.
@@ -1001,7 +1017,7 @@ struct InAppNavigationView: View {
 
         var effectiveOrigin = origin
         if preferContinueForward, transportType != .walking,
-           let heading = tracker.headingDegrees ?? (tracker.location?.course).flatMap({ $0 >= 0 ? $0 : nil }) {
+           let heading = tracker.effectiveHeading {
             effectiveOrigin = Self.coordinate(origin, movedMeters: 40, bearingDegrees: heading)
         }
         let request = MKDirections.Request()
@@ -1028,6 +1044,7 @@ struct InAppNavigationView: View {
         }
         errorText = highwayWarning
         route = first
+        Task { await loadCamerasAlongRoute(first) }
         let wasOffRoute = offRoute
         offRoute = false
         lastRerouteAt = .now
@@ -1128,15 +1145,19 @@ struct InAppNavigationView: View {
         if camFetchCenter == nil || loc.distance(from: CLLocation(latitude: camFetchCenter!.latitude, longitude: camFetchCenter!.longitude)) > 1500 {
             camFetchCenter = loc.coordinate
             Task {
+                // Merge rather than replace — loadCamerasAlongRoute() may already have
+                // populated cameras far ahead on the planned route; a plain replace here
+                // would wipe those back down to just this 3km circle on the very first
+                // tick after departure, undoing the whole point of prefetching the route.
                 if let cams = await SpeedCamService.nearby(near: loc.coordinate) {
-                    nearbyCams = cams
+                    mergeCams(cams)
                 }
             }
         }
 
         let announceThreshold: CLLocationDistance = 300
         let passThreshold: CLLocationDistance = 60
-        let heading: CLLocationDirection? = tracker.headingDegrees ?? (loc.course >= 0 ? loc.course : nil)
+        let heading: CLLocationDirection? = tracker.effectiveHeading
         var stillAhead: SpeedCam?
         for cam in nearbyCams {
             guard Self.speedCamDirectionApplies(cam.direction, heading: heading) else { continue }
@@ -1164,6 +1185,49 @@ struct InAppNavigationView: View {
             }
         }
         upcomingCam = stillAhead
+    }
+
+    private func mergeCams(_ cams: [SpeedCam]) {
+        var byID = Dictionary(uniqueKeysWithValues: nearbyCams.map { ($0.id, $0) })
+        for cam in cams { byID[cam.id] = cam }
+        nearbyCams = Array(byID.values)
+    }
+
+    /// Populates the map with every camera near the whole planned route the moment
+    /// it's computed — not just the driver's immediate 3km vicinity. Without this, a
+    /// driver checking the map before or just after departure sees camera icons only
+    /// near their current position, with the rest of a long route (which the
+    /// proximity-based refetch in checkSpeedCams() only fills in gradually, as they
+    /// physically get close) looking empty — read as "this feature doesn't cover most
+    /// of the country" rather than "you haven't driven there yet".
+    private func loadCamerasAlongRoute(_ route: MKRoute) async {
+        guard transportType == .automobile else { return }
+        let points = route.polyline.points()
+        let count = route.polyline.pointCount
+        guard count > 0 else { return }
+        // Sample by accumulated distance, not raw polyline vertex — MapKit's own points
+        // are dense on curves and sparse on straight highway stretches, so indexing by
+        // point count alone would sample unevenly.
+        var samples: [CLLocationCoordinate2D] = [points[0].coordinate]
+        var accumulated: CLLocationDistance = 0
+        for i in 1..<count {
+            accumulated += points[i - 1].distance(to: points[i])
+            if accumulated >= 5000 {
+                samples.append(points[i].coordinate)
+                accumulated = 0
+            }
+        }
+        samples.append(points[count - 1].coordinate)
+
+        let results = await withTaskGroup(of: [SpeedCam]?.self) { group -> [[SpeedCam]] in
+            for coord in samples {
+                group.addTask { await SpeedCamService.nearby(near: coord, radius: 3000) }
+            }
+            var all: [[SpeedCam]] = []
+            for await result in group { if let result { all.append(result) } }
+            return all
+        }
+        mergeCams(results.flatMap { $0 })
     }
 
     // MARK: - Route photos
