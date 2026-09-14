@@ -371,6 +371,22 @@ final class MetroNearbyViewModel {
     }
 }
 
+@MainActor
+@Observable
+final class SpeedCamNearbyViewModel {
+    var items: [SpeedCam] = []
+
+    /// Cameras belong on the map regardless of which mode (bus/bike/metro/landmark) is
+    /// selected — same idea as `UserAnnotation()` — so this deliberately has no
+    /// isLoading/errorText the way the mode view models do; a slow or failed fetch just
+    /// means no camera icons yet, not a user-facing error state.
+    func load(near location: CLLocation) async {
+        if let cams = await SpeedCamService.nearby(near: location.coordinate, radius: 3000) {
+            items = cams
+        }
+    }
+}
+
 // MARK: - Nearby view
 
 struct NearbyStopsView: View {
@@ -384,6 +400,7 @@ struct NearbyStopsView: View {
     @State private var bikeVM = BikeNearbyViewModel()
     @State private var metroVM = MetroNearbyViewModel()
     @State private var landmarkVM = LandmarkNearbyViewModel()
+    @State private var camVM = SpeedCamNearbyViewModel()
     @State private var placeDetailTarget: NearbyLandmark?
     @State private var showAddLandmark = false
     @State private var showMyLandmarks = false
@@ -480,6 +497,20 @@ struct NearbyStopsView: View {
     private func map(_ loc: CLLocation) -> some View {
         Map(position: $camera) {
             UserAnnotation()
+            // Always visible, independent of the bus/bike/metro/landmark mode picker below
+            // — same reasoning as in-app navigation's own camera layer (InAppNavigationView),
+            // this is about being able to see nearby speed cameras on the map at all, not
+            // just get a voice warning once actually navigating past one.
+            ForEach(camVM.items) { cam in
+                Annotation("", coordinate: cam.coordinate) {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 22, height: 22)
+                        .background(cam.kind == "speed" ? .red : .orange, in: Circle())
+                        .overlay(Circle().stroke(.white, lineWidth: 1.5))
+                }
+            }
             switch mode {
             case .bus:
                 ForEach(busVM.stops.prefix(30)) { stop in
@@ -682,6 +713,7 @@ struct NearbyStopsView: View {
         case .landmark:
             await landmarkVM.load(near: loc)
         }
+        await camVM.load(near: loc)
     }
 }
 
