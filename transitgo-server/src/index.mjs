@@ -75,7 +75,10 @@ function requireAdmin(req, res, next) {
 // calls, so this isn't optional plumbing.
 
 // ---- health ----
-app.get("/v1/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+// GIT_COMMIT lets us confirm from the outside which build is actually live on Render —
+// deploys have silently lagged behind pushes before, and "the fix is deployed" is
+// otherwise unverifiable without dashboard access.
+app.get("/v1/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString(), commit: process.env.RENDER_GIT_COMMIT || null }));
 
 // Which storage backend is actually active — never echoes the connection string itself,
 // just whether DATABASE_URL was seen and a real query against it succeeds.
