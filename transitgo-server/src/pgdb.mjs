@@ -77,11 +77,25 @@ class PgStatement {
 
 export class PgDatabase {
   constructor(connectionString) {
-    this.pool = new Pool({ connectionString, ssl: { rejectUnauthorized: false } });
+    // connectionTimeoutMillis caps how long pool.connect() waits for a free client —
+    // pg's own default is 0 (wait forever), which turns any real leak/exhaustion into
+    // a silent permanent hang instead of a clear, fast error.
+    this.pool = new Pool({ connectionString, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 15_000 });
     // Set between BEGIN and COMMIT/ROLLBACK to pin every query in an explicit
     // transaction to one physical connection. Null outside a transaction, when
     // each statement can use whichever connection the pool hands back.
     this.txClient = null;
+    // db.mjs shares ONE PgDatabase across every request and background poller, so
+    // without this lock two BEGINs that overlap in time (e.g. an admin ingest call
+    // running long while another comes in) would stomp each other's this.txClient —
+    // the first transaction's connection gets orphaned mid-transaction (never
+    // committed/rolled back/released) since COMMIT ends up firing on whichever
+    // client is current by then. That's exactly how a connection ends up stuck
+    // "idle in transaction" forever, eventually exhausting the pool so that every
+    // later request hangs on pool.connect() with no error and no trace in
+    // pg_stat_activity. This chain of promises serializes BEGIN...COMMIT/ROLLBACK
+    // blocks so only one is ever in flight against this.txClient at a time.
+    this._txLock = Promise.resolve();
   }
 
   /** Multi-statement DDL/raw SQL — pg's simple query protocol runs every ';'-separated
@@ -91,24 +105,36 @@ export class PgDatabase {
   async exec(sql) {
     const trimmed = sql.trim().toUpperCase();
     if (trimmed === "BEGIN") {
+      // Queue behind any transaction already in progress, then hold the lock open
+      // (release() is handed to the COMMIT/ROLLBACK branch below, not called here)
+      // until this transaction ends — that's what actually serializes them.
+      let release;
+      const prev = this._txLock;
+      this._txLock = new Promise((resolve) => { release = resolve; });
+      await prev;
       const client = await this.pool.connect();
       try {
         await client.query(sql);
       } catch (e) {
         client.release();
+        release();
         throw e;
       }
       this.txClient = client;
+      this._releaseTxLock = release;
       return;
     }
     if (trimmed === "COMMIT" || trimmed === "ROLLBACK") {
       const client = this.txClient;
+      const releaseLock = this._releaseTxLock;
       this.txClient = null;
+      this._releaseTxLock = null;
       if (!client) return;
       try {
         await client.query(sql);
       } finally {
         client.release();
+        if (releaseLock) releaseLock();
       }
       return;
     }
