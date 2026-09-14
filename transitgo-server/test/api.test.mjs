@@ -25,7 +25,7 @@ function buildGraph() {
 {
   const graph = buildGraph();
   const before = { nodes: graph.nodeCount, edges: graph.edgeCount };
-  const res = planRoute(graph, {
+  const res = await planRoute(graph, {
     origin: { lat: 25.0478, lng: 121.5171 },
     destination: { lat: 25.0339, lng: 121.5645 },
     departureTime: "2026-09-13T10:00:00+08:00",
@@ -41,7 +41,7 @@ function buildGraph() {
 
 // --- Same origin and destination (architecture doc section 18 #6) ---
 {
-  const res = planRoute(buildGraph(), {
+  const res = await planRoute(buildGraph(), {
     origin: { lat: 25.0478, lng: 121.5171 },
     destination: { lat: 25.0478, lng: 121.5171 },
   });
@@ -50,7 +50,7 @@ function buildGraph() {
 
 // --- No nearby stop (architecture doc section 18 #1/#2) ---
 {
-  const res = planRoute(buildGraph(), {
+  const res = await planRoute(buildGraph(), {
     origin: { lat: 24.1, lng: 120.6 },   // 台中, nothing in this tiny test graph
     destination: { lat: 25.0339, lng: 121.5645 },
   });
@@ -59,7 +59,7 @@ function buildGraph() {
 
 // --- Malformed request ---
 {
-  const res = planRoute(buildGraph(), { origin: { lat: 25 } });
+  const res = await planRoute(buildGraph(), { origin: { lat: 25 } });
   check("400 INVALID_REQUEST for a malformed body (missing destination)", res.status === 400 && res.body.error.code === "INVALID_REQUEST");
 }
 
@@ -76,7 +76,7 @@ function buildGraph() {
     graph.addEdge(new TransitEdge({ id: "leg2", fromNodeId: "BUS:B", toNodeId: "BUS:D", mode: Mode.BUS, routeId: "L2", headwaySeconds: 600, travelSeconds: 500, windowStartSeconds: 0, windowEndSeconds: 86400, source: "test" }));
     return graph;
   }
-  const res = planRoute(buildDivergentGraph(), {
+  const res = await planRoute(buildDivergentGraph(), {
     origin: { lat: 25.0478, lng: 121.5171 },
     destination: { lat: 25.0339, lng: 121.5645 },
     profile: "FEWEST_TRANSFERS",
@@ -101,7 +101,7 @@ function buildGraph() {
     }));
     return graph;
   }
-  const res = planRoute(buildRoundaboutGraph(), {
+  const res = await planRoute(buildRoundaboutGraph(), {
     origin: { lat: 25.0478, lng: 121.5171 },
     destination: { lat: 25.0490, lng: 121.5175 },
   });

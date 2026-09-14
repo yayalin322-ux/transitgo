@@ -15,7 +15,11 @@ import { parseCsv } from "./csv.mjs";
  * calendar.txt and calendar_dates.txt are both optional per the GTFS spec (a feed only
  * needs one of them) — missing files are just skipped, not an error.
  */
-export function importGtfsZip(db, feedId, zipBuffer, meta = {}) {
+const usingPg = !!process.env.DATABASE_URL;
+const BEGIN = usingPg ? "BEGIN" : "BEGIN IMMEDIATE";
+const NOW = usingPg ? "now()" : "datetime('now')";
+
+export async function importGtfsZip(db, feedId, zipBuffer, meta = {}) {
   const zip = new AdmZip(zipBuffer);
   const entries = new Map(zip.getEntries().map((e) => [e.entryName, e]));
 
@@ -46,50 +50,50 @@ export function importGtfsZip(db, feedId, zipBuffer, meta = {}) {
     calendar: calendar.length, calendar_dates: calendarDates.length,
   };
 
-  db.exec("BEGIN IMMEDIATE");
+  await db.exec(BEGIN);
   try {
     for (const table of ["gtfs_agency", "gtfs_routes", "gtfs_stops", "gtfs_trips", "gtfs_stop_times", "gtfs_calendar", "gtfs_calendar_dates"]) {
-      db.prepare(`DELETE FROM ${table} WHERE feed_id = ?`).run(feedId);
+      await db.prepare(`DELETE FROM ${table} WHERE feed_id = ?`).run(feedId);
     }
 
     const insAgency = db.prepare(`INSERT INTO gtfs_agency (feed_id, agency_id, agency_name, agency_url, agency_timezone) VALUES (?,?,?,?,?)`);
     for (const a of agency) {
-      insAgency.run(feedId, a.agency_id || "default", a.agency_name ?? null, a.agency_url ?? null, a.agency_timezone ?? null);
+      await insAgency.run(feedId, a.agency_id || "default", a.agency_name ?? null, a.agency_url ?? null, a.agency_timezone ?? null);
     }
 
     const insRoute = db.prepare(`INSERT INTO gtfs_routes (feed_id, route_id, agency_id, route_short_name, route_long_name, route_type) VALUES (?,?,?,?,?,?)`);
     for (const r of routes) {
-      insRoute.run(feedId, r.route_id, r.agency_id || null, r.route_short_name ?? null, r.route_long_name ?? null, r.route_type != null ? parseInt(r.route_type, 10) : null);
+      await insRoute.run(feedId, r.route_id, r.agency_id || null, r.route_short_name ?? null, r.route_long_name ?? null, r.route_type != null ? parseInt(r.route_type, 10) : null);
     }
 
     const insStop = db.prepare(`INSERT INTO gtfs_stops (feed_id, stop_id, stop_name, stop_lat, stop_lon, parent_station, location_type) VALUES (?,?,?,?,?,?,?)`);
     for (const s of stops) {
-      insStop.run(feedId, s.stop_id, s.stop_name ?? null, s.stop_lat ? parseFloat(s.stop_lat) : null, s.stop_lon ? parseFloat(s.stop_lon) : null, s.parent_station || null, s.location_type != null && s.location_type !== "" ? parseInt(s.location_type, 10) : 0);
+      await insStop.run(feedId, s.stop_id, s.stop_name ?? null, s.stop_lat ? parseFloat(s.stop_lat) : null, s.stop_lon ? parseFloat(s.stop_lon) : null, s.parent_station || null, s.location_type != null && s.location_type !== "" ? parseInt(s.location_type, 10) : 0);
     }
 
     const insTrip = db.prepare(`INSERT INTO gtfs_trips (feed_id, trip_id, route_id, service_id, direction_id, trip_headsign, shape_id) VALUES (?,?,?,?,?,?,?)`);
     for (const t of trips) {
-      insTrip.run(feedId, t.trip_id, t.route_id, t.service_id, t.direction_id != null && t.direction_id !== "" ? parseInt(t.direction_id, 10) : null, t.trip_headsign || null, t.shape_id || null);
+      await insTrip.run(feedId, t.trip_id, t.route_id, t.service_id, t.direction_id != null && t.direction_id !== "" ? parseInt(t.direction_id, 10) : null, t.trip_headsign || null, t.shape_id || null);
     }
 
     const insStopTime = db.prepare(`INSERT INTO gtfs_stop_times (feed_id, trip_id, stop_id, arrival_time, departure_time, stop_sequence) VALUES (?,?,?,?,?,?)`);
     for (const st of stopTimes) {
-      insStopTime.run(feedId, st.trip_id, st.stop_id, st.arrival_time || null, st.departure_time || null, parseInt(st.stop_sequence, 10));
+      await insStopTime.run(feedId, st.trip_id, st.stop_id, st.arrival_time || null, st.departure_time || null, parseInt(st.stop_sequence, 10));
     }
 
     const insCal = db.prepare(`INSERT INTO gtfs_calendar (feed_id, service_id, monday, tuesday, wednesday, thursday, friday, saturday, sunday, start_date, end_date) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
     for (const c of calendar) {
-      insCal.run(feedId, c.service_id, +c.monday, +c.tuesday, +c.wednesday, +c.thursday, +c.friday, +c.saturday, +c.sunday, c.start_date, c.end_date);
+      await insCal.run(feedId, c.service_id, +c.monday, +c.tuesday, +c.wednesday, +c.thursday, +c.friday, +c.saturday, +c.sunday, c.start_date, c.end_date);
     }
 
     const insCalDate = db.prepare(`INSERT INTO gtfs_calendar_dates (feed_id, service_id, date, exception_type) VALUES (?,?,?,?)`);
     for (const cd of calendarDates) {
-      insCalDate.run(feedId, cd.service_id, cd.date, parseInt(cd.exception_type, 10));
+      await insCalDate.run(feedId, cd.service_id, cd.date, parseInt(cd.exception_type, 10));
     }
 
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO gtfs_feeds (feed_id, name, source_url, imported_at, row_counts)
-      VALUES (:feed_id, :name, :source_url, datetime('now'), :row_counts)
+      VALUES (:feed_id, :name, :source_url, ${NOW}, :row_counts)
       ON CONFLICT(feed_id) DO UPDATE SET
         name = excluded.name, source_url = excluded.source_url,
         imported_at = excluded.imported_at, row_counts = excluded.row_counts
@@ -100,9 +104,9 @@ export function importGtfsZip(db, feedId, zipBuffer, meta = {}) {
       row_counts: JSON.stringify(counts),
     });
 
-    db.exec("COMMIT");
+    await db.exec("COMMIT");
   } catch (e) {
-    db.exec("ROLLBACK");
+    await db.exec("ROLLBACK");
     throw e;
   }
 

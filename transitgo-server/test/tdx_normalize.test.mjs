@@ -58,19 +58,19 @@ function check(label, cond) {
 }
 
 const db = new DatabaseSync(":memory:");
-ensureGtfsSchema(db);
+await ensureGtfsSchema(db);
 
 // --- TRA stations ---
 const stops = normalizeTRAStations(rawTRAStations.Stations);
-insertStops(db, "TRA", stops);
+await insertStops(db, "TRA", stops);
 const hsinchu = db.prepare("SELECT * FROM gtfs_stops WHERE feed_id = 'TRA' AND stop_id = '3300'").get();
 check("TRA station normalized with real lat/lon", hsinchu?.stop_name === "新竹" && Math.abs(hsinchu.stop_lat - 24.8017) < 0.001);
 
 // --- TRA real timetable ---
 const { trips: traTrips, stopTimes: traStopTimes, calendarDates: traCalDates } = normalizeTRATimetable(rawTRATimetable.TrainTimetables, "2026-09-14");
-insertTrips(db, "TRA", traTrips);
-insertStopTimes(db, "TRA", traStopTimes);
-insertCalendarDates(db, "TRA", traCalDates);
+await insertTrips(db, "TRA", traTrips);
+await insertStopTimes(db, "TRA", traStopTimes);
+await insertCalendarDates(db, "TRA", traCalDates);
 const storedTrip = db.prepare("SELECT * FROM gtfs_trips WHERE feed_id = 'TRA' AND trip_id = 'TRA_152_2026-09-14'").get();
 const storedStopTimes = db.prepare("SELECT * FROM gtfs_stop_times WHERE feed_id = 'TRA' AND trip_id = 'TRA_152_2026-09-14' ORDER BY stop_sequence").all();
 check("TRA trip inserted with real train number", storedTrip?.route_id === "TRA");
@@ -80,14 +80,14 @@ check("TRA calendar_dates marks the exact real date queried, not an invented wee
 
 // --- Bus: real fixed timetable branch ---
 const busTimetableResult = normalizeBusSchedule(rawBusScheduleWithTimetable, "5900", "2026-09-14");
-insertTrips(db, "BUS", busTimetableResult.trips);
-insertStopTimes(db, "BUS", busTimetableResult.stopTimes);
+await insertTrips(db, "BUS", busTimetableResult.trips);
+await insertStopTimes(db, "BUS", busTimetableResult.stopTimes);
 check("Bus route with real Timetables produces real gtfs_trips (2 departures)", busTimetableResult.trips.length === 2);
 check("Bus route with real Timetables produces no fabricated frequency rows", busTimetableResult.frequencies.length === 0);
 
 // --- Bus: real headway-only branch ---
 const busFreqResult = normalizeBusSchedule(rawBusScheduleWithFrequency, "307", "2026-09-14");
-insertFrequencies(db, "BUS", busFreqResult.frequencies);
+await insertFrequencies(db, "BUS", busFreqResult.frequencies);
 check("Bus route with only Frequencys produces zero fabricated trips", busFreqResult.trips.length === 0);
 const storedFreq = db.prepare("SELECT * FROM transit_route_frequency WHERE feed_id = 'BUS' AND route_id = '307' ORDER BY start_time").all();
 check("Real headway bands stored as-is (8-12 min, then 15-20 min), not averaged into one number", storedFreq.length === 2 && storedFreq[0].min_headway_mins === 8 && storedFreq[1].min_headway_mins === 15);

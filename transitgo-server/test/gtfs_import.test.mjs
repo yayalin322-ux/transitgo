@@ -4,7 +4,7 @@ import { ensureGtfsSchema } from "../src/gtfs/schema.mjs";
 import { importGtfsZip } from "../src/gtfs/import.mjs";
 
 const db = new DatabaseSync(":memory:");
-ensureGtfsSchema(db);
+await ensureGtfsSchema(db);
 
 const files = {
   "agency.txt": `agency_id,agency_name,agency_url,agency_timezone
@@ -39,7 +39,7 @@ for (const [name, content] of Object.entries(files)) {
   zip.addFile(name, Buffer.from(content, "utf8"));
 }
 
-const counts = importGtfsZip(db, "test-hsinbus", zip.toBuffer(), { name: "測試新竹客運", sourceUrl: "local-test" });
+const counts = await importGtfsZip(db, "test-hsinbus", zip.toBuffer(), { name: "測試新竹客運", sourceUrl: "local-test" });
 console.log("import counts:", counts);
 
 const feed = db.prepare("SELECT * FROM gtfs_feeds WHERE feed_id = ?").get("test-hsinbus");
@@ -52,7 +52,7 @@ const trip = db.prepare("SELECT * FROM gtfs_stop_times WHERE feed_id = ? AND tri
 console.log("stop_times for T1:", trip);
 
 // Re-import to prove the atomic-swap (old rows fully replaced, no duplication/leftovers).
-importGtfsZip(db, "test-hsinbus", zip.toBuffer(), { name: "測試新竹客運 v2" });
+await importGtfsZip(db, "test-hsinbus", zip.toBuffer(), { name: "測試新竹客運 v2" });
 const stopCountAfterReimport = db.prepare("SELECT COUNT(*) c FROM gtfs_stops WHERE feed_id = ?").get("test-hsinbus");
 console.log("stop count after re-import (should still be 3, not 6):", stopCountAfterReimport.c);
 

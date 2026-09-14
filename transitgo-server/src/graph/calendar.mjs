@@ -28,12 +28,12 @@ export function isServiceActiveOn(serviceEntry, dateStr) {
 }
 
 /** Loads every feed's calendar + calendar_dates into one lookup keyed "feedId:serviceId". */
-export function loadServiceCalendar(db, feedClause, feedArgs) {
+export async function loadServiceCalendar(db, feedClause, feedArgs) {
   const map = new Map();
-  for (const row of db.prepare(`SELECT * FROM gtfs_calendar ${feedClause}`).all(...feedArgs)) {
+  for (const row of await db.prepare(`SELECT * FROM gtfs_calendar ${feedClause}`).all(...feedArgs)) {
     map.set(`${row.feed_id}:${row.service_id}`, { calendarRow: row, exceptions: new Map() });
   }
-  for (const row of db.prepare(`SELECT * FROM gtfs_calendar_dates ${feedClause}`).all(...feedArgs)) {
+  for (const row of await db.prepare(`SELECT * FROM gtfs_calendar_dates ${feedClause}`).all(...feedArgs)) {
     const key = `${row.feed_id}:${row.service_id}`;
     if (!map.has(key)) map.set(key, { calendarRow: null, exceptions: new Map() });
     map.get(key).exceptions.set(row.date, row.exception_type);

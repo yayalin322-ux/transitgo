@@ -210,7 +210,7 @@ export function startBikePoller() {
       const direct = DIRECT_FEEDS[city];
       try {
         const rows = direct ? await direct() : await bikeCity(city);
-        setBikeCache(city, rows);
+        await setBikeCache(city, rows);
         pollStatus[city] = { ok: true, source: direct ? "direct" : "tdx", count: rows.length, at: new Date().toISOString() };
         console.log(`[bike] cached ${city}: ${rows.length} stations${direct ? " (direct feed)" : ""}`);
       } catch (e) {
@@ -221,7 +221,7 @@ export function startBikePoller() {
         if (direct && tdxConfigured()) {
           try {
             const rows = await bikeCity(city);
-            setBikeCache(city, rows);
+            await setBikeCache(city, rows);
             pollStatus[city] = { ok: true, source: "tdx-fallback", count: rows.length, at: new Date().toISOString() };
             console.log(`[bike] cached ${city}: ${rows.length} stations (TDX fallback)`);
           } catch (e2) {

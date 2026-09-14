@@ -42,7 +42,7 @@ try {
  * @param {{id:number, category:string, severity:string, title:string, body:string}} ann
  */
 export async function pushAnnouncement(ann) {
-  const tokens = allDeviceTokens();
+  const tokens = await allDeviceTokens();
   const payload = {
     title: ann.title,
     body: ann.body || " ",
@@ -71,7 +71,7 @@ export async function pushAnnouncement(ann) {
     } catch (err) {
       const reason = err?.reason || err?.body?.reason;
       if (reason === "BadDeviceToken" || reason === "Unregistered") {
-        removeDevice(token);
+        await removeDevice(token);
       } else {
         console.warn("[push] send failed:", reason || err.message);
       }

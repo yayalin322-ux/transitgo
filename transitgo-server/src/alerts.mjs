@@ -21,18 +21,18 @@ async function checkSource({ source, category, label, fetcher }) {
     console.warn(`[alerts] ${source} fetch failed:`, e.message);
     return;
   }
-  const prev = getAlertState(source);
+  const prev = await getAlertState(source);
   const signature = sig(result.items);
   if (prev && prev.signature === signature) return; // nothing changed
 
   const wasAbnormal = !!(prev && prev.abnormal);
-  setAlertState(source, signature, result.abnormal);
+  await setAlertState(source, signature, result.abnormal);
 
   if (result.abnormal) {
     const first = result.items.find(
       (i) => i.title && !/正常|normal/i.test(i.title)
     );
-    const ann = createAnnouncement({
+    const ann = await createAnnouncement({
       category,
       severity: "warning",
       title: `${label}營運異常`,
@@ -42,7 +42,7 @@ async function checkSource({ source, category, label, fetcher }) {
     console.log(`[alerts] ${source}: abnormal → announcement #${ann.id}`);
     await pushAnnouncement(ann);
   } else if (wasAbnormal && process.env.ANNOUNCE_RECOVERY !== "false") {
-    const ann = createAnnouncement({
+    const ann = await createAnnouncement({
       category,
       severity: "info",
       title: `${label}已恢復正常`,

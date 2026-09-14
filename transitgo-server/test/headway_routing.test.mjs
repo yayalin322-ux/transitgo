@@ -13,29 +13,29 @@ function check(label, cond) {
 }
 
 const db = new DatabaseSync(":memory:");
-ensureGtfsSchema(db);
+await ensureGtfsSchema(db);
 
 // Two real stops ~1.1km apart (rough real coordinates near 台北車站/善導寺 on the same road).
-insertStops(db, "BUS", [
+await insertStops(db, "BUS", [
   { stop_id: "A", stop_name: "站A", stop_lat: 25.0478, stop_lon: 121.5171 },
   { stop_id: "B", stop_name: "站B", stop_lat: 25.0478, stop_lon: 121.5290 },
 ]);
-insertRoutes(db, [{ feed_id: "BUS", route_id: "999", route_short_name: "999", route_long_name: null, route_type: 3 }]);
+await insertRoutes(db, [{ feed_id: "BUS", route_id: "999", route_short_name: "999", route_long_name: null, route_type: 3 }]);
 
 const rawStopOfRoute = [{ Direction: 0, Stops: [
   { StopUID: "A", StopSequence: 1 }, { StopUID: "B", StopSequence: 2 },
 ] }];
 const routeStops = normalizeBusRouteStopSequence(rawStopOfRoute, "999");
-insertRouteStops(db, "BUS", "999", routeStops);
+await insertRouteStops(db, "BUS", "999", routeStops);
 
 // Real TDX-shaped headway band: peak 07:00-09:00, 8-12 min headway.
 const rawFreq = [{ Direction: 0, Frequencys: [
   { StartTime: "07:00", EndTime: "09:00", MinHeadwayMins: 8, MaxHeadwayMins: 12 },
 ] }];
 const { frequencies } = normalizeBusSchedule(rawFreq, "999", "2026-09-14");
-insertFrequencies(db, "BUS", frequencies);
+await insertFrequencies(db, "BUS", frequencies);
 
-const graph = buildGraph(db);
+const graph = await buildGraph(db);
 check("Headway edge built between the two real stops", graph.neighbors(nodeId("BUS", "A")).length === 1);
 const edge = graph.neighbors(nodeId("BUS", "A"))[0];
 check("Edge is headway-based, not time-dependent", edge.isHeadwayBased && !edge.isTimeDependent);

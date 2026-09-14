@@ -70,26 +70,30 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+// Every handler below is async and awaits its db.mjs calls — those are real network
+// round trips now when DATABASE_URL (Supabase) is set, not synchronous local SQLite
+// calls, so this isn't optional plumbing.
+
 // ---- health ----
 app.get("/v1/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
 // ---- devices ----
-app.post("/v1/devices", (req, res) => {
+app.post("/v1/devices", async (req, res) => {
   const { token, platform, appVersion } = req.body || {};
   if (!token || typeof token !== "string") return res.status(400).json({ error: "token required" });
-  upsertDevice({ token, platform, appVersion });
+  await upsertDevice({ token, platform, appVersion });
   res.json({ ok: true });
 });
 
 // ---- announcements (public read) ----
-app.get("/v1/announcements", (req, res) => {
+app.get("/v1/announcements", async (req, res) => {
   const since = typeof req.query.since === "string" ? req.query.since : null;
-  res.json({ announcements: listAnnouncements({ since }) });
+  res.json({ announcements: await listAnnouncements({ since }) });
 });
 
 // ---- reports (from app) ----
 const reportBucket = new Map(); // ip -> [timestamps]
-app.post("/v1/reports", (req, res) => {
+app.post("/v1/reports", async (req, res) => {
   const now = Date.now();
   const hist = (reportBucket.get(req.clientIp) || []).filter((t) => now - t < 60_000);
   if (hist.length >= 20) return res.status(429).json({ error: "rate limited" });
@@ -98,13 +102,13 @@ app.post("/v1/reports", (req, res) => {
 
   const { type, message, context, appVersion, os, device } = req.body || {};
   if (!type) return res.status(400).json({ error: "type required" });
-  createReport({ type, message, context, appVersion, os, device, ip: req.clientIp });
+  await createReport({ type, message, context, appVersion, os, device, ip: req.clientIp });
   res.json({ ok: true });
 });
 
 // ---- trip ratings (from app) ----
 const ratingBucket = new Map();
-app.post("/v1/ratings", (req, res) => {
+app.post("/v1/ratings", async (req, res) => {
   const now = Date.now();
   const hist = (ratingBucket.get(req.clientIp) || []).filter((t) => now - t < 60_000);
   if (hist.length >= 30) return res.status(429).json({ error: "rate limited" });
@@ -114,17 +118,17 @@ app.post("/v1/ratings", (req, res) => {
   const { stars, kind, route, from, to, system, appVersion, device } = req.body || {};
   const n = parseInt(stars, 10);
   if (!(n >= 1 && n <= 5)) return res.status(400).json({ error: "stars 1-5 required" });
-  createRating({ stars: n, kind, route, from, to, system, appVersion, device, ip: req.clientIp });
+  await createRating({ stars: n, kind, route, from, to, system, appVersion, device, ip: req.clientIp });
   res.json({ ok: true });
 });
 
 // Public — the app shows this next to a route/train, Google-Maps style (★4.3 · 12 則評分).
-app.get("/v1/ratings/route", (req, res) => {
+app.get("/v1/ratings/route", async (req, res) => {
   const kind = req.query.kind === "rail" ? "rail" : "bus";
   const route = typeof req.query.route === "string" ? req.query.route : null;
   if (!route) return res.status(400).json({ error: "route required" });
   const system = typeof req.query.system === "string" ? req.query.system : null;
-  res.json(routeRatingStats(kind, route, system));
+  res.json(await routeRatingStats(kind, route, system));
 });
 
 // A photo field must be a real data: URI (what the app's own JPEG-compress-then-encode
@@ -138,7 +142,7 @@ function validPhoto(photo) {
 
 // ---- place reviews (real user-submitted content, no external Places API) ----
 const placeReviewBucket = new Map();
-app.post("/v1/places/reviews", (req, res) => {
+app.post("/v1/places/reviews", async (req, res) => {
   const now = Date.now();
   const hist = (placeReviewBucket.get(req.clientIp) || []).filter((t) => now - t < 60_000);
   if (hist.length >= 10) return res.status(429).json({ error: "rate limited" });
@@ -150,18 +154,18 @@ app.post("/v1/places/reviews", (req, res) => {
   if (!placeKey || !placeName) return res.status(400).json({ error: "placeKey and placeName required" });
   if (!(n >= 1 && n <= 5)) return res.status(400).json({ error: "stars 1-5 required" });
   if (!validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
-  createPlaceReview({ placeKey, placeName, lat, lon, stars: n, comment, photo, appVersion, device, ip: req.clientIp });
+  await createPlaceReview({ placeKey, placeName, lat, lon, stars: n, comment, photo, appVersion, device, ip: req.clientIp });
   res.json({ ok: true });
 });
 
-app.get("/v1/places/reviews", (req, res) => {
+app.get("/v1/places/reviews", async (req, res) => {
   const placeKey = typeof req.query.placeKey === "string" ? req.query.placeKey : null;
   if (!placeKey) return res.status(400).json({ error: "placeKey required" });
-  res.json({ stats: placeReviewStats(placeKey), reviews: listPlaceReviews(placeKey) });
+  res.json({ stats: await placeReviewStats(placeKey), reviews: await listPlaceReviews(placeKey) });
 });
 
 const placeReviewReportBucket = new Map();
-app.post("/v1/places/reviews/:id/report", (req, res) => {
+app.post("/v1/places/reviews/:id/report", async (req, res) => {
   const now = Date.now();
   const hist = (placeReviewReportBucket.get(req.clientIp) || []).filter((t) => now - t < 60_000);
   if (hist.length >= 10) return res.status(429).json({ error: "rate limited" });
@@ -171,18 +175,18 @@ app.post("/v1/places/reviews/:id/report", (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
   const reason = typeof req.body?.reason === "string" ? req.body.reason : "other";
-  const ok = reportPlaceReview(id, reason, req.clientIp);
+  const ok = await reportPlaceReview(id, reason, req.clientIp);
   if (!ok) return res.status(404).json({ error: "not found" });
   res.json({ ok: true });
 });
 
-app.get("/v1/admin/place-reviews", requireAdmin, (_req, res) => {
-  res.json({ reviews: listAllPlaceReviews() });
+app.get("/v1/admin/place-reviews", requireAdmin, async (_req, res) => {
+  res.json({ reviews: await listAllPlaceReviews() });
 });
 
 // ---- user-submitted landmarks (real content, held for admin approval before showing) ----
 const landmarkBucket = new Map();
-app.post("/v1/landmarks", (req, res) => {
+app.post("/v1/landmarks", async (req, res) => {
   const now = Date.now();
   const hist = (landmarkBucket.get(req.clientIp) || []).filter((t) => now - t < 60_000);
   if (hist.length >= 5) return res.status(429).json({ error: "rate limited" });
@@ -193,44 +197,44 @@ app.post("/v1/landmarks", (req, res) => {
   if (!name || typeof name !== "string") return res.status(400).json({ error: "name required" });
   if (typeof lat !== "number" || typeof lon !== "number") return res.status(400).json({ error: "lat/lon required" });
   if (!validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
-  createUserLandmark({ name, description, category, lat, lon, photo, isBusinessClaim, businessHours, phone, appVersion, device, ip: req.clientIp });
+  await createUserLandmark({ name, description, category, lat, lon, photo, isBusinessClaim, businessHours, phone, appVersion, device, ip: req.clientIp });
   res.json({ ok: true });
 });
 
 /** Real approved landmarks near a point, to merge into the app's own nearby-landmarks list alongside Apple's POIs. */
-app.get("/v1/landmarks", (req, res) => {
+app.get("/v1/landmarks", async (req, res) => {
   const lat = parseFloat(req.query.lat);
   const lon = parseFloat(req.query.lon);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).json({ error: "lat/lon required" });
   const radius = Number.isFinite(parseFloat(req.query.radius)) ? parseFloat(req.query.radius) : 1000;
-  res.json({ landmarks: listApprovedLandmarksNear(lat, lon, radius) });
+  res.json({ landmarks: await listApprovedLandmarksNear(lat, lon, radius) });
 });
 
-app.get("/v1/admin/landmarks", requireAdmin, (_req, res) => {
-  res.json({ landmarks: listAllUserLandmarks() });
+app.get("/v1/admin/landmarks", requireAdmin, async (_req, res) => {
+  res.json({ landmarks: await listAllUserLandmarks() });
 });
 
-app.post("/v1/admin/landmarks/:id/approve", requireAdmin, (req, res) => {
+app.post("/v1/admin/landmarks/:id/approve", requireAdmin, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
-  res.json({ ok: approveUserLandmark(id) });
+  res.json({ ok: await approveUserLandmark(id) });
 });
 
 /** Admin has manually confirmed (outside the app) that this submitter really is the business owner. */
-app.post("/v1/admin/landmarks/:id/verify-business", requireAdmin, (req, res) => {
+app.post("/v1/admin/landmarks/:id/verify-business", requireAdmin, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
-  res.json({ ok: verifyUserLandmarkBusiness(id) });
+  res.json({ ok: await verifyUserLandmarkBusiness(id) });
 });
 
-app.delete("/v1/admin/landmarks/:id", requireAdmin, (req, res) => {
+app.delete("/v1/admin/landmarks/:id", requireAdmin, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
-  res.json({ ok: deleteUserLandmark(id) });
+  res.json({ ok: await deleteUserLandmark(id) });
 });
 
 const landmarkReportBucket = new Map();
-app.post("/v1/landmarks/:id/report", (req, res) => {
+app.post("/v1/landmarks/:id/report", async (req, res) => {
   const now = Date.now();
   const hist = (landmarkReportBucket.get(req.clientIp) || []).filter((t) => now - t < 60_000);
   if (hist.length >= 10) return res.status(429).json({ error: "rate limited" });
@@ -240,40 +244,40 @@ app.post("/v1/landmarks/:id/report", (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
   const reason = typeof req.body?.reason === "string" ? req.body.reason : "other";
-  const ok = reportUserLandmark(id, reason, req.clientIp);
+  const ok = await reportUserLandmark(id, reason, req.clientIp);
   if (!ok) return res.status(404).json({ error: "not found" });
   res.json({ ok: true });
 });
 
 /** This device's own submitted landmarks, so the app can show status + let a verified owner edit. */
-app.get("/v1/landmarks/mine", (req, res) => {
+app.get("/v1/landmarks/mine", async (req, res) => {
   const device = typeof req.query.device === "string" ? req.query.device : null;
   if (!device) return res.status(400).json({ error: "device required" });
-  res.json({ landmarks: listMyUserLandmarks(device) });
+  res.json({ landmarks: await listMyUserLandmarks(device) });
 });
 
 /** A verified business owner editing their own real listing — see updateMyUserLandmark for the ownership+verification gate. */
-app.put("/v1/landmarks/:id", (req, res) => {
+app.put("/v1/landmarks/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
   const { device, description, businessHours, phone, photo, lat, lon } = req.body || {};
   if (!device) return res.status(400).json({ error: "device required" });
   if (photo !== undefined && !validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
-  const ok = updateMyUserLandmark(id, device, { description, businessHours, phone, photo, lat, lon });
+  const ok = await updateMyUserLandmark(id, device, { description, businessHours, phone, photo, lat, lon });
   if (!ok) return res.status(403).json({ error: "not authorized to edit this listing" });
   res.json({ ok: true });
 });
 
-app.delete("/v1/admin/place-reviews/:id", requireAdmin, (req, res) => {
+app.delete("/v1/admin/place-reviews/:id", requireAdmin, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
-  const ok = deletePlaceReview(id);
+  const ok = await deletePlaceReview(id);
   res.json({ ok });
 });
 
 // ---- crowd-sourced observations (from Live Activity board/alight buttons) ----
 const obsBucket = new Map();
-app.post("/v1/observations", (req, res) => {
+app.post("/v1/observations", async (req, res) => {
   const now = Date.now();
   const hist = (obsBucket.get(req.clientIp) || []).filter((t) => now - t < 60_000);
   if (hist.length >= 40) return res.status(429).json({ error: "rate limited" });
@@ -282,11 +286,11 @@ app.post("/v1/observations", (req, res) => {
 
   const { route, plate, stopUID, stopName, kind, system } = req.body || {};
   if (!route && !plate) return res.status(400).json({ error: "route or plate required" });
-  createObservation({ route, plate, stopUID, stopName, kind, system, ip: req.clientIp });
+  await createObservation({ route, plate, stopUID, stopName, kind, system, ip: req.clientIp });
   res.json({ ok: true });
 });
 // Shared YouBike snapshot (refreshed by the poller). Public.
-app.get("/v1/bike/nearby", (req, res) => {
+app.get("/v1/bike/nearby", async (req, res) => {
   const lat = parseFloat(req.query.lat);
   const lon = parseFloat(req.query.lon);
   if (Number.isNaN(lat) || Number.isNaN(lon)) return res.status(400).json({ error: "lat/lon required" });
@@ -295,12 +299,12 @@ app.get("/v1/bike/nearby", (req, res) => {
 
   let pool = [];
   let updatedAt = null;
-  if (typeof req.query.city === "string" && getBikeCache(req.query.city)) {
-    const c = getBikeCache(req.query.city);
-    pool = c.stations;
-    updatedAt = c.updatedAt;
+  const cityCache = typeof req.query.city === "string" ? await getBikeCache(req.query.city) : null;
+  if (cityCache) {
+    pool = cityCache.stations;
+    updatedAt = cityCache.updatedAt;
   } else {
-    for (const c of allBikeCaches()) {
+    for (const c of await allBikeCaches()) {
       pool = pool.concat(c.stations);
       if (!updatedAt || c.updatedAt > updatedAt) updatedAt = c.updatedAt;
     }
@@ -311,13 +315,13 @@ app.get("/v1/bike/nearby", (req, res) => {
 
 // Nationwide YouBike name search over every cached city — lets the app jump to a
 // station anywhere in Taiwan instead of only what's currently on screen.
-app.get("/v1/bike/search", (req, res) => {
+app.get("/v1/bike/search", async (req, res) => {
   const q = (req.query.q || "").toString().trim();
   if (q.length < 1) return res.json({ stations: [] });
   const limit = Math.min(50, parseInt(req.query.limit, 10) || 20);
   const needle = q.toLowerCase();
   let pool = [];
-  for (const c of allBikeCaches()) pool = pool.concat(c.stations);
+  for (const c of await allBikeCaches()) pool = pool.concat(c.stations);
   const matches = pool
     .filter((s) => s.name && s.name.toLowerCase().includes(needle))
     .slice(0, limit);
@@ -326,34 +330,34 @@ app.get("/v1/bike/search", (req, res) => {
 
 // Fixed traffic-camera locations (speed / intersection / pedestrian-yield), nationwide —
 // see speedcampoller.mjs for sources. No TDX involved, so no rate limit either.
-app.get("/v1/speedcams/nearby", (req, res) => {
+app.get("/v1/speedcams/nearby", async (req, res) => {
   const lat = parseFloat(req.query.lat);
   const lon = parseFloat(req.query.lon);
   if (Number.isNaN(lat) || Number.isNaN(lon)) return res.status(400).json({ error: "lat/lon required" });
   const radius = Math.min(20000, parseInt(req.query.radius, 10) || 2000);
   const limit = Math.min(200, parseInt(req.query.limit, 10) || 50);
 
-  const cache = getSpeedcamCache();
+  const cache = await getSpeedcamCache();
   if (!cache) return res.json({ cams: [], updatedAt: null });
   res.json({ cams: nearestCams(cache.cams, lat, lon, radius, limit), updatedAt: cache.updatedAt });
 });
 
 // Public read so the app can fall back to crowd data when TDX is stale.
-app.get("/v1/observations", (req, res) => {
+app.get("/v1/observations", async (req, res) => {
   const route = typeof req.query.route === "string" ? req.query.route : null;
-  res.json({ observations: listObservations({ route, limit: 50 }) });
+  res.json({ observations: await listObservations({ route, limit: 50 }) });
 });
 
 // ---- admin ----
-app.get("/v1/admin/ratings", requireAdmin, (_req, res) => {
-  res.json({ stats: ratingStats(), ratings: listRatings(200) });
+app.get("/v1/admin/ratings", requireAdmin, async (_req, res) => {
+  res.json({ stats: await ratingStats(), ratings: await listRatings(200) });
 });
-app.get("/v1/admin/observations", requireAdmin, (_req, res) => {
-  res.json({ observations: listObservations({ limit: 200 }) });
+app.get("/v1/admin/observations", requireAdmin, async (_req, res) => {
+  res.json({ observations: await listObservations({ limit: 200 }) });
 });
 
-app.get("/v1/admin/announcements", requireAdmin, (_req, res) => {
-  res.json({ announcements: listAnnouncements({ includeInactive: true }) });
+app.get("/v1/admin/announcements", requireAdmin, async (_req, res) => {
+  res.json({ announcements: await listAnnouncements({ includeInactive: true }) });
 });
 
 app.post("/v1/admin/announcements", requireAdmin, async (req, res) => {
@@ -362,13 +366,13 @@ app.post("/v1/admin/announcements", requireAdmin, async (req, res) => {
   const expiresAt = expiresInMinutes
     ? new Date(Date.now() + expiresInMinutes * 60_000).toISOString().replace("T", " ").slice(0, 19)
     : null;
-  const ann = createAnnouncement({ category, severity, title, body, source: "admin", expiresAt });
+  const ann = await createAnnouncement({ category, severity, title, body, source: "admin", expiresAt });
   const push = await pushAnnouncement(ann);
   res.json({ announcement: ann, push });
 });
 
-app.delete("/v1/admin/announcements/:id", requireAdmin, (req, res) => {
-  deactivateAnnouncement(parseInt(req.params.id, 10));
+app.delete("/v1/admin/announcements/:id", requireAdmin, async (req, res) => {
+  await deactivateAnnouncement(parseInt(req.params.id, 10));
   res.json({ ok: true });
 });
 
@@ -379,8 +383,8 @@ app.get("/v1/admin/bike-status", requireAdmin, (_req, res) => {
   res.json({ status: bikePollStatus() });
 });
 
-app.get("/v1/admin/reports", requireAdmin, (req, res) => {
-  res.json({ reports: listReports(parseInt(req.query.limit || "100", 10)) });
+app.get("/v1/admin/reports", requireAdmin, async (req, res) => {
+  res.json({ reports: await listReports(parseInt(req.query.limit || "100", 10)) });
 });
 
 // ---- tiny admin page ----
@@ -389,18 +393,15 @@ app.get("/admin", (_req, res) => res.sendFile(join(__dirname, "..", "public", "a
 // ---- Multimodal Routing Engine (architecture doc section 11) ----
 // Graph is built once from the DB and kept in memory (section 17 — Routing never
 // queries SQL mid-search); rebuilt on demand via the admin endpoint below once new
-// GTFS/TDX data has actually been ingested. Right now (pre-live-TDX-verification) this
-// graph is empty or test-only, so every /api/v1/routes call will correctly return
-// NO_ORIGIN_NEARBY/NO_DESTINATION_NEARBY until real ingestion runs — that's honest
-// behavior, not a bug: there's no real route data in it yet.
-let routingGraph = buildGraph(db);
+// GTFS/TDX data has actually been ingested.
+let routingGraph = await buildGraph(db);
 console.log(`[routing] graph built: ${routingGraph.nodeCount} nodes, ${routingGraph.edgeCount} edges`);
 if (routingGraph.warnings.length > 0) {
   for (const w of routingGraph.warnings) console.log(`[routing] warning: ${w}`);
 }
 
-app.post("/api/v1/routes", (req, res) => {
-  const result = planRoute(routingGraph, req.body, db);
+app.post("/api/v1/routes", async (req, res) => {
+  const result = await planRoute(routingGraph, req.body, db);
   res.status(result.status).json(result.body);
 });
 
@@ -419,8 +420,8 @@ app.get("/v1/admin/routing/debug/nearby-stops", requireAdmin, async (req, res) =
   res.json({ ok: true, nearest: hits.slice(0, 10) });
 });
 
-app.post("/v1/admin/routing/rebuild", requireAdmin, (_req, res) => {
-  routingGraph = buildGraph(db);
+app.post("/v1/admin/routing/rebuild", requireAdmin, async (_req, res) => {
+  routingGraph = await buildGraph(db);
   res.json({ ok: true, nodeCount: routingGraph.nodeCount, edgeCount: routingGraph.edgeCount, warnings: routingGraph.warnings });
 });
 

@@ -82,7 +82,7 @@ export function startSpeedcamPoller() {
       }
     }
     if (merged.length > 0) {
-      setSpeedcamCache(merged);
+      await setSpeedcamCache(merged);
       console.log(`[speedcam] cached ${merged.length} cameras total`);
     }
   };

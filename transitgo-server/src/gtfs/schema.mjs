@@ -16,13 +16,16 @@
  * old and new data" requirement: each import is one atomic swap, not an incremental
  * merge that could leave stale rows behind.
  */
-export function ensureGtfsSchema(db) {
-  db.exec(`
+export async function ensureGtfsSchema(db) {
+  // Same schema on both engines — GTFS's own types (TEXT/REAL/INTEGER) are already
+  // portable; the only real SQLite-ism here is the datetime('now') column default.
+  const now = process.env.DATABASE_URL ? "now()" : "datetime('now')";
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS gtfs_feeds (
       feed_id     TEXT PRIMARY KEY,
       name        TEXT NOT NULL,
       source_url  TEXT,
-      imported_at TEXT NOT NULL DEFAULT (datetime('now')),
+      imported_at TEXT NOT NULL DEFAULT (${now}),
       row_counts  TEXT
     );
 
@@ -127,7 +130,7 @@ export function ensureGtfsSchema(db) {
       min_headway_mins  INTEGER,
       max_headway_mins  INTEGER,
       source            TEXT NOT NULL DEFAULT 'TDX v2/Bus/Schedule Frequencys',
-      imported_at       TEXT NOT NULL DEFAULT (datetime('now')),
+      imported_at       TEXT NOT NULL DEFAULT (${now}),
       PRIMARY KEY (feed_id, route_id, direction, service_day_label, start_time, end_time)
     );
 

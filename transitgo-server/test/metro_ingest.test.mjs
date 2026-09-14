@@ -26,24 +26,24 @@ const rawStationOfLine = [
 ];
 
 const db = new DatabaseSync(":memory:");
-ensureGtfsSchema(db);
+await ensureGtfsSchema(db);
 
 const stops = normalizeMetroStations(rawStations);
 check("Real metro stations normalized with real lat/lon", stops.length === 2 && stops.find((s) => s.stop_id === "BL12")?.stop_lat === 25.0478);
-insertStops(db, "MRT", stops);
+await insertStops(db, "MRT", stops);
 
 const forward = normalizeMetroStationSequence(rawStationOfLine, "BL");
 check("Real station sequence extracted in TDX's own order", forward.length === 2 && forward[0].stop_id === "BL11" && forward[0].stop_sequence === 1);
 
 const backward = forward.map((r, i, arr) => ({ ...r, direction: 1, stop_sequence: arr.length - i })).reverse();
-insertRoutes(db, [{ feed_id: "MRT", route_id: "BL", route_short_name: "板南線", route_long_name: null, route_type: 1 }]);
-insertRouteStops(db, "MRT", "BL", [...forward, ...backward]);
+await insertRoutes(db, [{ feed_id: "MRT", route_id: "BL", route_short_name: "板南線", route_long_name: null, route_type: 1 }]);
+await insertRouteStops(db, "MRT", "BL", [...forward, ...backward]);
 
 const stored = db.prepare("SELECT * FROM gtfs_route_stops WHERE feed_id='MRT' AND route_id='BL' ORDER BY direction, stop_sequence").all();
 check("Both directions persisted (4 rows: 2 stations x 2 directions)", stored.length === 4);
 check("Direction 1 is the real reverse order of direction 0", stored[2].stop_id === "BL12" && stored[3].stop_id === "BL11");
 
-const graph = buildGraph(db);
+const graph = await buildGraph(db);
 check("Graph has real MRT stations as nodes", graph.nodes.has(nodeId("MRT", "BL11")) && graph.nodes.has(nodeId("MRT", "BL12")));
 check("No edges yet — no schedule/headway data ingested for metro, correctly not fabricated", graph.edgeCount === 0);
 

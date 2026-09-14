@@ -50,7 +50,7 @@ function secondsToIso(baseDate, seconds) {
  * optional (tests can omit it) — only used to resolve each leg's real route_short_name
  * for the client to look up live vehicle positions with; omitted, those fields are null.
  */
-export function planRoute(graph, requestBody, db) {
+export async function planRoute(graph, requestBody, db) {
   const body = requestBody || {};
   const origin = body.origin;
   const destination = body.destination;
@@ -120,21 +120,23 @@ export function planRoute(graph, requestBody, db) {
   }
 
   const routeInfoCache = new Map();
-  const routeInfo = (fromNodeId, routeId) => {
+  const routeInfo = async (fromNodeId, routeId) => {
     if (!db || !routeId) return { routeShortName: null, scopePath: null };
     const feedId = String(fromNodeId).split(":")[0];
     const key = `${feedId}:${routeId}`;
     if (routeInfoCache.has(key)) return routeInfoCache.get(key);
-    const row = db.prepare(`SELECT route_short_name FROM gtfs_routes WHERE feed_id = ? AND route_id = ?`).get(feedId, routeId);
+    const row = await db.prepare(`SELECT route_short_name FROM gtfs_routes WHERE feed_id = ? AND route_id = ?`).get(feedId, routeId);
     const info = { routeShortName: row?.route_short_name ?? null, scopePath: FEED_SCOPE_PATHS[feedId] ?? null };
     routeInfoCache.set(key, info);
     return info;
   };
 
-  const routes = result.routes.map((r, i) => {
-    const legs = r.route.legs.map((l) => {
-      const { routeShortName, scopePath } = routeInfo(l.fromNodeId, l.routeId);
-      return {
+  const routes = [];
+  for (const [i, r] of result.routes.entries()) {
+    const legs = [];
+    for (const l of r.route.legs) {
+      const { routeShortName, scopePath } = await routeInfo(l.fromNodeId, l.routeId);
+      legs.push({
         mode: l.mode,
         routeId: l.routeId,
         routeShortName, scopePath,
@@ -150,9 +152,9 @@ export function planRoute(graph, requestBody, db) {
         arrivalTime: secondsToIso(departure.baseDate, l.arrivalSeconds),
         durationSeconds: l.arrivalSeconds - l.departureSeconds,
         isEstimated: l.isEstimated ?? false,
-      };
-    });
-    return {
+      });
+    }
+    routes.push({
       routeId: `R${String(i + 1).padStart(3, "0")}`,
       label: r.label,
       durationSeconds: r.route.durationSeconds,
@@ -169,8 +171,8 @@ export function planRoute(graph, requestBody, db) {
       // routing but unreadable as a itinerary; this collapses consecutive same
       // mode+route edges into "board at X, ride N stops, alight at Y".
       segments: collapseToSegments(legs),
-    };
-  });
+    });
+  }
 
   return { status: 200, body: { requestId, routes } };
 }

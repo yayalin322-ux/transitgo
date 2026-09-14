@@ -12,7 +12,7 @@ function check(label, cond) {
 }
 
 const db = new DatabaseSync(":memory:");
-ensureGtfsSchema(db);
+await ensureGtfsSchema(db);
 
 // Real stops for both stations that appear in the TRA fixture below.
 db.exec(`
@@ -32,9 +32,9 @@ const rawTRATimetable = {
   }],
 };
 const tra = normalizeTRATimetable(rawTRATimetable.TrainTimetables, "2026-09-14");
-insertTrips(db, "TRA", tra.trips);
-insertStopTimes(db, "TRA", tra.stopTimes);
-insertCalendarDates(db, "TRA", tra.calendarDates);
+await insertTrips(db, "TRA", tra.trips);
+await insertStopTimes(db, "TRA", tra.stopTimes);
+await insertCalendarDates(db, "TRA", tra.calendarDates);
 
 // A bus route with a real published timetable (goes into gtfs_trips like TRA does)...
 const rawBusTimetable = [{
@@ -42,9 +42,9 @@ const rawBusTimetable = [{
   Timetables: [{ DepartureTime: "07:00" }],
 }];
 const bus = normalizeBusSchedule(rawBusTimetable, "5900", "2026-09-14");
-insertRoutes(db, [{ feed_id: "BUS", route_id: "5900", route_short_name: "5900", route_long_name: null, route_type: 3 }]);
-insertTrips(db, "BUS", bus.trips);
-insertStopTimes(db, "BUS", bus.stopTimes);   // stop_id is null here (real, documented gap)
+await insertRoutes(db, [{ feed_id: "BUS", route_id: "5900", route_short_name: "5900", route_long_name: null, route_type: 3 }]);
+await insertTrips(db, "BUS", bus.trips);
+await insertStopTimes(db, "BUS", bus.stopTimes);   // stop_id is null here (real, documented gap)
 
 // ...and a route with only real headway bands (no trips at all).
 const rawBusFreq = [{
@@ -52,10 +52,10 @@ const rawBusFreq = [{
   Frequencys: [{ StartTime: "06:00", EndTime: "09:00", MinHeadwayMins: 8, MaxHeadwayMins: 12 }],
 }];
 const busFreq = normalizeBusSchedule(rawBusFreq, "307", "2026-09-14");
-insertRoutes(db, [{ feed_id: "BUS", route_id: "307", route_short_name: "307", route_long_name: null, route_type: 3 }]);
-insertFrequencies(db, "BUS", busFreq.frequencies);
+await insertRoutes(db, [{ feed_id: "BUS", route_id: "307", route_short_name: "307", route_long_name: null, route_type: 3 }]);
+await insertFrequencies(db, "BUS", busFreq.frequencies);
 
-const graph = buildGraph(db);
+const graph = await buildGraph(db);
 
 check("Graph has both real TRA stations as nodes", graph.nodes.has(nodeId("TRA", "1000")) && graph.nodes.has(nodeId("TRA", "3300")));
 

@@ -23,7 +23,7 @@ function check(label, cond) {
   graph.addNode(new TransitNode({ id: "MRT:dest", type: NodeType.STOP, lat: 25.05, lon: 121.55 }));
   graph.addEdge(new TransitEdge({ id: "b1", fromNodeId: "BUS:stop1", toNodeId: "MRT:hub", mode: Mode.BUS, routeId: "1", headwaySeconds: 600, travelSeconds: 400, windowStartSeconds: 0, windowEndSeconds: 86400, source: "test" }));
   graph.addEdge(new TransitEdge({ id: "m1", fromNodeId: "MRT:hub", toNodeId: "MRT:dest", mode: Mode.MRT, routeId: "R", headwaySeconds: 300, travelSeconds: 900, windowStartSeconds: 0, windowEndSeconds: 86400, source: "test" }));
-  const res = planRoute(graph, { origin: { lat: 25.03, lng: 121.51 }, destination: { lat: 25.05, lng: 121.55 } });
+  const res = await planRoute(graph, { origin: { lat: 25.03, lng: 121.51 }, destination: { lat: 25.05, lng: 121.55 } });
   check("Test 1: 住宅→公車站→MRT→目的地 finds a real route with both BUS and MRT legs",
     res.status === 200 && res.body.routes[0].legs.some((l) => l.mode === "BUS") && res.body.routes[0].legs.some((l) => l.mode === "MRT"));
 }
@@ -40,7 +40,7 @@ function check(label, cond) {
   graph.addNode(new TransitNode({ id: "TRA:1000", type: NodeType.STOP, lat: 25.0478, lon: 121.5171 }));
   graph.addEdge(new TransitEdge({ id: "b2", fromNodeId: "BUS:s1", toNodeId: "TRA:3300", mode: Mode.BUS, routeId: "5900", headwaySeconds: 900, travelSeconds: 300, windowStartSeconds: 0, windowEndSeconds: 86400, source: "test" }));
   graph.addEdge(new TransitEdge({ id: "tra1", fromNodeId: "TRA:3300", toNodeId: "TRA:1000", mode: Mode.TRA, routeId: "TRA", departureSeconds: 8 * 3600, arrivalSeconds: 8 * 3600 + 54 * 60, travelSeconds: 54 * 60, source: "TDX real timetable" }));
-  const res = planRoute(graph, { origin: { lat: 24.80, lng: 120.97 }, destination: { lat: 25.0478, lng: 121.5171 }, departureTime: "2026-09-14T07:00:00+08:00" });
+  const res = await planRoute(graph, { origin: { lat: 24.80, lng: 120.97 }, destination: { lat: 25.0478, lng: 121.5171 }, departureTime: "2026-09-14T07:00:00+08:00" });
   check("Test 2: 住宅→公車→台鐵→目的地 finds a real route with both BUS and TRA legs",
     res.status === 200 && res.body.routes[0].legs.some((l) => l.mode === "BUS") && res.body.routes[0].legs.some((l) => l.mode === "TRA"));
 }
@@ -53,7 +53,7 @@ function check(label, cond) {
   graph.addNode(new TransitNode({ id: "MRT:d", type: NodeType.STOP, lat: 25.05, lon: 121.55 }));
   graph.addEdge(new TransitEdge({ id: "hsr1", fromNodeId: "THSR:hsinchu", toNodeId: "THSR:taipei", mode: Mode.HSR, routeId: "THSR", departureSeconds: 8 * 3600, arrivalSeconds: 8 * 3600 + 30 * 60, travelSeconds: 30 * 60, source: "TDX real timetable" }));
   graph.addEdge(new TransitEdge({ id: "m2", fromNodeId: "THSR:taipei", toNodeId: "MRT:d", mode: Mode.MRT, routeId: "R", headwaySeconds: 300, travelSeconds: 600, windowStartSeconds: 0, windowEndSeconds: 86400, source: "test" }));
-  const res = planRoute(graph, { origin: { lat: 24.807, lng: 121.04 }, destination: { lat: 25.05, lng: 121.55 }, departureTime: "2026-09-14T07:00:00+08:00" });
+  const res = await planRoute(graph, { origin: { lat: 24.807, lng: 121.04 }, destination: { lat: 25.05, lng: 121.55 }, departureTime: "2026-09-14T07:00:00+08:00" });
   check("Test 3: 住宅→高鐵→MRT→目的地 finds a real route with both HSR and MRT legs",
     res.status === 200 && res.body.routes[0].legs.some((l) => l.mode === "HSR") && res.body.routes[0].legs.some((l) => l.mode === "MRT"));
 }
@@ -65,7 +65,7 @@ function check(label, cond) {
   graph.addNode(new TransitNode({ id: "BUS:near2", type: NodeType.STOP, lat: 25.0350, lon: 121.5200 }));
   graph.addEdge(new TransitEdge({ id: "b3", fromNodeId: "BUS:near1", toNodeId: "BUS:near2", mode: Mode.BUS, routeId: "9", headwaySeconds: 600, travelSeconds: 500, windowStartSeconds: 0, windowEndSeconds: 86400, source: "test" }));
   // Neither GPS point IS a stop — both are ~150-200m away, real addresses/random points.
-  const res = planRoute(graph, { origin: { lat: 25.0295, lng: 121.5095 }, destination: { lat: 25.0355, lng: 121.5205 } });
+  const res = await planRoute(graph, { origin: { lat: 25.0295, lng: 121.5095 }, destination: { lat: 25.0355, lng: 121.5205 } });
   check("Test 4: neither GPS point is itself a station, route still found via virtual origin/destination walk legs",
     res.status === 200 && res.body.routes[0].legs.some((l) => l.mode === "WALK") && res.body.routes[0].legs.some((l) => l.mode === "BUS"));
 }
@@ -74,7 +74,7 @@ function check(label, cond) {
 {
   const graph = new MultimodalGraph();
   graph.addNode(new TransitNode({ id: "BUS:only", type: NodeType.STOP, lat: 25.03, lon: 121.51 }));
-  const res = planRoute(graph, { origin: { lat: 22.6, lng: 120.3 }, destination: { lat: 25.03, lng: 121.51 } });   // 高雄 — nothing there in this graph
+  const res = await planRoute(graph, { origin: { lat: 22.6, lng: 120.3 }, destination: { lat: 25.03, lng: 121.51 } });   // 高雄 — nothing there in this graph
   check("Test 5: genuinely no nearby stop returns NO_ORIGIN_NEARBY, not a fabricated route", res.status === 404 && res.body.error.code === "NO_ORIGIN_NEARBY");
 }
 
@@ -127,7 +127,7 @@ function check(label, cond) {
   graph.addEdge(new TransitEdge({ id: "direct", fromNodeId: "A", toNodeId: "D", mode: Mode.BUS, routeId: "DIRECT", headwaySeconds: 900, travelSeconds: 1550, windowStartSeconds: 0, windowEndSeconds: 86400, source: "test" }));
   graph.addEdge(new TransitEdge({ id: "leg1", fromNodeId: "A", toNodeId: "B", mode: Mode.BUS, routeId: "L1", headwaySeconds: 600, travelSeconds: 600, windowStartSeconds: 0, windowEndSeconds: 86400, source: "test" }));
   graph.addEdge(new TransitEdge({ id: "leg2", fromNodeId: "B", toNodeId: "D", mode: Mode.BUS, routeId: "L2", headwaySeconds: 600, travelSeconds: 500, windowStartSeconds: 0, windowEndSeconds: 86400, source: "test" }));
-  const res = planRoute(graph, { origin: { lat: 25.0478, lng: 121.5171 }, destination: { lat: 25.0339, lng: 121.5645 } });
+  const res = await planRoute(graph, { origin: { lat: 25.0478, lng: 121.5171 }, destination: { lat: 25.0339, lng: 121.5645 } });
   const fastest = res.body.routes.find((r) => r.label === "最快");
   const fewest = res.body.routes.find((r) => r.label === "少轉乘");
   check("Test 9: 最快 and 少轉乘 are genuinely different routes at the API level",
@@ -140,7 +140,7 @@ function check(label, cond) {
   graph.addNode(new TransitNode({ id: "A", type: NodeType.STOP, lat: 25.0478, lon: 121.5171 }));
   graph.addNode(new TransitNode({ id: "D", type: NodeType.STOP, lat: 25.0490, lon: 121.5175 }));
   graph.addEdge(new TransitEdge({ id: "roundabout", fromNodeId: "A", toNodeId: "D", mode: Mode.BUS, routeId: "99", headwaySeconds: 1200, travelSeconds: 900, windowStartSeconds: 0, windowEndSeconds: 86400, source: "test" }));
-  const res = planRoute(graph, { origin: { lat: 25.0478, lng: 121.5171 }, destination: { lat: 25.0490, lng: 121.5175 } });
+  const res = await planRoute(graph, { origin: { lat: 25.0478, lng: 121.5171 }, destination: { lat: 25.0490, lng: 121.5175 } });
   const fastest = res.body.routes.find((r) => r.label === "最快") ?? res.body.routes[0];
   check("Test 10: 300m apart favors a direct walk over a slow transit detour", res.status === 200 && !fastest.legs.some((l) => l.mode === "BUS"));
 }
