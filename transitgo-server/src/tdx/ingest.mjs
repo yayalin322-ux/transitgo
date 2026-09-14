@@ -40,7 +40,12 @@ export async function insertStopTimes(db, feedId, stopTimes) {
     VALUES (?,?,?,?,?,?)
     ON CONFLICT(feed_id, trip_id, stop_sequence) DO NOTHING
   `);
-  for (const st of stopTimes) await ins.run(feedId, st.trip_id, st.stop_id, st.arrival_time, st.departure_time, st.stop_sequence);
+  let i = 0;
+  for (const st of stopTimes) {
+    if (i > 0 && i % 20 === 0) console.log(`[insertStopTimes] ${i}/${stopTimes.length}`);
+    await ins.run(feedId, st.trip_id, st.stop_id, st.arrival_time, st.departure_time, st.stop_sequence);
+    i++;
+  }
 }
 
 export async function insertCalendarDates(db, feedId, calendarDates) {
@@ -119,10 +124,14 @@ export async function ingestTRAStations(db, feedId) {
 
 /** Ingests one bus route's real schedule (timetable and/or headway, whatever TDX actually has) for one date. */
 export async function ingestBusRouteSchedule(db, feedId, scopePath, routeId, routeNameZh, dateStr) {
+  const t0 = Date.now();
+  const trace = (label) => console.log(`[ingest ${routeId}] ${label} +${Date.now() - t0}ms`);
+  trace("start");
   const [rawStops, rawSchedule] = await Promise.all([
     provider.getBusStopsOfRoute(scopePath, routeNameZh),
     provider.getBusSchedule(scopePath, routeNameZh),
   ]);
+  trace(`tdx fetched (stops=${rawStops?.length ?? "?"} schedule=${rawSchedule?.length ?? "?"})`);
   const stops = normalizeBusStops(rawStops);
   const routeStops = normalizeBusRouteStopSequence(rawStops, routeId);
   const stopSequenceByDirection = new Map();
@@ -131,19 +140,31 @@ export async function ingestBusRouteSchedule(db, feedId, scopePath, routeId, rou
     stopSequenceByDirection.get(r.direction)[r.stop_sequence - 1] = r.stop_id;
   }
   const { trips, stopTimes, calendarDates, frequencies } = normalizeBusSchedule(rawSchedule, routeId, dateStr, stopSequenceByDirection);
+  trace(`normalized (stops=${stops.length} routeStops=${routeStops.length} trips=${trips.length} stopTimes=${stopTimes.length} calendarDates=${calendarDates.length} frequencies=${frequencies.length})`);
 
   await db.exec(BEGIN);
+  trace("BEGIN done");
   try {
     await insertRoutes(db, [{ feed_id: feedId, route_id: routeId, route_short_name: routeNameZh, route_long_name: null, route_type: 3 }]);
+    trace("insertRoutes done");
     await insertStops(db, feedId, stops);
+    trace("insertStops done");
     await insertRouteStops(db, feedId, routeId, routeStops);
+    trace("insertRouteStops done");
     await insertTrips(db, feedId, trips);
+    trace("insertTrips done");
     await insertStopTimes(db, feedId, stopTimes);
+    trace("insertStopTimes done");
     await insertCalendarDates(db, feedId, calendarDates);
+    trace("insertCalendarDates done");
     await insertFrequencies(db, feedId, frequencies);
+    trace("insertFrequencies done");
     await db.exec("COMMIT");
+    trace("COMMIT done");
   } catch (e) {
+    trace(`ERROR: ${e.message}`);
     await db.exec("ROLLBACK");
+    trace("ROLLBACK done");
     throw e;
   }
   return { stops: stops.length, trips: trips.length, stopTimes: stopTimes.length, frequencies: frequencies.length, routeStops: routeStops.length };
