@@ -410,13 +410,28 @@ app.get("/admin", (_req, res) => res.sendFile(join(__dirname, "..", "public", "a
 // Graph is built once from the DB and kept in memory (section 17 — Routing never
 // queries SQL mid-search); rebuilt on demand via the admin endpoint below once new
 // GTFS/TDX data has actually been ingested.
-let routingGraph = await buildGraph(db);
-console.log(`[routing] graph built: ${routingGraph.nodeCount} nodes, ${routingGraph.edgeCount} edges`);
-if (routingGraph.warnings.length > 0) {
-  for (const w of routingGraph.warnings) console.log(`[routing] warning: ${w}`);
-}
+//
+// Deliberately NOT awaited here — with enough ingested data (multi-city GTFS) this can
+// now take minutes, and awaiting it at module scope used to block app.listen() below
+// until it finished. That meant /v1/health couldn't respond during a slow build either,
+// so Render's own health check would time out, conclude the instance was unhealthy, and
+// restart it — which then had to build the exact same graph from scratch before it could
+// pass a health check either, an unrecoverable boot crash-loop. The server now starts
+// listening immediately with an empty graph; requests that need it (below) report 503
+// until the background build finishes.
+let routingGraph = null;
+buildGraph(db).then((g) => {
+  routingGraph = g;
+  console.log(`[routing] graph built: ${g.nodeCount} nodes, ${g.edgeCount} edges`);
+  if (g.warnings.length > 0) {
+    for (const w of g.warnings) console.log(`[routing] warning: ${w}`);
+  }
+}).catch((e) => {
+  console.error(`[routing] initial graph build failed: ${e.message}`);
+});
 
 app.post("/api/v1/routes", async (req, res) => {
+  if (!routingGraph) return res.status(503).json({ ok: false, error: "routing graph still initializing, try again shortly" });
   const result = await planRoute(routingGraph, req.body, db);
   res.status(result.status).json(result.body);
 });
@@ -426,6 +441,7 @@ app.get("/v1/admin/routing/debug/nearby-stops", requireAdmin, async (req, res) =
   const lat = parseFloat(req.query.lat);
   const lng = parseFloat(req.query.lng);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return res.status(400).json({ ok: false, error: "need ?lat=&lng=" });
+  if (!routingGraph) return res.status(503).json({ ok: false, error: "routing graph still initializing, try again shortly" });
   const { haversineMeters } = await import("./graph/virtual.mjs");
   const hits = [];
   for (const node of routingGraph.nodes.values()) {
@@ -436,9 +452,23 @@ app.get("/v1/admin/routing/debug/nearby-stops", requireAdmin, async (req, res) =
   res.json({ ok: true, nearest: hits.slice(0, 10) });
 });
 
+// Responds immediately and rebuilds in the background — awaiting the full build here
+// (as this used to) held the HTTP response open for minutes with enough ingested data,
+// which is exactly the kind of long-blocked request that made Render's proxy return an
+// empty "non-JSON http 502" to the caller even though the server was still working.
+// Poll /v1/health (or just retry a route query) to see when the new graph is live.
 app.post("/v1/admin/routing/rebuild", requireAdmin, async (_req, res) => {
-  routingGraph = await buildGraph(db);
-  res.json({ ok: true, nodeCount: routingGraph.nodeCount, edgeCount: routingGraph.edgeCount, warnings: routingGraph.warnings });
+  res.json({ ok: true, started: true });
+  try {
+    const g = await buildGraph(db);
+    routingGraph = g;
+    console.log(`[routing] graph rebuilt: ${g.nodeCount} nodes, ${g.edgeCount} edges`);
+    if (g.warnings.length > 0) {
+      for (const w of g.warnings) console.log(`[routing] warning: ${w}`);
+    }
+  } catch (e) {
+    console.error(`[routing] rebuild failed: ${e.message}`);
+  }
 });
 
 /** Confirms the routing engine's TDX credentials actually work — never echoes the credentials themselves. */
