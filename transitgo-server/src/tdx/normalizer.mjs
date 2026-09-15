@@ -78,6 +78,64 @@ export function normalizeTRATimetable(rawTrainTimetables, dateStr) {
   return { trips, stopTimes, calendarDates };
 }
 
+export function normalizeTHSRStations(rawStations) {
+  return (rawStations ?? []).map((s) => ({
+    stop_id: s.StationID,
+    stop_name: s.StationName?.Zh_tw ?? s.StationName ?? null,
+    stop_lat: s.StationPosition?.PositionLat ?? null,
+    stop_lon: s.StationPosition?.PositionLon ?? null,
+  }));
+}
+
+/**
+ * THSR's OD timetable shape differs from TRA's: one flat entry per train with just its
+ * Origin/DestinationStopTime for the queried pair (StopSequence 1/2), not a full
+ * multi-stop StopTimes array — TDX doesn't expose THSR's intermediate-station times via
+ * this endpoint the way it does for TRA. That's a real, documented gap (an O-D leg
+ * ingested this way only ever produces a 2-stop trip covering exactly the queried pair),
+ * not a normalizer bug — ingesting enough real adjacent-station pairs is what turns
+ * these into a usable multi-hop THSR line in the graph. Same "one date, one real
+ * calendar_dates exception" reasoning as TRA: a query result is evidence for that date
+ * only, not a fabricated weekly pattern.
+ */
+export function normalizeTHSRTimetable(rawODTimetables, dateStr) {
+  const trips = [];
+  const stopTimes = [];
+  const calendarDates = [];
+  for (const tt of rawODTimetables ?? []) {
+    const trainNo = tt.DailyTrainInfo?.TrainNo;
+    const origin = tt.OriginStopTime;
+    const dest = tt.DestinationStopTime;
+    if (!trainNo || !origin?.StationID || !dest?.StationID) continue;
+    const tripId = `THSR_${trainNo}_${origin.StationID}_${dest.StationID}_${dateStr}`;
+    const serviceId = tripId;
+    trips.push({
+      trip_id: tripId,
+      route_id: "THSR",
+      service_id: serviceId,
+      direction_id: tt.DailyTrainInfo?.Direction ?? null,
+      trip_headsign: tt.DailyTrainInfo?.EndingStationName?.Zh_tw ?? null,
+      shape_id: null,
+    });
+    calendarDates.push({ service_id: serviceId, date: dateStr.replace(/-/g, ""), exception_type: 1 });
+    stopTimes.push({
+      trip_id: tripId,
+      stop_id: origin.StationID,
+      arrival_time: origin.ArrivalTime ?? origin.DepartureTime ?? null,
+      departure_time: origin.DepartureTime ?? origin.ArrivalTime ?? null,
+      stop_sequence: 1,
+    });
+    stopTimes.push({
+      trip_id: tripId,
+      stop_id: dest.StationID,
+      arrival_time: dest.ArrivalTime ?? dest.DepartureTime ?? null,
+      departure_time: dest.DepartureTime ?? dest.ArrivalTime ?? null,
+      stop_sequence: 2,
+    });
+  }
+  return { trips, stopTimes, calendarDates };
+}
+
 export function normalizeBusRoutes(rawRoutes, feedId) {
   return (rawRoutes ?? []).map((r) => ({
     feed_id: feedId,

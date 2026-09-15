@@ -42,7 +42,7 @@ import { db } from "./db.mjs";
 import { buildGraph } from "./graph/builder.mjs";
 import { planRoute } from "./routing/api.mjs";
 import { TDXProvider } from "./tdx/adapter.mjs";
-import { ingestTRAStations, ingestBusRouteSchedule } from "./tdx/ingest.mjs";
+import { ingestTRAStations, ingestTRAPair, ingestTHSRStations, ingestTHSRPair, ingestBusRouteSchedule } from "./tdx/ingest.mjs";
 
 // load .env (no dependency)
 try {
@@ -515,6 +515,44 @@ app.post("/v1/admin/routing/ingest/bus-route", requireAdmin, async (req, res) =>
 app.post("/v1/admin/routing/ingest/tra-stations", requireAdmin, async (_req, res) => {
   try {
     const result = await ingestTRAStations(db, "TRA");
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
+/** Ingests one real TRA O-D pair's timetable for one date. Body: {fromStationID, toStationID, date}. */
+app.post("/v1/admin/routing/ingest/tra-pair", requireAdmin, async (req, res) => {
+  const { fromStationID, toStationID, date } = req.body || {};
+  if (!fromStationID || !toStationID || !date) {
+    return res.status(400).json({ ok: false, error: "need fromStationID, toStationID, date" });
+  }
+  try {
+    const result = await ingestTRAPair(db, "TRA", fromStationID, toStationID, date);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
+/** Ingests the real nationwide THSR station list (stops only, one TDX call). */
+app.post("/v1/admin/routing/ingest/thsr-stations", requireAdmin, async (_req, res) => {
+  try {
+    const result = await ingestTHSRStations(db, "THSR");
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
+/** Ingests one real THSR O-D pair's timetable for one date. Body: {fromStationID, toStationID, date}. */
+app.post("/v1/admin/routing/ingest/thsr-pair", requireAdmin, async (req, res) => {
+  const { fromStationID, toStationID, date } = req.body || {};
+  if (!fromStationID || !toStationID || !date) {
+    return res.status(400).json({ ok: false, error: "need fromStationID, toStationID, date" });
+  }
+  try {
+    const result = await ingestTHSRPair(db, "THSR", fromStationID, toStationID, date);
     res.json({ ok: true, ...result });
   } catch (e) {
     res.status(502).json({ ok: false, error: e.message });

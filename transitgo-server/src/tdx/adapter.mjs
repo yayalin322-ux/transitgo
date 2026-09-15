@@ -36,6 +36,23 @@ export class TDXProvider extends TransitDataProvider {
     return d?.TrainTimetables ?? [];
   }
 
+  // Same two endpoints, THSR side — verified working in the app's own RailService.swift
+  // (v2/Rail/THSR/Station, v2/Rail/THSR/DailyTimetable/OD/{from}/to/{to}/{date}). THSR's
+  // OD response shape differs from TRA's: one flat entry per train with just its
+  // Origin/DestinationStopTime for the queried pair, not a full multi-stop StopTimes
+  // array — see normalizeTHSRTimetable for how that's turned into the same
+  // trips/stopTimes shape TRA produces.
+  async getTHSRStations() {
+    const d = await get("v2/Rail/THSR/Station");
+    return d ?? [];
+  }
+
+  /** Real per-trip origin/destination times between two THSR stations on one date (YYYY-MM-DD). */
+  async getTHSRTimetable(fromStationID, toStationID, dateStr) {
+    const d = await get(`v2/Rail/THSR/DailyTimetable/OD/${fromStationID}/to/${toStationID}/${dateStr}`);
+    return d ?? [];
+  }
+
   async getBusRoutes(scopePath) {
     return get(`v2/Bus/Route/${scopePath}`);
   }
