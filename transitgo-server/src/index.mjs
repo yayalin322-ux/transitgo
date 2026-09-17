@@ -39,10 +39,10 @@ import { startAlertPoller } from "./alerts.mjs";
 import { startBikePoller, nearestFrom, bikePollStatus } from "./bikepoller.mjs";
 import { startSpeedcamPoller, nearestCams } from "./speedcampoller.mjs";
 import { db } from "./db.mjs";
-import { buildGraph } from "./graph/builder.mjs";
-import { saveGraphToDisk, loadGraphFromDisk, cacheFileInfo } from "./graph/persist.mjs";
 import { logMemorySummary, startMemorySampler } from "./graph/memlog.mjs";
 import { RebuildLock } from "./graph/rebuildLock.mjs";
+import { buildAndPublishGraph, downloadAndLoadGraph } from "./graph/graphPersistence.mjs";
+import { storageConfigured } from "./graph/graphStorage.mjs";
 import { planRoute, graphCoverage } from "./routing/api.mjs";
 import { TDXProvider } from "./tdx/adapter.mjs";
 import { ingestTRAStations, ingestTRAPair, ingestTHSRStations, ingestTHSRPair, ingestBusRouteSchedule } from "./tdx/ingest.mjs";
@@ -423,36 +423,35 @@ app.get("/admin", (_req, res) => res.sendFile(join(__dirname, "..", "public", "a
 // listening immediately with an empty graph; requests that need it (below) report 503
 // until the graph is ready.
 //
-// GRAPH_CACHE_PATH: a from-scratch rebuild is real, non-trivial DB + CPU work (see
-// graph/builder.mjs) — genuinely worth avoiding on every single restart, not just the
-// first one. Render's disk doesn't survive a *deploy*, but it does survive a restart
-// *within* one deploy's lifetime (a crash/OOM kill, Render's own health-check-triggered
-// restart) — exactly the case that was causing repeat rebuilds under memory pressure.
-// So: try loading a previously-persisted graph first (near-instant); only fall back to
-// a real rebuild if there isn't one yet (first boot after a fresh deploy) or it's
-// corrupt/incompatible. Either way, a fresh build gets persisted for the *next* restart.
-const GRAPH_CACHE_PATH = process.env.GRAPH_CACHE_PATH || "/tmp/transitgo_routing_graph_cache.json";
-let routingGraph = loadGraphFromDisk(GRAPH_CACHE_PATH);
-if (routingGraph) {
-  // A cache hit means this restart skips the DB rebuild entirely — Graph Build and
-  // Route Query are now genuinely decoupled: building only happens on the very first
-  // boot after a fresh deploy, or when explicitly requested via the rebuild endpoint
-  // below (which every ingest batch script already calls when it finishes), never as a
-  // side effect of a crash/OOM restart. That's the actual fix for rebuild-driven
-  // restarts compounding each other.
-  console.log(`[routing] graph loaded from disk cache: ${routingGraph.nodeCount} nodes, ${routingGraph.edgeCount} edges (built ${routingGraph.builtAt})`);
+// Graph persistence used to mean "a local file at GRAPH_CACHE_PATH (/tmp/...)" — a real
+// production restart test proved that assumption wrong: Render's /tmp does NOT survive
+// a restart, so every restart (crash, OOM, manual, or Render's own health-check-
+// triggered restart) was silently forcing a full rebuild, exactly the risky operation
+// this was supposed to make rare. Graph artifacts now live in Supabase Storage
+// (graph/graphStorage.mjs, graph/graphPersistence.mjs); /tmp is only ever a transient
+// relay for one download/upload, never the thing that makes the graph durable.
+//
+// Deliberately NOT awaited here, same reasoning as the old cache-load and the rebuild
+// endpoint below: awaiting a network download at module scope would block app.listen(),
+// which is exactly the boot-crash-loop shape this codebase has already been bitten by
+// once (see the commit history). The server starts listening immediately with an empty
+// graph; routes that need it report 503 until this recovery (or an explicit rebuild)
+// finishes. downloadAndLoadGraph() never throws — any failure (Storage not configured,
+// no artifact published yet, network failure after its own bounded retries, a corrupt/
+// truncated download) just leaves the graph empty, never crashes the process.
+let routingGraph = null;
+let activeArtifactId = null;
+if (!storageConfigured()) {
+  console.log("[routing] Supabase Storage not configured (SUPABASE_S3_*/SUPABASE_STORAGE_BUCKET) — graph stays empty until POST /v1/admin/routing/rebuild is called explicitly");
 } else {
-  // Deliberately NOT auto-building here, even in the background. Confirmed live (Render
-  // logs + repeated 502s on /v1/health itself, not just the routing endpoints) that a
-  // from-scratch build at the current data scale (~76k nodes, ~310k edges) can OOM-kill
-  // the whole 512MB process during boot — and unlike a caught JS exception, a SIGKILL
-  // takes the HTTP server down with it, so the "background build, health stays up"
-  // design only holds for a build that *fails cleanly*, not one that kills the process.
-  // On a fresh deploy with no cache yet, the graph simply starts empty (routes report
-  // 503) until a human explicitly calls POST /v1/admin/routing/rebuild once the instance
-  // has finished settling — every ingest batch script already does exactly that call
-  // when it finishes, so this only actually matters right after a brand new deploy.
-  console.log("[routing] no usable graph cache on disk — graph stays empty until POST /v1/admin/routing/rebuild is called explicitly");
+  downloadAndLoadGraph()
+    .then((result) => {
+      if (result) {
+        routingGraph = result.graph;
+        activeArtifactId = result.artifactId;
+      }
+    })
+    .catch((e) => console.error(`[routing] unexpected error during boot graph recovery: ${e.message}`));
 }
 
 app.post("/api/v1/routes", async (req, res) => {
@@ -495,11 +494,11 @@ const rebuildLock = new RebuildLock();
  * crashes or OOMs mid-way never replaces a working graph with a half-built one, and a
  * request arriving mid-rebuild is still served by the old graph. */
 async function runRebuild(onProgress) {
-  // Continuous sampler: checkpoint logging (inside buildGraph/saveGraphToDisk) only sees
-  // RSS at the specific call sites those functions happen to report from — a spike that
-  // rises and falls entirely between two checkpoints would never show up there. This
-  // samples on a timer instead, independent of build control flow, for the whole rebuild
-  // lifecycle (buildGraph -> saveGraphToDisk -> swap). One sampler per rebuild — the
+  // Continuous sampler: checkpoint logging (inside buildGraph/saveGraphToDisk/the
+  // Storage upload) only sees RSS at the specific call sites those functions happen to
+  // report from — a spike that rises and falls entirely between two checkpoints would
+  // never show up there. This samples on a timer instead, independent of control flow,
+  // for the whole rebuild-and-publish lifecycle. One sampler per rebuild — the
   // RebuildLock this runs under already guarantees runRebuild itself never overlaps
   // itself, so startMemorySampler's own "already running" guard is a second, cheap
   // safety net, not the primary protection.
@@ -510,35 +509,33 @@ async function runRebuild(onProgress) {
   });
 
   try {
-    const buildStart = Date.now();
-    const g = await buildGraph(db, {
+    const rebuildStart = Date.now();
+    const result = await buildAndPublishGraph(db, {
       onProgress: (info) => {
         currentContext = { phase: info.phase, feed: info.feed ?? null };
         onProgress?.(info);
       },
     });
-    const buildDurationMs = Date.now() - buildStart;
-    console.log(`[routing] graph built: ${g.nodeCount} nodes, ${g.edgeCount} edges`);
-    if (g.warnings.length > 0) {
-      for (const w of g.warnings) console.log(`[routing] warning: ${w}`);
+    const rebuildDurationMs = Date.now() - rebuildStart;
+    console.log(`[routing] graph built and published: ${result.nodeCount} nodes, ${result.edgeCount} edges (artifact ${result.artifactId})`);
+    if (result.graph.warnings.length > 0) {
+      for (const w of result.graph.warnings) console.log(`[routing] warning: ${w}`);
     }
 
-    currentContext = { phase: "persist", feed: null };
-    const persistStart = Date.now();
-    await saveGraphToDisk(g, GRAPH_CACHE_PATH);
-    const persistDurationMs = Date.now() - persistStart;
-
     const continuousPeak = sampler.stop();
-    logMemorySummary({ nodeCount: g.nodeCount, edgeCount: g.edgeCount, buildDurationMs, persistDurationMs, continuousPeak });
-    // Only reassigned now that the new graph is fully built AND durably on disk —
-    // routingGraph stays whatever it was (old graph, or null) for the entire build.
-    routingGraph = g;
-    return { nodeCount: g.nodeCount, edgeCount: g.edgeCount };
+    logMemorySummary({ nodeCount: result.nodeCount, edgeCount: result.edgeCount, buildDurationMs: rebuildDurationMs, continuousPeak });
+    // Only reassigned now that the new graph is fully built, uploaded to Storage,
+    // verified, AND activated (setCurrentArtifactId) — routingGraph stays whatever it
+    // was (old graph, or null) for the entire build+publish. See graphPersistence.mjs:
+    // nothing before activation can affect what's currently live.
+    routingGraph = result.graph;
+    activeArtifactId = result.artifactId;
+    return { nodeCount: result.nodeCount, edgeCount: result.edgeCount };
   } finally {
     // Runs on the success path too (sampler.stop() above is already idempotent), and —
-    // the actual reason this exists — on any throw from buildGraph or saveGraphToDisk
-    // (a real OOM, a DB error, a disk write failure): the sampler's setInterval must
-    // never outlive the rebuild that started it, on either path.
+    // the actual reason this exists — on any throw anywhere in build/persist/upload (a
+    // real OOM, a DB error, a disk write failure, a Storage outage): the sampler's
+    // setInterval must never outlive the rebuild that started it, on either path.
     sampler.stop();
   }
 }
@@ -563,7 +560,12 @@ app.post("/v1/admin/routing/rebuild", requireAdmin, async (_req, res) => {
  * log stream, and gives real peak-memory numbers straight from the process that's doing
  * the allocating. */
 app.get("/v1/admin/routing/rebuild/status", requireAdmin, (_req, res) => {
-  res.json({ ok: true, ...rebuildLock.state, cacheFile: cacheFileInfo(GRAPH_CACHE_PATH) });
+  res.json({
+    ok: true,
+    ...rebuildLock.state,
+    storageConfigured: storageConfigured(),
+    activeArtifactId,
+  });
 });
 
 /** Confirms the routing engine's TDX credentials actually work — never echoes the credentials themselves. */

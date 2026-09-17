@@ -14,6 +14,20 @@ services:
         sync: false
       - key: TDX_CLIENT_SECRET
         sync: false
+      # Routing graph artifact storage (Supabase Storage, S3-compatible) — see
+      # transitgo-server/.env.example for where to get these. Leave unset and the graph
+      # simply stays empty after a restart/redeploy until POST /v1/admin/routing/rebuild
+      # is called again (the old /tmp-only behavior); the server never crashes either way.
+      - key: SUPABASE_S3_ENDPOINT
+        sync: false
+      - key: SUPABASE_S3_REGION
+        sync: false
+      - key: SUPABASE_S3_ACCESS_KEY_ID
+        sync: false
+      - key: SUPABASE_S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        sync: false
       - key: BIKE_CITIES
         value: Taipei,NewTaipei,Taoyuan,Hsinchu,HsinchuCounty,MiaoliCounty,Taichung,ChanghuaCounty,Chiayi,ChiayiCounty,Tainan,Kaohsiung,PingtungCounty,YilanCounty,HualienCounty,TaitungCounty,KinmenCounty
       - key: BIKE_POLL_MINUTES
