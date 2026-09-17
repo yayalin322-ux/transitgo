@@ -440,21 +440,17 @@ if (routingGraph) {
   // restarts compounding each other.
   console.log(`[routing] graph loaded from disk cache: ${routingGraph.nodeCount} nodes, ${routingGraph.edgeCount} edges (built ${routingGraph.builtAt})`);
 } else {
-  console.log("[routing] no usable graph cache on disk — building from the database");
-  buildGraph(db).then((g) => {
-    routingGraph = g;
-    console.log(`[routing] graph built: ${g.nodeCount} nodes, ${g.edgeCount} edges`);
-    if (g.warnings.length > 0) {
-      for (const w of g.warnings) console.log(`[routing] warning: ${w}`);
-    }
-    try {
-      saveGraphToDisk(g, GRAPH_CACHE_PATH);
-    } catch (e) {
-      console.warn(`[routing] failed to persist graph cache: ${e.message}`);
-    }
-  }).catch((e) => {
-    console.error(`[routing] initial graph build failed: ${e.message}`);
-  });
+  // Deliberately NOT auto-building here, even in the background. Confirmed live (Render
+  // logs + repeated 502s on /v1/health itself, not just the routing endpoints) that a
+  // from-scratch build at the current data scale (~76k nodes, ~310k edges) can OOM-kill
+  // the whole 512MB process during boot — and unlike a caught JS exception, a SIGKILL
+  // takes the HTTP server down with it, so the "background build, health stays up"
+  // design only holds for a build that *fails cleanly*, not one that kills the process.
+  // On a fresh deploy with no cache yet, the graph simply starts empty (routes report
+  // 503) until a human explicitly calls POST /v1/admin/routing/rebuild once the instance
+  // has finished settling — every ingest batch script already does exactly that call
+  // when it finishes, so this only actually matters right after a brand new deploy.
+  console.log("[routing] no usable graph cache on disk — graph stays empty until POST /v1/admin/routing/rebuild is called explicitly");
 }
 
 app.post("/api/v1/routes", async (req, res) => {
