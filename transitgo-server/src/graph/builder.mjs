@@ -61,8 +61,8 @@ export function nodeId(feedId, stopId) {
  */
 export async function buildGraph(db, { feedIds = null, dataVersion = null, onProgress = null } = {}) {
   const report = (phase, extra = {}) => {
-    const { rss } = logMemory(phase, extra);
-    onProgress?.({ phase, memoryMB: rss, ...extra });
+    const { rssMB } = logMemory(phase, extra);
+    onProgress?.({ phase, memoryMB: rssMB, ...extra });
   };
   resetMemoryTracking();
   report("start");
