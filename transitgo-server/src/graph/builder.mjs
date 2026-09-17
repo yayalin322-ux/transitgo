@@ -1,6 +1,7 @@
 import { MultimodalGraph, TransitNode, TransitEdge, NodeType, Mode, parseGtfsTime } from "./model.mjs";
 import { haversineMeters } from "./virtual.mjs";
 import { loadServiceCalendar } from "./calendar.mjs";
+import { logMemory } from "./memlog.mjs";
 
 /**
  * No verified TDX endpoint gives real stop-to-stop bus travel time (S2STravelTime exists
@@ -58,7 +59,13 @@ export function nodeId(feedId, stopId) {
  * caps peak memory to roughly "one city's data" instead of "every ingested city's data
  * at once," and gives natural yield points between feeds for free.
  */
-export async function buildGraph(db, { feedIds = null, dataVersion = null } = {}) {
+export async function buildGraph(db, { feedIds = null, dataVersion = null, onProgress = null } = {}) {
+  const report = (phase, extra = {}) => {
+    const { rss } = logMemory(phase, extra);
+    onProgress?.({ phase, memoryMB: rss, ...extra });
+  };
+  report("start");
+
   const graph = new MultimodalGraph();
   graph.builtAt = new Date().toISOString();
   graph.dataVersion = dataVersion;
@@ -76,6 +83,7 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null } = {}
     UNION SELECT feed_id FROM transit_route_frequency
     UNION SELECT feed_id FROM gtfs_routes
   `).all()).map((r) => r.feed_id);
+  report("feeds_listed", { feedCount: feeds.length });
 
   const routeType = new Map();  // "feedId:routeId" -> gtfs route_type
   function modeFor(feedId, routeId) {
@@ -92,8 +100,10 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null } = {}
 
   let skippedForMissingStopId = 0;
   let headwayEdgesBuilt = 0, headwaySkippedNoStops = 0;
+  let feedIndex = 0;
 
   for (const feedId of feeds) {
+    feedIndex++;
     const feedClause = `WHERE feed_id = ?`;
     const feedArgs = [feedId];
 
@@ -233,7 +243,15 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null } = {}
     // keeps a feed with few routes from being lumped into the same event-loop turn as
     // the next feed's queries.
     await yieldToEventLoop();
+    report("feed_done", {
+      feedId,
+      progress: Math.round((feedIndex / feeds.length) * 100),
+      nodeCount: graph.nodeCount,
+      edgeCount: graph.edgeCount,
+    });
   }
+
+  report("edges_complete", { nodeCount: graph.nodeCount, edgeCount: graph.edgeCount });
 
   if (skippedForMissingStopId > 0) {
     graph.warnings.push(`${skippedForMissingStopId} stop_times rows have no resolved stop_id yet (bus per-trip times not yet joined to StopOfRoute sequence) — excluded from edges, not guessed.`);
@@ -245,5 +263,6 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null } = {}
     graph.warnings.push(`${headwayEdgesBuilt} headway-based edges built with an ESTIMATED travel time (real distance / assumed ${Math.round(ESTIMATED_BUS_SPEED_MPS * 3.6)} km/h) — no verified TDX stop-to-stop bus travel time source exists yet.`);
   }
 
+  report("build_complete", { nodeCount: graph.nodeCount, edgeCount: graph.edgeCount });
   return graph;
 }

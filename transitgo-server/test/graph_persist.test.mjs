@@ -1,9 +1,9 @@
 import { DatabaseSync } from "node:sqlite";
-import { unlinkSync, existsSync } from "node:fs";
+import { unlinkSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { ensureGtfsSchema } from "../src/gtfs/schema.mjs";
 import { insertTrips, insertStopTimes, insertRoutes, insertStops } from "../src/tdx/ingest.mjs";
 import { buildGraph, nodeId } from "../src/graph/builder.mjs";
-import { saveGraphToDisk, loadGraphFromDisk } from "../src/graph/persist.mjs";
+import { saveGraphToDisk, loadGraphFromDisk, cacheFileInfo } from "../src/graph/persist.mjs";
 import { normalizeTRATimetable } from "../src/tdx/normalizer.mjs";
 
 let failed = false;
@@ -39,8 +39,12 @@ check("Real graph built with 1 edge", original.edgeCount === 1);
 const cachePath = "/tmp/transitgo_graph_persist_test.json";
 if (existsSync(cachePath)) unlinkSync(cachePath);
 
-saveGraphToDisk(original, cachePath);
+const saveResult = await saveGraphToDisk(original, cachePath);
 check("Cache file exists after save", existsSync(cachePath));
+check("Save returns a real checksum", typeof saveResult.checksum === "string" && saveResult.checksum.length === 64);
+check("Save returns matching node/edge counts", saveResult.nodeCount === original.nodeCount && saveResult.edgeCount === original.edgeCount);
+check("cacheFileInfo reports a real file size", cacheFileInfo(cachePath)?.sizeBytes > 0);
+check("cacheFileInfo returns null for a missing file", cacheFileInfo("/tmp/transitgo_graph_persist_does_not_exist.json") === null);
 
 const loaded = loadGraphFromDisk(cachePath);
 check("Loaded graph is not null", loaded !== null);
@@ -56,6 +60,27 @@ check("Loaded edge is still recognized as time-dependent (getter survives recons
 check("Loaded graph's serviceCalendar is a real Map, not a plain object", loaded.serviceCalendar instanceof Map);
 
 check("Missing cache file returns null, not a throw", loadGraphFromDisk("/tmp/transitgo_graph_persist_does_not_exist.json") === null);
+
+// A cache tampered with after writing (simulating disk corruption, or a SIGKILL mid-write
+// that somehow still left a parseable file) must be rejected via the checksum, not loaded
+// as if it were still trustworthy.
+{
+  const raw = readFileSync(cachePath, "utf8");
+  const tampered = raw.replace(`"臺北"`, `"篡改"`);
+  writeFileSync(cachePath, tampered);
+  check("Tampered cache (checksum mismatch) is rejected, not loaded", loadGraphFromDisk(cachePath) === null);
+  writeFileSync(cachePath, raw); // restore for the next check
+}
+
+// Truncated file (simulating a process killed mid-write, before rename — this exact file
+// would never actually be seen by loadGraphFromDisk since the writer only renames after a
+// full flush, but the parser must still fail closed if it ever is).
+{
+  const raw = readFileSync(cachePath, "utf8");
+  writeFileSync(cachePath, raw.slice(0, Math.floor(raw.length / 2)));
+  check("Truncated cache is rejected, not loaded or thrown", loadGraphFromDisk(cachePath) === null);
+  writeFileSync(cachePath, raw);
+}
 
 unlinkSync(cachePath);
 
