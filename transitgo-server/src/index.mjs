@@ -41,7 +41,7 @@ import { startSpeedcamPoller, nearestCams } from "./speedcampoller.mjs";
 import { db } from "./db.mjs";
 import { buildGraph } from "./graph/builder.mjs";
 import { saveGraphToDisk, loadGraphFromDisk, cacheFileInfo } from "./graph/persist.mjs";
-import { logMemorySummary } from "./graph/memlog.mjs";
+import { logMemorySummary, startMemorySampler } from "./graph/memlog.mjs";
 import { RebuildLock } from "./graph/rebuildLock.mjs";
 import { planRoute, graphCoverage } from "./routing/api.mjs";
 import { TDXProvider } from "./tdx/adapter.mjs";
@@ -495,21 +495,52 @@ const rebuildLock = new RebuildLock();
  * crashes or OOMs mid-way never replaces a working graph with a half-built one, and a
  * request arriving mid-rebuild is still served by the old graph. */
 async function runRebuild(onProgress) {
-  const buildStart = Date.now();
-  const g = await buildGraph(db, { onProgress });
-  const buildDurationMs = Date.now() - buildStart;
-  console.log(`[routing] graph built: ${g.nodeCount} nodes, ${g.edgeCount} edges`);
-  if (g.warnings.length > 0) {
-    for (const w of g.warnings) console.log(`[routing] warning: ${w}`);
+  // Continuous sampler: checkpoint logging (inside buildGraph/saveGraphToDisk) only sees
+  // RSS at the specific call sites those functions happen to report from — a spike that
+  // rises and falls entirely between two checkpoints would never show up there. This
+  // samples on a timer instead, independent of build control flow, for the whole rebuild
+  // lifecycle (buildGraph -> saveGraphToDisk -> swap). One sampler per rebuild — the
+  // RebuildLock this runs under already guarantees runRebuild itself never overlaps
+  // itself, so startMemorySampler's own "already running" guard is a second, cheap
+  // safety net, not the primary protection.
+  let currentContext = { phase: "start", feed: null };
+  const sampler = startMemorySampler({
+    intervalMs: 100,
+    getContext: () => currentContext,
+  });
+
+  try {
+    const buildStart = Date.now();
+    const g = await buildGraph(db, {
+      onProgress: (info) => {
+        currentContext = { phase: info.phase, feed: info.feed ?? null };
+        onProgress?.(info);
+      },
+    });
+    const buildDurationMs = Date.now() - buildStart;
+    console.log(`[routing] graph built: ${g.nodeCount} nodes, ${g.edgeCount} edges`);
+    if (g.warnings.length > 0) {
+      for (const w of g.warnings) console.log(`[routing] warning: ${w}`);
+    }
+
+    currentContext = { phase: "persist", feed: null };
+    const persistStart = Date.now();
+    await saveGraphToDisk(g, GRAPH_CACHE_PATH);
+    const persistDurationMs = Date.now() - persistStart;
+
+    const continuousPeak = sampler.stop();
+    logMemorySummary({ nodeCount: g.nodeCount, edgeCount: g.edgeCount, buildDurationMs, persistDurationMs, continuousPeak });
+    // Only reassigned now that the new graph is fully built AND durably on disk —
+    // routingGraph stays whatever it was (old graph, or null) for the entire build.
+    routingGraph = g;
+    return { nodeCount: g.nodeCount, edgeCount: g.edgeCount };
+  } finally {
+    // Runs on the success path too (sampler.stop() above is already idempotent), and —
+    // the actual reason this exists — on any throw from buildGraph or saveGraphToDisk
+    // (a real OOM, a DB error, a disk write failure): the sampler's setInterval must
+    // never outlive the rebuild that started it, on either path.
+    sampler.stop();
   }
-  const persistStart = Date.now();
-  await saveGraphToDisk(g, GRAPH_CACHE_PATH);
-  const persistDurationMs = Date.now() - persistStart;
-  logMemorySummary({ nodeCount: g.nodeCount, edgeCount: g.edgeCount, buildDurationMs, persistDurationMs });
-  // Only reassigned now that the new graph is fully built AND durably on disk —
-  // routingGraph stays whatever it was (old graph, or null) for the entire build.
-  routingGraph = g;
-  return { nodeCount: g.nodeCount, edgeCount: g.edgeCount };
 }
 
 // Responds immediately and rebuilds in the background — awaiting the full build here

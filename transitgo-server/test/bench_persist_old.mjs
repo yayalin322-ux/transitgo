@@ -5,7 +5,7 @@
 // 9e76d46's transitgo-server/src/graph/persist.mjs (git show 9e76d46:...), only renamed.
 import { writeFileSync, renameSync, unlinkSync, existsSync } from "node:fs";
 import { buildSyntheticGraph } from "./synthetic_bench.mjs";
-import { logMemory, resetMemoryTracking, logMemorySummary, getPeak } from "../src/graph/memlog.mjs";
+import { logMemory, resetMemoryTracking, logMemorySummary, getPeak, startMemorySampler } from "../src/graph/memlog.mjs";
 
 function serviceCalendarToJSON(serviceCalendar) {
   const out = [];
@@ -42,12 +42,15 @@ const graph = buildSyntheticGraph();
 logMemory("old_graph_ready", { nodeCount: graph.nodeCount, edgeCount: graph.edgeCount });
 
 const outPath = "/tmp/bench_old_graph_cache.json";
+let currentPhase = "old_persist_start";
+const sampler = startMemorySampler({ intervalMs: 100, getContext: () => ({ phase: currentPhase, feed: null }) });
 const t0 = Date.now();
 saveGraphToDiskOld(graph, outPath);
 const durationMs = Date.now() - t0;
+const continuousPeak = sampler.stop();
 
-logMemorySummary({ nodeCount: graph.nodeCount, edgeCount: graph.edgeCount, persistDurationMs: durationMs });
-const peak = getPeak();
-console.log(`\n[bench_old] persist duration=${durationMs}ms peakRSS=${peak.rssMB}MB peakPhase=${peak.phase}`);
+logMemorySummary({ nodeCount: graph.nodeCount, edgeCount: graph.edgeCount, persistDurationMs: durationMs, continuousPeak });
+const checkpointPeak = getPeak();
+console.log(`\n[bench_old] duration=${durationMs}ms checkpointPeakRSS=${checkpointPeak.rssMB}MB (phase=${checkpointPeak.phase}) continuousPeakRSS=${continuousPeak.rssMB}MB (phase=${continuousPeak.phase}, 100ms sampling)`);
 
 if (existsSync(outPath)) unlinkSync(outPath);

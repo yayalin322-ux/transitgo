@@ -6,7 +6,7 @@
 // (much smaller) ingested data volume. Run manually, not part of `npm test`.
 import { MultimodalGraph, TransitNode, TransitEdge, NodeType, Mode } from "../src/graph/model.mjs";
 import { SpatialIndex } from "../src/graph/spatialIndex.mjs";
-import { logMemory, resetMemoryTracking, logMemorySummary, getPeak } from "../src/graph/memlog.mjs";
+import { logMemory, resetMemoryTracking, logMemorySummary, getPeak, startMemorySampler } from "../src/graph/memlog.mjs";
 
 const TARGET_NODES = 75000;
 const TARGET_EDGES = 310000;
@@ -76,16 +76,23 @@ export function buildSyntheticGraph() {
 // buildSyntheticGraph() instead, so each gets its own clean process for persistence
 // comparison.
 if (process.argv[1]?.endsWith("synthetic_bench.mjs")) {
+  let currentPhase = "synthetic_start";
+  const sampler = startMemorySampler({ intervalMs: 100, getContext: () => ({ phase: currentPhase, feed: null }) });
+
   const graph = buildSyntheticGraph();
 
+  currentPhase = "before_spatial_index_bench";
   logMemory("before_spatial_index_bench", { nodeCount: graph.nodeCount });
   const index = new SpatialIndex(graph.nodes.values());
   graph._spatialStopIndex = index;
+  currentPhase = "after_spatial_index_bench";
   logMemory("after_spatial_index_bench", { nodeCount: graph.nodeCount });
 
+  const continuousPeak = sampler.stop();
   console.log(`\n[synthetic] built ${graph.nodeCount} nodes / ${graph.edgeCount} edges`);
-  logMemorySummary({ nodeCount: graph.nodeCount, edgeCount: graph.edgeCount });
+  logMemorySummary({ nodeCount: graph.nodeCount, edgeCount: graph.edgeCount, continuousPeak });
 
-  const finalPeak = getPeak();
-  console.log(`\n[synthetic] FINAL PEAK: rssMB=${finalPeak.rssMB} phase=${finalPeak.phase} feed=${finalPeak.feed || ""}`);
+  const checkpointPeak = getPeak();
+  console.log(`\n[synthetic] Checkpoint peak: rssMB=${checkpointPeak.rssMB} phase=${checkpointPeak.phase} feed=${checkpointPeak.feed || ""}`);
+  console.log(`[synthetic] Continuous peak (100ms sampling): rssMB=${continuousPeak.rssMB} phase=${continuousPeak.phase} feed=${continuousPeak.feed || ""}`);
 }
