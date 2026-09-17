@@ -1,7 +1,7 @@
 import { MultimodalGraph, TransitNode, TransitEdge, NodeType, Mode, parseGtfsTime } from "./model.mjs";
 import { haversineMeters } from "./virtual.mjs";
 import { loadServiceCalendar } from "./calendar.mjs";
-import { logMemory } from "./memlog.mjs";
+import { logMemory, resetMemoryTracking } from "./memlog.mjs";
 
 /**
  * No verified TDX endpoint gives real stop-to-stop bus travel time (S2STravelTime exists
@@ -64,6 +64,7 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null, onPro
     const { rss } = logMemory(phase, extra);
     onProgress?.({ phase, memoryMB: rss, ...extra });
   };
+  resetMemoryTracking();
   report("start");
 
   const graph = new MultimodalGraph();
@@ -106,6 +107,7 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null, onPro
     feedIndex++;
     const feedClause = `WHERE feed_id = ?`;
     const feedArgs = [feedId];
+    report("before_feed_query", { feed: feedId });
 
     // Kept on the graph itself (not baked into edges at build time) — findRoute checks
     // this against the actual query date, so a real 停駛/holiday/weekday-only service
@@ -129,6 +131,7 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null, onPro
         parentStationId: s.parent_station ? nodeId(s.feed_id, s.parent_station) : null,
       }));
     }
+    report("after_nodes", { feed: feedId, nodeCount: graph.nodeCount });
 
     const trips = await db.prepare(`SELECT feed_id, trip_id, route_id, service_id FROM gtfs_trips ${feedClause}`).all(...feedArgs);
     const tripByKey = new Map(trips.map((t) => [`${t.feed_id} ${t.trip_id}`, t]));
@@ -154,6 +157,7 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null, onPro
       // reclaim it before the edge-building loop below allocates a comparable amount
       // of new TransitEdge objects.
     }
+    report("after_feed_normalization", { feed: feedId, tripCount: trips.length });
 
     let tripIndex = 0;
     for (const trip of trips) {
@@ -183,6 +187,8 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null, onPro
         }));
       }
     }
+
+    report("after_time_dependent_edges", { feed: feedId, edgeCount: graph.edgeCount });
 
     // Headway-based edges — one per consecutive real stop pair per route+direction that
     // has a real TDX headway band, active only during that band's own real time window.
@@ -238,11 +244,13 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null, onPro
         headwayEdgesBuilt++;
       }
     }
+    report("after_headway_edges", { feed: feedId, edgeCount: graph.edgeCount });
 
     // One more yield between feeds regardless of how many trips/freq rows it had —
     // keeps a feed with few routes from being lumped into the same event-loop turn as
     // the next feed's queries.
     await yieldToEventLoop();
+    report("after_feed_cleanup", { feed: feedId });
     report("feed_done", {
       feedId,
       progress: Math.round((feedIndex / feeds.length) * 100),

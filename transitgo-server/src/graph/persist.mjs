@@ -56,6 +56,7 @@ function serviceCalendarFromJSON(json) {
  * cache (if any) untouched.
  */
 export async function saveGraphToDisk(graph, filePath) {
+  logMemory("persist_start", { nodeCount: graph.nodeCount, edgeCount: graph.edgeCount });
   const tmpPath = `${filePath}.tmp`;
   const coverage = graphCoverage(graph);
   const hash = createHash("sha256");
@@ -80,18 +81,36 @@ export async function saveGraphToDisk(graph, filePath) {
   };
   await write(`${JSON.stringify(header).slice(0, -1)},"nodes":[`);
 
+  // Sampled, not per-object — logs ~10 checkpoints across the write regardless of graph
+  // size, enough resolution to see whether RSS climbs during the write (the giant-string
+  // duplication this streaming approach exists to avoid) without flooding the log for a
+  // ~310k-edge graph.
+  const nodeSampleEvery = Math.max(1, Math.floor(graph.nodeCount / 10));
+  const edgeSampleEvery = Math.max(1, Math.floor(graph.edgeCount / 10));
+
   let first = true;
+  let nodesWritten = 0;
   for (const node of graph.nodes.values()) {
     await write((first ? "" : ",") + JSON.stringify(node));
     first = false;
+    nodesWritten++;
+    if (nodesWritten % nodeSampleEvery === 0) {
+      logMemory("persist_progress", { section: "nodes", nodesWritten, nodeCount: graph.nodeCount });
+    }
   }
   await write(`],"edges":[`);
+  logMemory("persist_mid", { nodesWritten, nodeCount: graph.nodeCount });
 
   first = true;
+  let edgesWritten = 0;
   for (const edgeList of graph.edgesByFrom.values()) {
     for (const edge of edgeList) {
       await write((first ? "" : ",") + JSON.stringify(edge));
       first = false;
+      edgesWritten++;
+      if (edgesWritten % edgeSampleEvery === 0) {
+        logMemory("persist_progress", { section: "edges", edgesWritten, edgeCount: graph.edgeCount });
+      }
     }
   }
   await write(`]}`);

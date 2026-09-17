@@ -41,6 +41,7 @@ import { startSpeedcamPoller, nearestCams } from "./speedcampoller.mjs";
 import { db } from "./db.mjs";
 import { buildGraph } from "./graph/builder.mjs";
 import { saveGraphToDisk, loadGraphFromDisk, cacheFileInfo } from "./graph/persist.mjs";
+import { logMemorySummary } from "./graph/memlog.mjs";
 import { RebuildLock } from "./graph/rebuildLock.mjs";
 import { planRoute, graphCoverage } from "./routing/api.mjs";
 import { TDXProvider } from "./tdx/adapter.mjs";
@@ -494,12 +495,17 @@ const rebuildLock = new RebuildLock();
  * crashes or OOMs mid-way never replaces a working graph with a half-built one, and a
  * request arriving mid-rebuild is still served by the old graph. */
 async function runRebuild(onProgress) {
+  const buildStart = Date.now();
   const g = await buildGraph(db, { onProgress });
+  const buildDurationMs = Date.now() - buildStart;
   console.log(`[routing] graph built: ${g.nodeCount} nodes, ${g.edgeCount} edges`);
   if (g.warnings.length > 0) {
     for (const w of g.warnings) console.log(`[routing] warning: ${w}`);
   }
+  const persistStart = Date.now();
   await saveGraphToDisk(g, GRAPH_CACHE_PATH);
+  const persistDurationMs = Date.now() - persistStart;
+  logMemorySummary({ nodeCount: g.nodeCount, edgeCount: g.edgeCount, buildDurationMs, persistDurationMs });
   // Only reassigned now that the new graph is fully built AND durably on disk —
   // routingGraph stays whatever it was (old graph, or null) for the entire build.
   routingGraph = g;
