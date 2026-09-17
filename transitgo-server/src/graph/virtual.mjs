@@ -1,4 +1,5 @@
 import { TransitNode, TransitEdge, NodeType, Mode } from "./model.mjs";
+import { SpatialIndex } from "./spatialIndex.mjs";
 
 const R = 6371000;
 export function haversineMeters(lat1, lon1, lat2, lon2) {
@@ -18,23 +19,53 @@ export function haversineMeters(lat1, lon1, lat2, lon2) {
 export const DEFAULT_WALKING_SPEED_MPS = 1.3;
 
 /**
- * 500m → 800m → 1200m, capped at maxRadius — architecture doc section 13. Linear scan
- * over graph.nodes is fine at city/regional graph scale; a graph spanning all of Taiwan
- * would want a spatial index here instead (grid bucket / R-tree), not a rewrite of the
- * calling contract — swap this function's internals only.
+ * 500m → 800m → 1200m, capped at maxRadius — architecture doc section 13.
+ *
+ * Backed by a grid-bucket SpatialIndex (see graph/spatialIndex.mjs), built once per
+ * graph and cached on the graph object itself (`graph._spatialStopIndex`) — a linear
+ * scan over every node was fine at city/regional scale, but the graph is genuinely
+ * national scale now (~76k nodes after the multi-city + TRA/THSR ingest), and this
+ * function runs on every single route request. Real stop nodes never change after a
+ * graph is built (a rebuild creates a whole new graph instance, never mutates stops in
+ * place), so a cache built on first use stays correct for the graph's entire lifetime —
+ * no invalidation logic needed. Falls back to the original full scan if anything about
+ * the index looks wrong, so a bug here degrades to "slower," never "wrong answer."
  */
 export function findNearbyStops(graph, lat, lon, { radii = [500, 800, 1200], maxRadius = 1200 } = {}) {
-  for (const radius of radii) {
-    if (radius > maxRadius) break;
-    const hits = [];
-    for (const node of graph.nodes.values()) {
-      if (node.type === NodeType.VIRTUAL || node.lat == null || node.lon == null) continue;
-      const d = haversineMeters(lat, lon, node.lat, node.lon);
-      if (d <= radius) hits.push({ node, distanceMeters: d });
+  // A caller passing a maxRadius below the smallest preset step (e.g. a short
+  // maxWalkingMeters) used to make every preset radius fail the `radius > maxRadius`
+  // check on the very first iteration, returning [] unconditionally — even for a stop
+  // sitting at 0 meters. maxRadius itself must always be a real, tried step, not just an
+  // upper bound the preset list happens to respect.
+  const steps = [...new Set([...radii.filter((r) => r < maxRadius), maxRadius])];
+
+  let index = graph._spatialStopIndex;
+  if (!index) {
+    try {
+      index = new SpatialIndex(graph.nodes.values());
+      graph._spatialStopIndex = index;
+    } catch {
+      index = null;   // fall through to the linear scan below
     }
+  }
+
+  for (const radius of steps) {
+    const hits = index
+      ? index.near(lat, lon, radius, haversineMeters)
+      : linearScanNearby(graph, lat, lon, radius);
     if (hits.length > 0) return hits.sort((a, b) => a.distanceMeters - b.distanceMeters);
   }
   return [];
+}
+
+function linearScanNearby(graph, lat, lon, radius) {
+  const hits = [];
+  for (const node of graph.nodes.values()) {
+    if (node.type === NodeType.VIRTUAL || node.lat == null || node.lon == null) continue;
+    const d = haversineMeters(lat, lon, node.lat, node.lon);
+    if (d <= radius) hits.push({ node, distanceMeters: d });
+  }
+  return hits;
 }
 
 function walkSeconds(distanceMeters, walkingSpeedMps) {

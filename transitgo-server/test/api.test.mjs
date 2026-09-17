@@ -1,5 +1,5 @@
 import { MultimodalGraph, TransitNode, TransitEdge, NodeType, Mode } from "../src/graph/model.mjs";
-import { planRoute } from "../src/routing/api.mjs";
+import { planRoute, graphCoverage } from "../src/routing/api.mjs";
 
 let failed = false;
 function check(label, cond) {
@@ -111,6 +111,21 @@ function buildGraph() {
     check("The fastest option is a direct walk (no BUS leg), not a slow transit detour",
       !fastest.legs.some((l) => l.mode === "BUS"));
   }
+}
+
+// --- graphCoverage() reflects the real graph, not a hand-maintained sentence ---
+{
+  const graph = new MultimodalGraph();
+  graph.addNode(new TransitNode({ id: "TYC:1", type: NodeType.STOP, name: "桃園站A", lat: 24.99, lon: 121.3 }));
+  graph.addNode(new TransitNode({ id: "TRA:1000", type: NodeType.STOP, name: "臺北", lat: 25.0478, lon: 121.5171 }));
+  graph.addNode(new TransitNode({ id: "XYZ:1", type: NodeType.STOP, name: "未知feed", lat: 0, lon: 0 }));
+  graph.builtAt = "2026-09-17T00:00:00.000Z";
+
+  const coverage = graphCoverage(graph);
+  check("Coverage lists 桃園市公車 for a real TYC node", coverage.bus.includes("桃園市公車"));
+  check("Coverage lists 台鐵 for a real TRA node", coverage.rail.includes("台鐵"));
+  check("An unrecognized internal feed id is omitted, not shown as a raw code", !coverage.bus.includes("XYZ") && !coverage.rail.includes("XYZ"));
+  check("Coverage carries the real graph's builtAt, not a guess", coverage.builtAt === "2026-09-17T00:00:00.000Z");
 }
 
 console.log(failed ? "\nOVERALL: FAIL" : "\nOVERALL: PASS");

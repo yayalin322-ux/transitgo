@@ -6,10 +6,18 @@ function routeSignature(route) {
 }
 
 /** A dominates B — architecture doc section 10 — if A is at least as good on every
- * major metric and strictly better on at least one. */
+ * major metric and strictly better on at least one. Fare only enters this comparison
+ * when BOTH routes have real, known pricing — with no fare data ingested anywhere yet
+ * (the common case today) every route's fare is null, and folding an unknown value into
+ * a <=/< comparison either way would silently bias dominance on nothing. Once real fare
+ * data exists, this is what stops a merely-faster-but-pricier route from crowding out a
+ * genuinely cheaper alternative before LOWEST_COST ranking ever sees it. */
 function dominates(a, b) {
-  const notWorse = a.durationSeconds <= b.durationSeconds && a.transfers <= b.transfers && a.walkingSeconds <= b.walkingSeconds;
-  const strictlyBetter = a.durationSeconds < b.durationSeconds || a.transfers < b.transfers || a.walkingSeconds < b.walkingSeconds;
+  const fareComparable = a.fare != null && b.fare != null;
+  const notWorse = a.durationSeconds <= b.durationSeconds && a.transfers <= b.transfers && a.walkingSeconds <= b.walkingSeconds
+    && (!fareComparable || a.fare <= b.fare);
+  const strictlyBetter = a.durationSeconds < b.durationSeconds || a.transfers < b.transfers || a.walkingSeconds < b.walkingSeconds
+    || (fareComparable && a.fare < b.fare);
   return notWorse && strictlyBetter;
 }
 
@@ -65,11 +73,21 @@ export function rankRoutes(graph, originId, destinationId, departureTimeSeconds,
   const fastest = withMetrics.reduce((a, b) => (b.route.durationSeconds < a.route.durationSeconds ? b : a));
   const fewestTransfers = withMetrics.reduce((a, b) => (b.route.transfers < a.route.transfers ? b : a));
   const leastWalking = withMetrics.reduce((a, b) => (b.route.walkingSeconds < a.route.walkingSeconds ? b : a));
+  // Only ever label something LOWEST_COST when at least one candidate actually has a
+  // real, known fare (astar.mjs sets route.fare to null, never a fabricated 0, whenever
+  // any leg's price is unknown) — with no real fare data ingested anywhere yet (see
+  // profiles.mjs's LOWEST_COST comment), every candidate is null right now, so this
+  // never fires and no route gets mislabeled as "cheapest" based on nothing.
+  const withKnownFare = withMetrics.filter((c) => c.route.fare != null);
+  const cheapest = withKnownFare.length > 0
+    ? withKnownFare.reduce((a, b) => (b.route.fare < a.route.fare ? b : a))
+    : null;
 
   function labelFor(candidate) {
     if (candidate === fastest) return PROFILES.FASTEST;
     if (candidate === fewestTransfers) return PROFILES.FEWEST_TRANSFERS;
     if (candidate === leastWalking) return PROFILES.LEAST_WALKING;
+    if (cheapest && candidate === cheapest) return PROFILES.LOWEST_COST;
     return PROFILES.BALANCED;
   }
 

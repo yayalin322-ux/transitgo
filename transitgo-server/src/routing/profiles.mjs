@@ -29,4 +29,16 @@ export const PROFILES = {
     label: "少走路", emoji: "🚶",
     timeWeight: 1, walkingWeight: 4, waitingWeight: 1, transferPenaltySeconds: 480, fareWeight: 0,
   },
+  // Real fare data isn't ingested anywhere yet (see tdx/ingest.mjs — no insert path ever
+  // writes a non-null TransitEdge.fare), so this profile currently can't actually find a
+  // *cheaper* route than any other profile — every edge's fare is unknown, astar.mjs
+  // marks the resulting route's fare null rather than fabricating a $0 total, and
+  // rank.mjs (see LOWEST_COST labeling there) refuses to hand out this label until at
+  // least one candidate route has a real, known fare to rank by. Defined now, with a
+  // real nonzero weight, so wiring up a real fare source later is a data change, not
+  // another profile/ranking rewrite.
+  LOWEST_COST: {
+    label: "最便宜", emoji: "💰",
+    timeWeight: 1, walkingWeight: 1, waitingWeight: 1, transferPenaltySeconds: 180, fareWeight: 20,
+  },
 };

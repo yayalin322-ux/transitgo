@@ -13,6 +13,10 @@ struct MultimodalLeg: Decodable, Identifiable {
     let arrivalTime: String
     let durationSeconds: Int
     let isEstimated: Bool
+    /// Real distance for a WALK leg (nil for a ride — a bus/rail leg's real length isn't
+    /// meaningful the way a walk's is here). Backend sums these into
+    /// `MultimodalRoute.walkingDistanceMeters`; kept per-leg too for a detail view.
+    let distanceMeters: Double?
     var id: String { from + to + departureTime }
 }
 
@@ -100,7 +104,16 @@ struct MultimodalRoute: Decodable, Identifiable {
     let waitingSeconds: Int
     let transitSeconds: Int
     let transfers: Int
-    let fare: Int
+    /// nil means "we don't have real fare data for this trip" — the backend never sends
+    /// 0 to mean "unknown" (see transitgo-server's astar.mjs: a route's fare is only a
+    /// real number when every leg's price is actually known, otherwise explicitly null).
+    /// Must stay Optional here or decoding this whole response throws the moment any
+    /// route has an unknown fare, which is every route today (no fare source is
+    /// ingested yet) — silently breaking route results app-wide, not just hiding a price.
+    let fare: Int?
+    /// Real distance, summed from every WALK leg's own measured distance — 0 (not nil)
+    /// when the trip genuinely has no walking, since that's a known, real answer.
+    let walkingDistanceMeters: Double?
     let legs: [MultimodalLeg]
     let segments: [MultimodalSegment]
     var id: String { routeId }
@@ -117,6 +130,20 @@ struct MultimodalRoute: Decodable, Identifiable {
         guard let dep = ISO8601DateFormatter().date(from: departureTime),
               let arr = ISO8601DateFormatter().date(from: arrivalTime) else { return nil }
         return "\(Self.clockFormatter.string(from: dep)) 出發，預計 \(Self.clockFormatter.string(from: arr)) 抵達"
+    }
+
+    /// "約 NT$165" when real, "票價暫無資料" when not — never "NT$0", which would read as
+    /// a real (and wrong) claim that the trip is free.
+    var fareText: String {
+        guard let fare else { return "票價暫無資料" }
+        return "約 NT$\(fare)"
+    }
+
+    /// "步行 680 m" / "步行 1.2 km" — nil when the backend didn't send a real distance
+    /// (an older deploy) so callers can omit the row entirely rather than show "步行 0 m".
+    var walkingDistanceText: String? {
+        guard let m = walkingDistanceMeters else { return nil }
+        return m < 1000 ? "步行 \(Int(m.rounded())) m" : String(format: "步行 %.1f km", m / 1000)
     }
 }
 

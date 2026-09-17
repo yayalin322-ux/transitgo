@@ -28,7 +28,7 @@ actor TDXAuth {
         let creds = AppSecrets.tdx
         guard creds.isConfigured else { throw TDXError.notConfigured }
 
-        var request = URLRequest(url: tokenURL)
+        var request = URLRequest(url: tokenURL, timeoutInterval: 10)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
 

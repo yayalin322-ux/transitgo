@@ -40,7 +40,8 @@ import { startBikePoller, nearestFrom, bikePollStatus } from "./bikepoller.mjs";
 import { startSpeedcamPoller, nearestCams } from "./speedcampoller.mjs";
 import { db } from "./db.mjs";
 import { buildGraph } from "./graph/builder.mjs";
-import { planRoute } from "./routing/api.mjs";
+import { saveGraphToDisk, loadGraphFromDisk } from "./graph/persist.mjs";
+import { planRoute, graphCoverage } from "./routing/api.mjs";
 import { TDXProvider } from "./tdx/adapter.mjs";
 import { ingestTRAStations, ingestTRAPair, ingestTHSRStations, ingestTHSRPair, ingestBusRouteSchedule } from "./tdx/ingest.mjs";
 
@@ -418,22 +419,55 @@ app.get("/admin", (_req, res) => res.sendFile(join(__dirname, "..", "public", "a
 // restart it — which then had to build the exact same graph from scratch before it could
 // pass a health check either, an unrecoverable boot crash-loop. The server now starts
 // listening immediately with an empty graph; requests that need it (below) report 503
-// until the background build finishes.
-let routingGraph = null;
-buildGraph(db).then((g) => {
-  routingGraph = g;
-  console.log(`[routing] graph built: ${g.nodeCount} nodes, ${g.edgeCount} edges`);
-  if (g.warnings.length > 0) {
-    for (const w of g.warnings) console.log(`[routing] warning: ${w}`);
-  }
-}).catch((e) => {
-  console.error(`[routing] initial graph build failed: ${e.message}`);
-});
+// until the graph is ready.
+//
+// GRAPH_CACHE_PATH: a from-scratch rebuild is real, non-trivial DB + CPU work (see
+// graph/builder.mjs) — genuinely worth avoiding on every single restart, not just the
+// first one. Render's disk doesn't survive a *deploy*, but it does survive a restart
+// *within* one deploy's lifetime (a crash/OOM kill, Render's own health-check-triggered
+// restart) — exactly the case that was causing repeat rebuilds under memory pressure.
+// So: try loading a previously-persisted graph first (near-instant); only fall back to
+// a real rebuild if there isn't one yet (first boot after a fresh deploy) or it's
+// corrupt/incompatible. Either way, a fresh build gets persisted for the *next* restart.
+const GRAPH_CACHE_PATH = process.env.GRAPH_CACHE_PATH || "/tmp/transitgo_routing_graph_cache.json";
+let routingGraph = loadGraphFromDisk(GRAPH_CACHE_PATH);
+if (routingGraph) {
+  // A cache hit means this restart skips the DB rebuild entirely — Graph Build and
+  // Route Query are now genuinely decoupled: building only happens on the very first
+  // boot after a fresh deploy, or when explicitly requested via the rebuild endpoint
+  // below (which every ingest batch script already calls when it finishes), never as a
+  // side effect of a crash/OOM restart. That's the actual fix for rebuild-driven
+  // restarts compounding each other.
+  console.log(`[routing] graph loaded from disk cache: ${routingGraph.nodeCount} nodes, ${routingGraph.edgeCount} edges (built ${routingGraph.builtAt})`);
+} else {
+  console.log("[routing] no usable graph cache on disk — building from the database");
+  buildGraph(db).then((g) => {
+    routingGraph = g;
+    console.log(`[routing] graph built: ${g.nodeCount} nodes, ${g.edgeCount} edges`);
+    if (g.warnings.length > 0) {
+      for (const w of g.warnings) console.log(`[routing] warning: ${w}`);
+    }
+    try {
+      saveGraphToDisk(g, GRAPH_CACHE_PATH);
+    } catch (e) {
+      console.warn(`[routing] failed to persist graph cache: ${e.message}`);
+    }
+  }).catch((e) => {
+    console.error(`[routing] initial graph build failed: ${e.message}`);
+  });
+}
 
 app.post("/api/v1/routes", async (req, res) => {
   if (!routingGraph) return res.status(503).json({ ok: false, error: "routing graph still initializing, try again shortly" });
   const result = await planRoute(routingGraph, req.body, db);
   res.status(result.status).json(result.body);
+});
+
+/** What the multimodal engine actually has real data for right now — see graphCoverage()
+ * in routing/api.mjs. The app should use this instead of a hardcoded coverage sentence. */
+app.get("/v1/routing/coverage", (_req, res) => {
+  if (!routingGraph) return res.status(503).json({ ok: false, error: "routing graph still initializing, try again shortly" });
+  res.json({ ok: true, ...graphCoverage(routingGraph) });
 });
 
 /** Debug: nearest real ingested stops to a point, with real distances — for diagnosing NO_ORIGIN_NEARBY. */
@@ -465,6 +499,11 @@ app.post("/v1/admin/routing/rebuild", requireAdmin, async (_req, res) => {
     console.log(`[routing] graph rebuilt: ${g.nodeCount} nodes, ${g.edgeCount} edges`);
     if (g.warnings.length > 0) {
       for (const w of g.warnings) console.log(`[routing] warning: ${w}`);
+    }
+    try {
+      saveGraphToDisk(g, GRAPH_CACHE_PATH);
+    } catch (e) {
+      console.warn(`[routing] failed to persist graph cache: ${e.message}`);
     }
   } catch (e) {
     console.error(`[routing] rebuild failed: ${e.message}`);

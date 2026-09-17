@@ -9,7 +9,7 @@ import { isServiceActiveOn } from "../graph/calendar.mjs";
  * reconstruct the actual route once the destination is reached.
  */
 class RoutingState {
-  constructor({ nodeId, time, cost = 0, walkingSeconds = 0, waitingSeconds = 0, transitSeconds = 0, transfers = 0, fare = 0, lastTripKey = null, previousState = null, previousEdge = null }) {
+  constructor({ nodeId, time, cost = 0, walkingSeconds = 0, waitingSeconds = 0, transitSeconds = 0, transfers = 0, fare = 0, fareKnown = true, lastTripKey = null, previousState = null, previousEdge = null }) {
     this.nodeId = nodeId;
     this.time = time;               // real clock time (seconds since midnight) — drives which real trips/headway windows are reachable
     this.cost = cost;               // accumulated g(n) under the active RoutingProfile's weights — drives ranking/pruning, not real time
@@ -18,6 +18,11 @@ class RoutingState {
     this.transitSeconds = transitSeconds;
     this.transfers = transfers;
     this.fare = fare;
+    // Sticky false the moment any transit edge along this path has no real fare data —
+    // a partial sum that silently skipped an unpriced leg isn't "the price", it's a
+    // wrong number that happens to look like one. See reconstruct(): a route whose
+    // fareKnown ends up false reports fare: null, never a misleading 0.
+    this.fareKnown = fareKnown;
     this.lastTripKey = lastTripKey;
     this.previousState = previousState;
     this.previousEdge = previousEdge;
@@ -88,7 +93,7 @@ export function findRoute(graph, originId, destinationId, departureTimeSeconds, 
 
     for (const edge of graph.neighbors(state.nodeId)) {
       let nextTime, addedCost, walkingSeconds = state.walkingSeconds, waitingSeconds = state.waitingSeconds,
-        transitSeconds = state.transitSeconds, transfers = state.transfers, fare = state.fare;
+        transitSeconds = state.transitSeconds, transfers = state.transfers, fare = state.fare, fareKnown = state.fareKnown;
 
       if (edge.mode === Mode.WALK) {
         if (edge.travelSeconds == null) continue;
@@ -130,7 +135,8 @@ export function findRoute(graph, originId, destinationId, departureTimeSeconds, 
         }
         waitingSeconds += wait;
         transitSeconds += ride;
-        fare += edge.fare ?? 0;
+        if (edge.fare == null) fareKnown = false;
+        else fare += edge.fare;
         addedCost = profile.timeWeight * ride + profile.waitingWeight * wait
           + (isTransfer ? profile.transferPenaltySeconds : 0) + profile.fareWeight * (edge.fare ?? 0);
       } else {
@@ -144,7 +150,7 @@ export function findRoute(graph, originId, destinationId, departureTimeSeconds, 
 
       const nextState = new RoutingState({
         nodeId: edge.toNodeId, time: nextTime, cost: nextCost,
-        walkingSeconds, waitingSeconds, transitSeconds, transfers, fare,
+        walkingSeconds, waitingSeconds, transitSeconds, transfers, fare, fareKnown,
         lastTripKey: edge.mode === Mode.WALK ? null : `${edge.mode}:${edge.routeId ?? ""}`,
         previousState: state, previousEdge: edge,
       });
@@ -170,9 +176,13 @@ function reconstruct(finalState) {
         ?? (s.previousEdge.travelSeconds != null ? s.time - s.previousEdge.travelSeconds : s.previousState.time),
       arrivalSeconds: s.time,
       isEstimated: s.previousEdge.isHeadwayBased,
+      distanceMeters: s.previousEdge.distanceMeters,
     });
     s = s.previousState;
   }
+  // Real distance, summed from each WALK leg's own haversine measurement — 0 (not null)
+  // when there's genuinely no walking, since that IS a known, real answer, unlike fare.
+  const walkingDistanceMeters = legs.reduce((sum, l) => sum + (l.mode === "WALK" ? (l.distanceMeters ?? 0) : 0), 0);
   return {
     originId: s.nodeId,
     destinationId: finalState.nodeId,
@@ -183,7 +193,8 @@ function reconstruct(finalState) {
     waitingSeconds: finalState.waitingSeconds,
     transitSeconds: finalState.transitSeconds,
     transfers: finalState.transfers,
-    fare: finalState.fare,
+    fare: finalState.fareKnown ? finalState.fare : null,
+    walkingDistanceMeters,
     cost: finalState.cost,
     legs,
   };

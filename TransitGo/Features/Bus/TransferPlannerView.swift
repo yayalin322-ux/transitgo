@@ -40,6 +40,9 @@ final class TransferPlannerViewModel {
     // Debug-visible while this feature is new — shows exactly why multimodalRoutes is
     // empty (unreachable vs. server said no route) instead of leaving it unexplained.
     var multimodalDebug: String?
+    // Real, backend-reported coverage (RoutingCoverageService) — replaces a hand-typed
+    // sentence that goes stale the moment a new city/feed is ingested. nil until loaded.
+    var coverageText: String?
 
     // Rail — kept as its own always-visible section, since TRA stations have no
     // coordinate in this app, so there's no way to fold it into the same coordinate
@@ -459,13 +462,25 @@ struct TransferPlannerView: View {
                             if let summary = route.summaryText {
                                 Text(summary).font(.caption).foregroundStyle(.secondary)
                             }
-                            Text("共\(route.durationSeconds / 60)分・轉乘\(route.transfers)次")
+                            // "共1小時24分・轉乘2次・步行680m・約NT$165" — omits any piece
+                            // the backend didn't actually send a real value for (walking
+                            // distance on an older deploy) rather than show a fake 0.
+                            Text([
+                                "共\(route.durationSeconds >= 3600 ? "\(route.durationSeconds / 3600)小時" : "")\(route.durationSeconds % 3600 / 60)分",
+                                "轉乘\(route.transfers)次",
+                                route.walkingDistanceText,
+                                route.fareText,
+                            ].compactMap { $0 }.joined(separator: "・"))
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         .textCase(nil)
                     } footer: {
                         if route.id == model.multimodalRoutes.first?.id {
-                            Text("新路線引擎（測試中，目前僅新竹市／縣有真實資料；搭乘段落是被動追蹤，不會畫出公車實際行駛路線）")
+                            // Real, backend-reported coverage — see RoutingCoverageService.
+                            // Falls back to a coverage-free sentence rather than a stale
+                            // hand-typed one if the coverage call hasn't come back yet.
+                            let coverage = model.coverageText.map { "目前支援：\($0)" } ?? "涵蓋範圍載入中"
+                            Text("新路線引擎（搭乘段落是被動追蹤，不會畫出公車實際行駛路線；票價尚未有真實資料來源）\n\(coverage)")
                         }
                     }
                 }
@@ -511,6 +526,7 @@ struct TransferPlannerView: View {
                 }
             }
             .task { await RailStationStore.shared.loadIfNeeded() }
+            .task { model.coverageText = await RoutingCoverageService.current()?.summaryText }
             .navigationDestination(for: TransferLeg.self) { leg in
                 BusRouteDetailView(
                     scope: leg.scope,

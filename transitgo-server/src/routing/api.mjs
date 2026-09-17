@@ -6,12 +6,27 @@ import { PROFILES } from "./profiles.mjs";
 
 // Real TDX scope path for each feed this engine has ever ingested from — same
 // scopePath value the ingest admin endpoints were actually called with (see
-// hsinchu_routes.json / the THB5900 ingest), not a guess. Extend this when a new feed
-// gets ingested from a new scope.
+// ingest_master.mjs / the THB5900 ingest), not a guess. Extend this when a new feed
+// gets ingested from a new scope. Was missing TYC/TPE/NTC (added once those cities were
+// actually ingested) — every bus leg from those feeds was silently returning
+// scopePath: null to the app, which needs a real scopePath to call TDX's live-position
+// endpoints for that route.
 const FEED_SCOPE_PATHS = {
   HSZ: "City/Hsinchu",
   HSQ: "City/HsinchuCounty",
+  TYC: "City/Taoyuan",
+  TPE: "City/Taipei",
+  NTC: "City/NewTaipei",
   THB: "InterCity",
+};
+
+// Human-readable label for each feed, shared by /v1/routing/coverage below — so the app
+// can show what's actually covered instead of a hand-typed sentence that silently goes
+// stale every time a new feed is ingested (which already happened once: the UI kept
+// saying "目前僅新竹市／縣" long after Taoyuan/Taipei/NewTaipei/TRA/THSR were added).
+const FEED_LABELS = {
+  HSZ: "新竹市公車", HSQ: "新竹縣公車", TYC: "桃園市公車", TPE: "臺北市公車", NTC: "新北市公車",
+  THB: "跨區客運", TRA: "台鐵", THSR: "高鐵",
 };
 
 const ERROR_MESSAGES = {
@@ -152,6 +167,7 @@ export async function planRoute(graph, requestBody, db) {
         arrivalTime: secondsToIso(departure.baseDate, l.arrivalSeconds),
         durationSeconds: l.arrivalSeconds - l.departureSeconds,
         isEstimated: l.isEstimated ?? false,
+        distanceMeters: l.distanceMeters ?? null,
       });
     }
     routes.push({
@@ -165,6 +181,7 @@ export async function planRoute(graph, requestBody, db) {
       transitSeconds: r.route.transitSeconds,
       transfers: r.route.transfers,
       fare: r.route.fare,
+      walkingDistanceMeters: r.route.walkingDistanceMeters,
       legs,
       // One entry per real boarding, not per graph edge — the router's own edges are
       // one per stop-to-stop hop (so a 9-stop bus ride is 9 edges), which is correct for
@@ -214,6 +231,34 @@ function collapseToSegments(legs) {
     }
   }
   return segments;
+}
+
+/**
+ * What real data is actually in the given graph right now — computed from the graph
+ * itself (which feeds it actually has nodes for), not a hand-maintained list that has
+ * to be remembered every time a new city/feed gets ingested. The in-app footer that
+ * used to say "測試中，目前僅新竹市／縣有真實資料" stayed that way long after Taoyuan,
+ * Taipei, New Taipei, TRA and THSR were all ingested — this is what replaces it.
+ */
+export function graphCoverage(graph) {
+  const feedIds = new Set();
+  for (const id of graph.nodes.keys()) {
+    const feedId = String(id).split(":")[0];
+    feedIds.add(feedId);
+  }
+  const bus = [], rail = [];
+  for (const feedId of feedIds) {
+    const label = FEED_LABELS[feedId];
+    if (!label) continue;   // an internal feed id nothing here recognizes yet — omit rather than show a raw code
+    (feedId === "TRA" || feedId === "THSR" ? rail : bus).push(label);
+  }
+  return {
+    bus: bus.sort(),
+    rail: rail.sort(),
+    nodeCount: graph.nodeCount,
+    edgeCount: graph.edgeCount,
+    builtAt: graph.builtAt,
+  };
 }
 
 /** Virtual nodes/edges are per-request — never let them leak into the shared graph past this call. */
