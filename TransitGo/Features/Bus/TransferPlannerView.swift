@@ -177,32 +177,28 @@ final class TransferPlannerViewModel {
         multimodalDebug = nil
         defer { isPlanning = false }
 
-        async let busResult = TransferPlanner.plan(city: city, from: origin, to: dest)
-        async let multimodalResult = MultimodalRoutingService.plan(from: origin, to: dest, departureTime: multimodalDepartAt)
-        let metroResult: [MetroItinerary]
-        if let op = metroOperator {
-            metroResult = await MetroTransferPlanner.planNearby(operator: op, from: origin, to: dest)
-        } else {
-            metroResult = []
-        }
-        let bus = await busResult
-        itineraries = bus.itineraries
-        metroItineraries = metroResult
-        switch await multimodalResult {
+        let result = await UnifiedRoutingService.plan(
+            city: city, metroOperator: metroOperator, from: origin, to: dest, departureTime: multimodalDepartAt
+        )
+        itineraries = result.busItineraries
+        metroItineraries = result.metroItineraries
+        multimodalRoutes = result.multimodalRoutes
+        switch result.multimodalStatus {
         case .success(let routes):
-            multimodalRoutes = routes
             multimodalDebug = routes.isEmpty ? "多模式引擎：此範圍暫無真實路線" : nil
         case .serverError(let code, let message):
             multimodalDebug = "多模式引擎：\(code) \(message)\n起點(\(origin.latitude),\(origin.longitude)) 終點(\(dest.latitude),\(dest.longitude))"
         case .unreachable(let reason):
             multimodalDebug = "多模式引擎連線失敗：\(reason)"
+        case nil:
+            multimodalDebug = nil
         }
 
         if itineraries.isEmpty, metroItineraries.isEmpty {
             // Distinguish "TDX genuinely has nothing" from "TDX didn't actually answer" —
             // this session hammered TDX hard enough during debugging that the second case
             // is common right now, and telling the user "no route exists" would be wrong.
-            errorText = bus.hadNetworkError
+            errorText = result.busHadNetworkError
                 ? "查詢時 TDX 沒有正常回應（可能是限流），不代表真的沒有路線 — 稍後再試一次看看。"
                 : "找不到直達或單次轉乘的公車／捷運路線。"
             await loadTravelTimes(from: origin, to: dest)
@@ -440,7 +436,9 @@ struct TransferPlannerView: View {
                                                 .font(.caption).foregroundStyle(.secondary)
                                         }
                                         if let to = seg.toName {
-                                            Text("下車：\(to)" + (seg.arrivalClock.map { " (\($0)) " } ?? "") + (seg.stopsPassed > 1 ? "・經過\(seg.stopsPassed)站" : ""))
+                                            let clockPart = seg.arrivalClock.map { " (\($0)) " } ?? ""
+                                            let stopsPart = seg.stopsPassed > 1 ? "・經過\(seg.stopsPassed)站" : ""
+                                            Text("下車：\(to)\(clockPart)\(stopsPart)")
                                                 .font(.caption).foregroundStyle(.secondary)
                                         }
                                     }
