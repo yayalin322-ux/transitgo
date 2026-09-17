@@ -1,5 +1,6 @@
 import { TransitNode, TransitEdge, NodeType, Mode } from "./model.mjs";
 import { SpatialIndex } from "./spatialIndex.mjs";
+import { logMemory } from "./memlog.mjs";
 
 const R = 6371000;
 export function haversineMeters(lat1, lon1, lat2, lon2) {
@@ -41,12 +42,17 @@ export function findNearbyStops(graph, lat, lon, { radii = [500, 800, 1200], max
 
   let index = graph._spatialStopIndex;
   if (!index) {
+    // Lazy, first-use-only build (see doc comment above) — logged so a memory profile of
+    // the process can attribute this one-time cost to the spatial index rather than
+    // mistaking it for graph-build or routing-request growth.
+    logMemory("before_spatial_index", { nodeCount: graph.nodeCount });
     try {
       index = new SpatialIndex(graph.nodes.values());
       graph._spatialStopIndex = index;
     } catch {
       index = null;   // fall through to the linear scan below
     }
+    logMemory("after_spatial_index", { nodeCount: graph.nodeCount, indexBuilt: index !== null });
   }
 
   for (const radius of steps) {

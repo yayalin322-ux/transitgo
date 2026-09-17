@@ -40,7 +40,9 @@ import { startBikePoller, nearestFrom, bikePollStatus } from "./bikepoller.mjs";
 import { startSpeedcamPoller, nearestCams } from "./speedcampoller.mjs";
 import { db } from "./db.mjs";
 import { buildGraph } from "./graph/builder.mjs";
-import { saveGraphToDisk, loadGraphFromDisk } from "./graph/persist.mjs";
+import { saveGraphToDisk, loadGraphFromDisk, cacheFileInfo } from "./graph/persist.mjs";
+import { logMemorySummary, startMemorySampler } from "./graph/memlog.mjs";
+import { RebuildLock } from "./graph/rebuildLock.mjs";
 import { planRoute, graphCoverage } from "./routing/api.mjs";
 import { TDXProvider } from "./tdx/adapter.mjs";
 import { ingestTRAStations, ingestTRAPair, ingestTHSRStations, ingestTHSRPair, ingestBusRouteSchedule } from "./tdx/ingest.mjs";
@@ -482,28 +484,86 @@ app.get("/v1/admin/routing/debug/nearby-stops", requireAdmin, async (req, res) =
   res.json({ ok: true, nearest: hits.slice(0, 10) });
 });
 
+// Keeps two rebuilds from ever running at once — a concurrent second build would double
+// every array/Map buildGraph() allocates on top of the graph the first build is already
+// holding, on an instance where a single build alone has been observed to approach the
+// 512MB limit. See graph/rebuildLock.mjs.
+const rebuildLock = new RebuildLock();
+
+/** Real graph swap happens here — the currently-active `routingGraph` is only ever
+ * reassigned after a build has fully completed AND been persisted, so a build that
+ * crashes or OOMs mid-way never replaces a working graph with a half-built one, and a
+ * request arriving mid-rebuild is still served by the old graph. */
+async function runRebuild(onProgress) {
+  // Continuous sampler: checkpoint logging (inside buildGraph/saveGraphToDisk) only sees
+  // RSS at the specific call sites those functions happen to report from — a spike that
+  // rises and falls entirely between two checkpoints would never show up there. This
+  // samples on a timer instead, independent of build control flow, for the whole rebuild
+  // lifecycle (buildGraph -> saveGraphToDisk -> swap). One sampler per rebuild — the
+  // RebuildLock this runs under already guarantees runRebuild itself never overlaps
+  // itself, so startMemorySampler's own "already running" guard is a second, cheap
+  // safety net, not the primary protection.
+  let currentContext = { phase: "start", feed: null };
+  const sampler = startMemorySampler({
+    intervalMs: 100,
+    getContext: () => currentContext,
+  });
+
+  try {
+    const buildStart = Date.now();
+    const g = await buildGraph(db, {
+      onProgress: (info) => {
+        currentContext = { phase: info.phase, feed: info.feed ?? null };
+        onProgress?.(info);
+      },
+    });
+    const buildDurationMs = Date.now() - buildStart;
+    console.log(`[routing] graph built: ${g.nodeCount} nodes, ${g.edgeCount} edges`);
+    if (g.warnings.length > 0) {
+      for (const w of g.warnings) console.log(`[routing] warning: ${w}`);
+    }
+
+    currentContext = { phase: "persist", feed: null };
+    const persistStart = Date.now();
+    await saveGraphToDisk(g, GRAPH_CACHE_PATH);
+    const persistDurationMs = Date.now() - persistStart;
+
+    const continuousPeak = sampler.stop();
+    logMemorySummary({ nodeCount: g.nodeCount, edgeCount: g.edgeCount, buildDurationMs, persistDurationMs, continuousPeak });
+    // Only reassigned now that the new graph is fully built AND durably on disk —
+    // routingGraph stays whatever it was (old graph, or null) for the entire build.
+    routingGraph = g;
+    return { nodeCount: g.nodeCount, edgeCount: g.edgeCount };
+  } finally {
+    // Runs on the success path too (sampler.stop() above is already idempotent), and —
+    // the actual reason this exists — on any throw from buildGraph or saveGraphToDisk
+    // (a real OOM, a DB error, a disk write failure): the sampler's setInterval must
+    // never outlive the rebuild that started it, on either path.
+    sampler.stop();
+  }
+}
+
 // Responds immediately and rebuilds in the background — awaiting the full build here
 // (as this used to) held the HTTP response open for minutes with enough ingested data,
 // which is exactly the kind of long-blocked request that made Render's proxy return an
 // empty "non-JSON http 502" to the caller even though the server was still working.
-// Poll /v1/health (or just retry a route query) to see when the new graph is live.
+// Poll GET /v1/admin/routing/rebuild/status to see live progress.
 app.post("/v1/admin/routing/rebuild", requireAdmin, async (_req, res) => {
+  const { started, state, promise } = rebuildLock.start(runRebuild);
+  if (!started) return res.status(409).json({ ok: false, error: "rebuild already in progress", state });
   res.json({ ok: true, started: true });
-  try {
-    const g = await buildGraph(db);
-    routingGraph = g;
-    console.log(`[routing] graph rebuilt: ${g.nodeCount} nodes, ${g.edgeCount} edges`);
-    if (g.warnings.length > 0) {
-      for (const w of g.warnings) console.log(`[routing] warning: ${w}`);
-    }
-    try {
-      saveGraphToDisk(g, GRAPH_CACHE_PATH);
-    } catch (e) {
-      console.warn(`[routing] failed to persist graph cache: ${e.message}`);
-    }
-  } catch (e) {
-    console.error(`[routing] rebuild failed: ${e.message}`);
-  }
+  // Failure is already recorded on rebuildLock.state (and logged inside runRebuild) —
+  // this only stops it from surfacing as an unhandled promise rejection.
+  promise.catch((e) => console.error(`[routing] rebuild failed: ${e.message}`));
+});
+
+/** Live progress for a running/just-finished rebuild — phase/progress/memoryMB while
+ * building, final counts on success, `error: "out_of_memory"` (or another message) on
+ * failure. Lets an operator confirm a rebuild isn't "stuck" without needing Render's own
+ * log stream, and gives real peak-memory numbers straight from the process that's doing
+ * the allocating. */
+app.get("/v1/admin/routing/rebuild/status", requireAdmin, (_req, res) => {
+  res.json({ ok: true, ...rebuildLock.state, cacheFile: cacheFileInfo(GRAPH_CACHE_PATH) });
 });
 
 /** Confirms the routing engine's TDX credentials actually work — never echoes the credentials themselves. */
