@@ -29,6 +29,10 @@ final class TransferPlannerViewModel {
 
     var itineraries: [TransferItinerary] = []
     var metroItineraries: [MetroItinerary] = []
+    /// The unified, mode-agnostic result list from UnifiedRoutingService — the shape
+    /// future route-result UI (Phase 6) should render from. Populated alongside the
+    /// typed arrays above, from the same single planning call.
+    var unifiedRoutes: [RouteResult] = []
     var isPlanning = false
     var errorText: String?
 
@@ -174,21 +178,20 @@ final class TransferPlannerViewModel {
         itineraries = []
         metroItineraries = []
         multimodalRoutes = []
+        unifiedRoutes = []
         multimodalDebug = nil
         defer { isPlanning = false }
 
-        async let busResult = TransferPlanner.plan(city: city, from: origin, to: dest)
-        async let multimodalResult = MultimodalRoutingService.plan(from: origin, to: dest, departureTime: multimodalDepartAt)
-        let metroResult: [MetroItinerary]
-        if let op = metroOperator {
-            metroResult = await MetroTransferPlanner.planNearby(operator: op, from: origin, to: dest)
-        } else {
-            metroResult = []
-        }
-        let bus = await busResult
-        itineraries = bus.itineraries
-        metroItineraries = metroResult
-        switch await multimodalResult {
+        // One call, one place that decides which planners to run and how to combine them —
+        // this ViewModel no longer orchestrates TransferPlanner/MultimodalRoutingService/
+        // MetroTransferPlanner itself. See UnifiedRoutingService.
+        let result = await UnifiedRoutingService.plan(
+            city: city, metroOperator: metroOperator, from: origin, to: dest, departureTime: multimodalDepartAt
+        )
+        itineraries = result.busItineraries
+        metroItineraries = result.metroItineraries
+        unifiedRoutes = result.routes
+        switch result.multimodalStatus {
         case .success(let routes):
             multimodalRoutes = routes
             multimodalDebug = routes.isEmpty ? "多模式引擎：此範圍暫無真實路線" : nil
@@ -196,13 +199,15 @@ final class TransferPlannerViewModel {
             multimodalDebug = "多模式引擎：\(code) \(message)\n起點(\(origin.latitude),\(origin.longitude)) 終點(\(dest.latitude),\(dest.longitude))"
         case .unreachable(let reason):
             multimodalDebug = "多模式引擎連線失敗：\(reason)"
+        case nil:
+            multimodalDebug = nil
         }
 
         if itineraries.isEmpty, metroItineraries.isEmpty {
             // Distinguish "TDX genuinely has nothing" from "TDX didn't actually answer" —
             // this session hammered TDX hard enough during debugging that the second case
             // is common right now, and telling the user "no route exists" would be wrong.
-            errorText = bus.hadNetworkError
+            errorText = result.busHadNetworkError
                 ? "查詢時 TDX 沒有正常回應（可能是限流），不代表真的沒有路線 — 稍後再試一次看看。"
                 : "找不到直達或單次轉乘的公車／捷運路線。"
             await loadTravelTimes(from: origin, to: dest)
