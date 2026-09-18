@@ -64,7 +64,7 @@ export async function buildAndPublishGraph(db, { onProgress = null, bucket = pro
     onProgress?.({ phase: "local_persist_complete", nodeCount: localMeta.nodeCount, edgeCount: localMeta.edgeCount });
 
     onProgress?.({ phase: "storage_upload_start" });
-    const { size } = await uploadArtifact(client, {
+    const { compressedSize } = await uploadArtifact(client, {
       bucket,
       localPath: tmpPath,
       artifactId,
@@ -81,7 +81,9 @@ export async function buildAndPublishGraph(db, { onProgress = null, bucket = pro
     });
     onProgress?.({ phase: "storage_upload_complete" });
 
-    await verifyArtifactUploaded(client, { bucket, artifactId, expectedSizeBytes: size });
+    // What's actually stored under the S3 key is the gzip-compressed artifact — verify
+    // against that, not the raw local file's size.
+    await verifyArtifactUploaded(client, { bucket, artifactId, expectedSizeBytes: compressedSize });
     onProgress?.({ phase: "storage_upload_verified" });
 
     await setCurrentArtifactId(client, { bucket, artifactId });

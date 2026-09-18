@@ -84,13 +84,13 @@ const bucket = "test-bucket";
   const client = new FakeS3Client();
   const published = await buildAndPublishGraph(db, { bucket, client });
 
-  const key = `routing-graph/production/${published.artifactId}.graph`;
+  const key = `routing-graph/production/${published.artifactId}.graph.gz`;
   const bytes = Buffer.from(client.objects.get(key));
-  bytes[10] ^= 0xff; // corrupt a byte well inside the payload
+  bytes[10] ^= 0xff; // corrupt a byte well inside the compressed payload
   client.objects.set(key, bytes);
 
   const result = await downloadAndLoadGraph({ bucket, client, maxAttempts: 1 });
-  check("A corrupted artifact is rejected (checksum mismatch), not loaded as garbage", result === null);
+  check("A corrupted artifact is rejected (gunzip failure or checksum mismatch), not loaded as garbage", result === null);
 }
 
 // --- Scenario D: truncated artifact ---
@@ -99,7 +99,7 @@ const bucket = "test-bucket";
   const client = new FakeS3Client();
   const published = await buildAndPublishGraph(db, { bucket, client });
 
-  const key = `routing-graph/production/${published.artifactId}.graph`;
+  const key = `routing-graph/production/${published.artifactId}.graph.gz`;
   const full = client.objects.get(key);
   client.objects.set(key, full.subarray(0, Math.floor(full.length / 2)));
 

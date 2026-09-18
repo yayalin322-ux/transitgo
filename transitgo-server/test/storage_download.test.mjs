@@ -1,4 +1,5 @@
 import { unlinkSync, existsSync, readFileSync } from "node:fs";
+import { gzipSync } from "node:zlib";
 import { FakeS3Client } from "./fakeS3.mjs";
 import { downloadArtifact, getCurrentArtifactId, setCurrentArtifactId } from "../src/graph/graphStorage.mjs";
 
@@ -11,7 +12,9 @@ function check(label, cond) {
 const bucket = "test-bucket";
 const client = new FakeS3Client();
 const content = "graph-artifact-content-".repeat(20_000); // a few hundred KB, enough to exercise real streaming
-client.objects.set("routing-graph/production/build-dl-1.graph", Buffer.from(content));
+// Stored bytes are always gzip-compressed (graphStorage.mjs's upload path always
+// compresses) — seed the fake bucket the same way a real upload would leave it.
+client.objects.set("routing-graph/production/build-dl-1.graph.gz", gzipSync(Buffer.from(content)));
 
 const tmpPath = "/tmp/transitgo_storage_download_test.artifact";
 if (existsSync(tmpPath)) unlinkSync(tmpPath);
