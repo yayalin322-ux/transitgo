@@ -587,6 +587,19 @@ async function runRebuild(onProgress) {
     getContext: () => currentContext,
   });
 
+  // Memory: the old graph used to stay resident for the whole rebuild so requests kept being served — but
+  // on a 512 MB instance "old graph (~130 MB) + a graph being built (peak 300+ MB) + the server" does not
+  // fit, and the instance was OOM-killed mid-rebuild. So the old graph is released first (route requests
+  // answer 503 "still initializing" for the ~2 minutes a rebuild takes). If the rebuild fails, the graph
+  // that is still published in Storage is loaded back. Set REBUILD_KEEP_OLD_GRAPH=true on an instance
+  // with plenty of memory to keep the old behavior.
+  const releasedOldGraph = process.env.REBUILD_KEEP_OLD_GRAPH !== "true" && routingGraph !== null;
+  if (releasedOldGraph) {
+    routingGraph = null;
+    activeArtifactId = null;
+    if (global.gc) global.gc();
+  }
+
   try {
     const rebuildStart = Date.now();
     const result = await buildAndPublishGraph(db, {
@@ -610,6 +623,21 @@ async function runRebuild(onProgress) {
     routingGraph = result.graph;
     activeArtifactId = result.artifactId;
     return { nodeCount: result.nodeCount, edgeCount: result.edgeCount };
+  } catch (e) {
+    // A failed rebuild never activates a new artifact, so the previously published graph is still the
+    // current one in Storage: bring it back instead of leaving routing down until the next restart.
+    if (releasedOldGraph && routingGraph === null) {
+      downloadAndLoadGraph()
+        .then((restored) => {
+          if (restored && routingGraph === null) {
+            routingGraph = restored.graph;
+            activeArtifactId = restored.artifactId;
+            console.log(`[routing] rebuild failed; restored the published graph (artifact ${restored.artifactId})`);
+          }
+        })
+        .catch((err) => console.error(`[routing] could not restore the graph after a failed rebuild: ${err.message}`));
+    }
+    throw e;
   } finally {
     // Runs on the success path too (sampler.stop() above is already idempotent), and —
     // the actual reason this exists — on any throw anywhere in build/persist/upload (a
