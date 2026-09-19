@@ -138,6 +138,38 @@ export async function ensureGtfsSchema(db) {
     -- what resolves a bus trip's per-stop TIMES (which come back from v2/Bus/Schedule
     -- with no StopUID attached to each one) to the actual real station at that position.
     -- Without this table gtfs_stop_times.stop_id had to stay null for bus.
+    -- Real per-hop travel time between two consecutive stations of one route — straight
+    -- from TDX's own v2/Rail/Metro/S2STravelTime (RunTime + StopTime, in seconds). This is
+    -- what lets a headway-based edge carry a REAL ride time instead of the distance/assumed-
+    -- speed estimate bus headway edges have to fall back on. Only rows a real source
+    -- actually published are ever stored here; a route with no row simply has no known hop time.
+    CREATE TABLE IF NOT EXISTS transit_segment_times (
+      feed_id       TEXT NOT NULL,
+      route_id      TEXT NOT NULL,
+      direction     INTEGER NOT NULL,
+      stop_sequence INTEGER NOT NULL,
+      from_stop_id  TEXT NOT NULL,
+      to_stop_id    TEXT NOT NULL,
+      run_seconds   INTEGER NOT NULL,
+      stop_seconds  INTEGER NOT NULL DEFAULT 0,
+      source        TEXT NOT NULL DEFAULT 'TDX v2/Rail/Metro/S2STravelTime',
+      PRIMARY KEY (feed_id, route_id, direction, stop_sequence)
+    );
+
+    -- Real interchange links between two stops the operator itself says connect (TDX
+    -- v2/Rail/Metro/LineTransfer): TransferTime is the operator-published minutes to
+    -- change lines, not a computed walking distance — there is deliberately no distance
+    -- column, because no source publishes one.
+    CREATE TABLE IF NOT EXISTS transit_transfers (
+      feed_id          TEXT NOT NULL,
+      from_stop_id     TEXT NOT NULL,
+      to_stop_id       TEXT NOT NULL,
+      transfer_seconds INTEGER NOT NULL,
+      on_site          INTEGER,
+      source           TEXT NOT NULL DEFAULT 'TDX v2/Rail/Metro/LineTransfer',
+      PRIMARY KEY (feed_id, from_stop_id, to_stop_id)
+    );
+
     CREATE TABLE IF NOT EXISTS gtfs_route_stops (
       feed_id        TEXT NOT NULL,
       route_id       TEXT NOT NULL,

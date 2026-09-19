@@ -1,5 +1,6 @@
 import { MultimodalGraph, TransitNode, TransitEdge, NodeType, Mode, parseGtfsTime } from "./model.mjs";
 import { haversineMeters } from "./virtual.mjs";
+import { SpatialIndex } from "./spatialIndex.mjs";
 import { loadServiceCalendar } from "./calendar.mjs";
 import { logMemory, resetMemoryTracking } from "./memlog.mjs";
 
@@ -22,6 +23,24 @@ const ESTIMATED_BUS_SPEED_MPS = 15 / 3.6;
 // One shared constant keeps the "this is estimated, not measured" disclosure the tests
 // check for at effectively zero cost.
 const HEADWAY_EDGE_SOURCE = `TDX real headway; travel time estimated from real distance at ${Math.round(ESTIMATED_BUS_SPEED_MPS * 3.6)} km/h`;
+
+// Real metro run times come from TDX's S2STravelTime (see transit_segment_times) — an edge
+// built from one of those carries this source string instead of the bus estimate above.
+const METRO_HEADWAY_EDGE_SOURCE = "TDX real headway + TDX S2STravelTime real run time";
+const METRO_UNKNOWN_WAIT_EDGE_SOURCE = "TDX S2STravelTime real run time; no TDX headway or timetable published for this route (waiting time unknown)";
+
+/** Feeds whose ids start with this prefix are metro operators (see ingestMetroOperator). */
+export const METRO_FEED_PREFIX = "MRT_";
+
+// Walking links between a metro station and other real stops nearby (bus stops, TRA/THSR
+// stations, another operator's metro). The distance is the real haversine distance
+// between the two real coordinates; the time is that distance at a plain walking speed —
+// the same "Haversine estimate" convention the virtual origin/destination walk edges use,
+// not a measured street route. No link is invented beyond the radius, and the per-station
+// cap keeps a station with dozens of co-located bus stops from adding hundreds of edges.
+const METRO_LINK_RADIUS_METERS = 250;
+const METRO_LINK_MAX_PER_STATION = 20;
+const LINK_WALKING_SPEED_MPS = 1.3;
 
 /** Node's single-threaded event loop otherwise gets starved for a long time by this
  * function's edge-building loops once there's enough ingested data — and on Render's
@@ -101,6 +120,21 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null, onPro
 
   let skippedForMissingStopId = 0;
   let headwayEdgesBuilt = 0, headwaySkippedNoStops = 0;
+  let metroEdgesBuilt = 0, metroUnknownWaitEdgesBuilt = 0;
+
+  // One shared string per "feed:service" key instead of a fresh template string per edge
+  // (hundreds of thousands of headway edges would otherwise each hold their own copy) —
+  // and only for services that actually have a calendar row; a headway band whose service
+  // label has no calendar (all bus bands today) keeps serviceKey null and stays usable
+  // every day, exactly as before.
+  const serviceKeyCache = new Map();
+  function headwayServiceKey(feed, label) {
+    if (!label) return null;
+    const key = `${feed}:${label}`;
+    if (!graph.serviceCalendar.has(key)) return null;
+    if (!serviceKeyCache.has(key)) serviceKeyCache.set(key, key);
+    return serviceKeyCache.get(key);
+  }
   let feedIndex = 0;
 
   for (const feedId of feeds) {
@@ -209,6 +243,14 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null, onPro
       stopCoords.set(`${s.feed_id}|${s.stop_id}`, s);
     }
 
+    // Real per-hop ride+dwell seconds (metro S2STravelTime). Empty for bus feeds, so bus
+    // edges below keep using the distance-based estimate exactly as before.
+    const segmentTimes = new Map();
+    for (const r of await db.prepare(`SELECT feed_id, route_id, direction, from_stop_id, to_stop_id, run_seconds, stop_seconds FROM transit_segment_times ${feedClause}`).all(...feedArgs)) {
+      segmentTimes.set(`${r.feed_id}|${r.route_id}|${r.direction}|${r.from_stop_id}|${r.to_stop_id}`, r.run_seconds + (r.stop_seconds ?? 0));
+    }
+    const routesWithHeadway = new Set(freqRows.map((f) => `${f.feed_id}|${f.route_id}|${f.direction}`));
+
     let freqIndex = 0;
     for (const f of freqRows) {
       freqIndex++;
@@ -228,8 +270,12 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null, onPro
         const b = stopCoords.get(`${f.feed_id}|${stopIds[i + 1]}`);
         if (!a?.stop_lat || !b?.stop_lat) continue;
         const distanceMeters = haversineMeters(a.stop_lat, a.stop_lon, b.stop_lat, b.stop_lon);
+        const realHopSeconds = segmentTimes.get(`${f.feed_id}|${f.route_id}|${f.direction}|${stopIds[i]}|${stopIds[i + 1]}`);
+        if (realHopSeconds == null && segmentTimes.size > 0 && f.feed_id.startsWith(METRO_FEED_PREFIX)) continue;   // a metro hop with no published run time gets NO edge — never the bus-speed estimate
         graph.addEdge(new TransitEdge({
-          id: `HW_${f.feed_id}_${f.route_id}_${f.direction}_${i}_${f.start_time}`,
+          id: realHopSeconds != null
+            ? `HW_${f.feed_id}_${f.route_id}_${f.direction}_${i}_${f.start_time}_${f.service_day_label ?? ""}`
+            : `HW_${f.feed_id}_${f.route_id}_${f.direction}_${i}_${f.start_time}`,
           fromNodeId: nodeId(f.feed_id, stopIds[i]),
           toNodeId: nodeId(f.feed_id, stopIds[i + 1]),
           mode: modeFor(f.feed_id, f.route_id),
@@ -237,11 +283,40 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null, onPro
           headwaySeconds: avgHeadwaySeconds,
           windowStartSeconds: startSeconds,
           windowEndSeconds: endSeconds,
-          travelSeconds: Math.max(30, Math.round(distanceMeters / ESTIMATED_BUS_SPEED_MPS)),
+          travelSeconds: realHopSeconds ?? Math.max(30, Math.round(distanceMeters / ESTIMATED_BUS_SPEED_MPS)),
           distanceMeters,
-          source: HEADWAY_EDGE_SOURCE,
+          serviceKey: realHopSeconds != null ? headwayServiceKey(f.feed_id, f.service_day_label) : null,
+          source: realHopSeconds != null ? METRO_HEADWAY_EDGE_SOURCE : HEADWAY_EDGE_SOURCE,
         }));
-        headwayEdgesBuilt++;
+        if (realHopSeconds != null) metroEdgesBuilt++; else headwayEdgesBuilt++;
+      }
+    }
+
+    // Routes with real per-hop run times but NO real headway band at all (e.g. a metro
+    // operator TDX publishes S2STravelTime for but no Frequency): the ride time is real, the
+    // wait genuinely is not known. Build the edges flagged waitUnknown — usable, but the
+    // routing engine reports waitingSeconds as null rather than guessing a headway.
+    for (const routeKey of new Set([...segmentTimes.keys()].map((k) => k.split("|").slice(0, 3).join("|")))) {
+      if (routesWithHeadway.has(routeKey)) continue;
+      const [rFeed, rRoute, rDir] = routeKey.split("|");
+      const stopIds = routeStopCache.get(routeKey) ?? [];
+      for (let i = 0; i < stopIds.length - 1; i++) {
+        const hopSeconds = segmentTimes.get(`${routeKey}|${stopIds[i]}|${stopIds[i + 1]}`);
+        const a = stopCoords.get(`${rFeed}|${stopIds[i]}`);
+        const b = stopCoords.get(`${rFeed}|${stopIds[i + 1]}`);
+        if (hopSeconds == null || !a?.stop_lat || !b?.stop_lat) continue;
+        graph.addEdge(new TransitEdge({
+          id: `WU_${rFeed}_${rRoute}_${rDir}_${i}`,
+          fromNodeId: nodeId(rFeed, stopIds[i]),
+          toNodeId: nodeId(rFeed, stopIds[i + 1]),
+          mode: modeFor(rFeed, rRoute),
+          routeId: rRoute,
+          travelSeconds: hopSeconds,
+          distanceMeters: haversineMeters(a.stop_lat, a.stop_lon, b.stop_lat, b.stop_lon),
+          waitUnknown: true,
+          source: METRO_UNKNOWN_WAIT_EDGE_SOURCE,
+        }));
+        metroUnknownWaitEdgesBuilt++;
       }
     }
     report("after_headway_edges", { feed: feedId, edgeCount: graph.edgeCount });
@@ -261,11 +336,23 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null, onPro
 
   report("edges_complete", { nodeCount: graph.nodeCount, edgeCount: graph.edgeCount });
 
+  const linkStats = await addMetroTransferEdges(db, graph, feeds);
+  report("metro_links_complete", { edgeCount: graph.edgeCount, ...linkStats });
+
   if (skippedForMissingStopId > 0) {
     graph.warnings.push(`${skippedForMissingStopId} stop_times rows have no resolved stop_id yet (bus per-trip times not yet joined to StopOfRoute sequence) — excluded from edges, not guessed.`);
   }
   if (headwaySkippedNoStops > 0) {
     graph.warnings.push(`${headwaySkippedNoStops} headway band(s) skipped — no gtfs_route_stops sequence for that route+direction yet.`);
+  }
+  if (metroEdgesBuilt > 0) {
+    graph.warnings.push(`${metroEdgesBuilt} metro headway edges built from real TDX run times and real TDX headway bands; the opposite direction of each route reuses the published direction's run time (TDX publishes one direction only).`);
+  }
+  if (metroUnknownWaitEdgesBuilt > 0) {
+    graph.warnings.push(`${metroUnknownWaitEdgesBuilt} metro edges have real run times but no published headway/timetable — their waiting time is unknown (null), not estimated.`);
+  }
+  if (linkStats.interchangeEdges + linkStats.proximityEdges > 0) {
+    graph.warnings.push(`${linkStats.interchangeEdges} metro interchange edges (real TDX LineTransfer times) and ${linkStats.proximityEdges} metro-to-nearby-stop walking edges (real coordinates, ${LINK_WALKING_SPEED_MPS} m/s walking-time estimate).`);
   }
   if (headwayEdgesBuilt > 0) {
     graph.warnings.push(`${headwayEdgesBuilt} headway-based edges built with an ESTIMATED travel time (real distance / assumed ${Math.round(ESTIMATED_BUS_SPEED_MPS * 3.6)} km/h) — no verified TDX stop-to-stop bus travel time source exists yet.`);
@@ -273,4 +360,84 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null, onPro
 
   report("build_complete", { nodeCount: graph.nodeCount, edgeCount: graph.edgeCount });
   return graph;
+}
+
+/**
+ * Connects the metro network to itself (real interchange times) and to every other mode
+ * (nearby real stops). Runs once after every feed's nodes exist, since a link can join two
+ * different feeds. Skips entirely — no spatial index built, nothing added — when the graph
+ * has no metro stations, so a bus/rail-only graph pays nothing for this.
+ */
+async function addMetroTransferEdges(db, graph, feeds) {
+  const stats = { interchangeEdges: 0, proximityEdges: 0 };
+  const metroFeeds = feeds.filter((f) => f.startsWith(METRO_FEED_PREFIX));
+  if (metroFeeds.length === 0) return stats;
+
+  // 1) Operator-published interchange times (TDX LineTransfer): line-to-line change inside
+  //    or between metro stations. Real minutes, no distance (none is published). An
+  //    interchange may name a station owned by ANOTHER metro operator's feed (TRTC's list
+  //    references 新北's LB01), so a station id is resolved against every metro feed —
+  //    own feed first, then a unique match elsewhere; an ambiguous or unknown id is skipped.
+  const metroNodesByStopId = new Map();   // "BL01" -> ["MRT_TRTC:BL01", "MRT_NTMC:LB01"...]
+  for (const id of graph.nodes.keys()) {
+    if (!id.startsWith(METRO_FEED_PREFIX)) continue;
+    const stopId = id.slice(id.indexOf(":") + 1);
+    if (!metroNodesByStopId.has(stopId)) metroNodesByStopId.set(stopId, []);
+    metroNodesByStopId.get(stopId).push(id);
+  }
+  const resolveMetroNode = (feedId, stopId) => {
+    const own = nodeId(feedId, stopId);
+    if (graph.nodes.has(own)) return own;
+    const candidates = metroNodesByStopId.get(stopId) ?? [];
+    return candidates.length === 1 ? candidates[0] : null;
+  };
+  const linkedPairs = new Set();
+  for (const feedId of metroFeeds) {
+    const rows = await db.prepare(`SELECT from_stop_id, to_stop_id, transfer_seconds, on_site FROM transit_transfers WHERE feed_id = ?`).all(feedId);
+    for (const t of rows) {
+      const fromId = resolveMetroNode(feedId, t.from_stop_id);
+      const toId = resolveMetroNode(feedId, t.to_stop_id);
+      if (!fromId || !toId || fromId === toId || linkedPairs.has(`${fromId}|${toId}`)) continue;
+      linkedPairs.add(`${fromId}|${toId}`);
+      graph.addEdge(new TransitEdge({
+        id: `MRT_TRANSFER_WALK_${fromId}_${toId}`,
+        fromNodeId: fromId, toNodeId: toId, mode: Mode.WALK,
+        travelSeconds: t.transfer_seconds,
+        distanceMeters: null,
+        source: `TDX LineTransfer (real ${t.on_site === 1 ? "in-station" : "out-of-station"} interchange time)`,
+      }));
+      stats.interchangeEdges++;
+    }
+  }
+
+  // 2) Walking links from each metro station to other operators'/modes' nearby real stops.
+  const index = new SpatialIndex(graph.nodes.values());
+  const feedOf = (id) => String(id).split(":")[0];
+  const seen = new Set();
+  for (const station of graph.nodes.values()) {
+    if (!station.id.startsWith(METRO_FEED_PREFIX) || station.lat == null || station.lon == null) continue;
+    const stationFeed = feedOf(station.id);
+    const near = index.near(station.lat, station.lon, METRO_LINK_RADIUS_METERS, haversineMeters)
+      .filter((h) => h.node.id !== station.id && feedOf(h.node.id) !== stationFeed)
+      .sort((a, b) => a.distanceMeters - b.distanceMeters)
+      .slice(0, METRO_LINK_MAX_PER_STATION);
+    for (const { node, distanceMeters } of near) {
+      const pair = station.id < node.id ? `${station.id}|${node.id}` : `${node.id}|${station.id}`;
+      // Already joined by a real operator-published interchange time — that number wins
+      // over a straight-line walking estimate, so no second (faster-looking) link is added.
+      if (seen.has(pair) || linkedPairs.has(`${station.id}|${node.id}`) || linkedPairs.has(`${node.id}|${station.id}`)) continue;
+      seen.add(pair);
+      const seconds = Math.max(1, Math.round(distanceMeters / LINK_WALKING_SPEED_MPS));
+      for (const [from, to] of [[station.id, node.id], [node.id, station.id]]) {
+        graph.addEdge(new TransitEdge({
+          id: `MRT_LINK_${from}_${to}`,
+          fromNodeId: from, toNodeId: to, mode: Mode.WALK,
+          travelSeconds: seconds, distanceMeters,
+          source: "Haversine estimate (metro station to nearby stop)",
+        }));
+        stats.proximityEdges++;
+      }
+    }
+  }
+  return stats;
 }

@@ -75,6 +75,25 @@ export class TDXProvider extends TransitDataProvider {
   async getMetroStationOfLine(operatorCode) {
     return get(`v2/Rail/Metro/StationOfLine/${operatorCode}`);
   }
+
+  /** Real per-hop RunTime/StopTime (seconds) per RouteID — TDX publishes one direction per route. */
+  async getMetroTravelTimes(operatorCode) {
+    return get(`v2/Rail/Metro/S2STravelTime/${operatorCode}`);
+  }
+
+  /** Real headway bands per RouteID + service day (平日/假日). */
+  async getMetroFrequency(operatorCode) {
+    return get(`v2/Rail/Metro/Frequency/${operatorCode}`);
+  }
+
+  /** Real interchange links + operator-published transfer minutes. */
+  async getMetroLineTransfer(operatorCode) {
+    return get(`v2/Rail/Metro/LineTransfer/${operatorCode}`);
+  }
+
+  async getMetroLines(operatorCode) {
+    return get(`v2/Rail/Metro/Line/${operatorCode}`);
+  }
 }
 
 function routeFilter(routeNameZh) {
