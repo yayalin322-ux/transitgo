@@ -413,7 +413,14 @@ async function addMetroTransferEdges(db, graph, feeds) {
   // 2) Walking links from each metro station to other operators'/modes' nearby real stops.
   const index = new SpatialIndex(graph.nodes.values());
   const feedOf = (id) => String(id).split(":")[0];
-  const seen = new Set();
+
+  // Gather every candidate link first: for a given stop, and a given metro OPERATOR, only
+  // the NEAREST station gets linked. Without this, a bus stop standing between a
+  // station's two line-nodes (台北車站's 板南線 and 淡水信義線 nodes share coordinates) would
+  // join both, and "station -> bus stop -> other line's station" becomes a walking shortcut
+  // that undercuts the operator's real published interchange time (4 min) with two ~1 min
+  // walks. Line changes must only ever use the real LineTransfer edges.
+  const best = new Map();   // "nodeId|stationFeed" -> { station, node, distanceMeters }
   for (const station of graph.nodes.values()) {
     if (!station.id.startsWith(METRO_FEED_PREFIX) || station.lat == null || station.lon == null) continue;
     const stationFeed = feedOf(station.id);
@@ -422,21 +429,28 @@ async function addMetroTransferEdges(db, graph, feeds) {
       .sort((a, b) => a.distanceMeters - b.distanceMeters)
       .slice(0, METRO_LINK_MAX_PER_STATION);
     for (const { node, distanceMeters } of near) {
-      const pair = station.id < node.id ? `${station.id}|${node.id}` : `${node.id}|${station.id}`;
-      // Already joined by a real operator-published interchange time — that number wins
-      // over a straight-line walking estimate, so no second (faster-looking) link is added.
-      if (seen.has(pair) || linkedPairs.has(`${station.id}|${node.id}`) || linkedPairs.has(`${node.id}|${station.id}`)) continue;
-      seen.add(pair);
-      const seconds = Math.max(1, Math.round(distanceMeters / LINK_WALKING_SPEED_MPS));
-      for (const [from, to] of [[station.id, node.id], [node.id, station.id]]) {
-        graph.addEdge(new TransitEdge({
-          id: `MRT_LINK_${from}_${to}`,
-          fromNodeId: from, toNodeId: to, mode: Mode.WALK,
-          travelSeconds: seconds, distanceMeters,
-          source: "Haversine estimate (metro station to nearby stop)",
-        }));
-        stats.proximityEdges++;
-      }
+      const key = `${node.id}|${stationFeed}`;
+      const current = best.get(key);
+      if (!current || distanceMeters < current.distanceMeters) best.set(key, { station, node, distanceMeters });
+    }
+  }
+
+  const seen = new Set();
+  for (const { station, node, distanceMeters } of best.values()) {
+    const pair = station.id < node.id ? `${station.id}|${node.id}` : `${node.id}|${station.id}`;
+    // Already joined by a real operator-published interchange time — that number wins
+    // over a straight-line walking estimate, so no second (faster-looking) link is added.
+    if (seen.has(pair) || linkedPairs.has(`${station.id}|${node.id}`) || linkedPairs.has(`${node.id}|${station.id}`)) continue;
+    seen.add(pair);
+    const seconds = Math.max(1, Math.round(distanceMeters / LINK_WALKING_SPEED_MPS));
+    for (const [from, to] of [[station.id, node.id], [node.id, station.id]]) {
+      graph.addEdge(new TransitEdge({
+        id: `MRT_LINK_${from}_${to}`,
+        fromNodeId: from, toNodeId: to, mode: Mode.WALK,
+        travelSeconds: seconds, distanceMeters,
+        source: "Haversine estimate (metro station to nearby stop)",
+      }));
+      stats.proximityEdges++;
     }
   }
   return stats;

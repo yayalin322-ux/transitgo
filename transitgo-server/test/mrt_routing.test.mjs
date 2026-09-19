@@ -63,6 +63,24 @@ check("Graph warnings state the real-data provenance and the direction assumptio
   check("multi-transfer: every interchange uses a real TDX time", route.segments.filter((s) => s.walkKind === "MRT_TRANSFER_WALK").length === 2);
 }
 
+// ---------- a stop between a station's two line-nodes must not become an interchange shortcut ----------
+{
+  const m = await buildMrtDb(["TRTC"]);
+  const mdb = m.db;
+  const bl12 = graph.nodes.get(nodeId("MRT_TRTC", "BL12"));
+  // A bus stop ~30 m from 台北車站 (板南線 BL12 and 淡水信義線 R10 share these coordinates).
+  await insertStops(mdb, "TST", [{ stop_id: "S", stop_name: "站前站牌", stop_lat: bl12.lat + 0.0003, stop_lon: bl12.lon }]);
+  const g5 = await buildGraph(mdb);
+  const linksFromStop = (g5.edgesByFrom.get("TST:S") ?? []).filter((e) => e.toNodeId.startsWith("MRT_TRTC:"));
+  check("a stop between two line-nodes of one station links to only ONE of them (the nearest)", linksFromStop.length === 1);
+  const t5 = (id) => g5.nodes.get(nodeId("MRT_TRTC", id));
+  const res = await planRoute(g5, { origin: { lat: t5("BL07").lat, lng: t5("BL07").lon }, destination: { lat: t5("R02").lat, lng: t5("R02").lon }, departureTime: WEEKDAY }, mdb);
+  const route = res.body.routes[0];
+  const interchange = route.segments.filter((s) => s.mode === "WALK" && s.walkKind !== null && s.fromName === "台北車站");
+  check("the line change still uses the real 4-minute TDX interchange, not a walk via the bus stop", interchange.length === 1 && interchange[0].walkKind === "MRT_TRANSFER_WALK" && interchange[0].durationSeconds === 240);
+  check("no route detours through the bus stop", !route.legs.some((l) => l.from === "TST:S" || l.to === "TST:S"));
+}
+
 // ---------- ranking still works with metro in the graph ----------
 {
   const res = await plan(trtc("G03A"), trtc("BR01"));
