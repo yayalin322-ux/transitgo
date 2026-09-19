@@ -135,10 +135,40 @@ struct MergedStop: Identifiable, Hashable {
     let stopUIDs: [String]
     let displayName: String
     let coordinate: CLLocationCoordinate2D?
-    var id: String { stopUIDs.first ?? displayName }
+    /// Stop UIDs of the same physical stop that live under the InterCity (公路客運) feed. Their
+    /// arrivals must be requested with `BusScope.interCity`, not the city scope.
+    var interCityUIDs: [String] = []
+    var id: String { (stopUIDs + interCityUIDs).first ?? displayName }
 
-    static func == (l: MergedStop, r: MergedStop) -> Bool { l.stopUIDs == r.stopUIDs }
-    func hash(into hasher: inout Hasher) { hasher.combine(stopUIDs) }
+    static func == (l: MergedStop, r: MergedStop) -> Bool { l.stopUIDs == r.stopUIDs && l.interCityUIDs == r.interCityUIDs }
+    func hash(into hasher: inout Hasher) { hasher.combine(stopUIDs); hasher.combine(interCityUIDs) }
+
+    /// Groups city stops and InterCity stops that share a (normalized) name into one physical stop.
+    /// TDX lists the same pole under both feeds — "竹北火車站" is a city stop for 60/61 and an
+    /// InterCity stop for the highway coaches — so grouping by name gives one card with every route.
+    static func group(city: [NearbyStop], interCity: [NearbyStop]) -> [MergedStop] {
+        var order: [String] = []
+        var groups: [String: (city: [NearbyStop], interCity: [NearbyStop])] = [:]
+        func add(_ s: NearbyStop, isInterCity: Bool) {
+            let key = normalizedStopName(s.stopName.display)
+            if groups[key] == nil { order.append(key) }
+            if isInterCity { groups[key, default: ([], [])].interCity.append(s) }
+            else { groups[key, default: ([], [])].city.append(s) }
+        }
+        city.forEach { add($0, isInterCity: false) }
+        interCity.forEach { add($0, isInterCity: true) }
+        return order.compactMap { key in
+            guard let g = groups[key] else { return nil }
+            let all = g.city + g.interCity
+            let name = all.map(\.stopName.display).min(by: { $0.count < $1.count }) ?? key
+            return MergedStop(
+                stopUIDs: g.city.map(\.stopUID),
+                displayName: name,
+                coordinate: all.first(where: { $0.coordinate != nil })?.coordinate,
+                interCityUIDs: g.interCity.map(\.stopUID)
+            )
+        }
+    }
 }
 
 /// Strips a bare trailing "站" so "婦幼館" and "婦幼館站" compare equal — the two most
@@ -168,24 +198,19 @@ final class NearbyViewModel {
                     "$top": "80",
                 ]
             )
+            // Highway coaches (公路客運) and 快捷 lines are listed under InterCity, not under any
+            // city — without this they never appear near stops that only they serve.
+            let interCity: [NearbyStop] = (try? await TDXClient.shared.get(
+                "v2/Bus/Stop/InterCity",
+                query: [
+                    "$spatialFilter": "nearby(\(lat),\(lon),500)",
+                    "$select": "StopUID,StopName,StopPosition",
+                    "$top": "80",
+                ]
+            )) ?? []
             // Group by normalized name — the 500m radius is small enough that two
             // entries sharing a name are almost always the same physical stop.
-            var order: [String] = []
-            var groups: [String: [NearbyStop]] = [:]
-            for s in result {
-                let key = normalizedStopName(s.stopName.display)
-                if groups[key] == nil { order.append(key) }
-                groups[key, default: []].append(s)
-            }
-            let byName = order.compactMap { key -> MergedStop? in
-                guard let items = groups[key] else { return nil }
-                let name = items.map(\.stopName.display).min(by: { $0.count < $1.count }) ?? key
-                return MergedStop(
-                    stopUIDs: items.map(\.stopUID),
-                    displayName: name,
-                    coordinate: items.first(where: { $0.coordinate != nil })?.coordinate
-                )
-            }
+            let byName = MergedStop.group(city: result, interCity: interCity)
             // Second pass: fold together any *different*-named entries that sit within a
             // few metres of each other — two stop poles that close are, in practice,
             // always the same physical stop, whatever each bus company called it.
@@ -210,7 +235,8 @@ final class NearbyViewModel {
                 clusters[i] = MergedStop(
                     stopUIDs: existing.stopUIDs + stop.stopUIDs,
                     displayName: name,
-                    coordinate: existing.coordinate
+                    coordinate: existing.coordinate,
+                    interCityUIDs: existing.interCityUIDs + stop.interCityUIDs
                 )
             } else {
                 clusters.append(stop)
@@ -451,7 +477,7 @@ struct NearbyStopsView: View {
             }
             .navigationDestination(for: MergedStop.self) { stop in
                 if let c = region?.busCity {
-                    NearbyStopDetailView(city: c, stopUIDs: stop.stopUIDs, displayName: stop.displayName)
+                    NearbyStopDetailView(city: c, stopUIDs: stop.stopUIDs, interCityUIDs: stop.interCityUIDs, displayName: stop.displayName)
                 }
             }
             .navigationDestination(for: BikeStation.self) { station in
@@ -727,16 +753,16 @@ final class NearbyStopDetailViewModel {
     var errorText: String?
     var lastUpdated: Date?
 
-    func refresh(city: BusCity, stopUIDs: [String]) async {
+    func refresh(city: BusCity, stopUIDs: [String], interCityUIDs: [String] = []) async {
         isLoading = arrivals.isEmpty
         defer { isLoading = false }
         do {
-            let combined = try await BusService.shared.arrivals(city: city, stopUIDs: stopUIDs)
+            let combined = try await BusService.shared.arrivals(city: city, stopUIDs: stopUIDs, interCityUIDs: interCityUIDs)
             // Merged stops can report the same route+direction from both underlying
             // TDX entries — keep only the better (earlier / more actionable) one.
             var best: [String: StopArrival] = [:]
             for a in combined {
-                let key = "\(a.routeName)-\(a.direction)"
+                let key = a.id
                 if let existing = best[key], existing.sortKey <= a.sortKey { continue }
                 best[key] = a
             }
@@ -754,6 +780,7 @@ final class NearbyStopDetailViewModel {
 struct NearbyStopDetailView: View {
     let city: BusCity
     let stopUIDs: [String]
+    var interCityUIDs: [String] = []
     let displayName: String
     @State private var model = NearbyStopDetailViewModel()
 
@@ -766,7 +793,7 @@ struct NearbyStopDetailView: View {
                 ForEach(model.arrivals) { arrival in
                     NavigationLink {
                         BusRouteDetailView(
-                            scope: .city(city),
+                            scope: arrival.isInterCity ? .interCity : .city(city),
                             route: BusRoute(
                                 routeUID: arrival.routeName,
                                 routeName: LocalizedName(zhTw: arrival.routeName, en: nil),
@@ -801,11 +828,11 @@ struct NearbyStopDetailView: View {
         .overlay { if model.isLoading { ProgressView() } }
         .task {
             while !Task.isCancelled {
-                await model.refresh(city: city, stopUIDs: stopUIDs)
+                await model.refresh(city: city, stopUIDs: stopUIDs, interCityUIDs: interCityUIDs)
                 try? await Task.sleep(for: .seconds(20))
             }
         }
-        .refreshable { await model.refresh(city: city, stopUIDs: stopUIDs) }
+        .refreshable { await model.refresh(city: city, stopUIDs: stopUIDs, interCityUIDs: interCityUIDs) }
     }
 
     private func color(for a: StopArrival) -> Color {
