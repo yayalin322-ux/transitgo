@@ -1,4 +1,5 @@
-import { createWriteStream, readFileSync, existsSync, renameSync, statSync } from "node:fs";
+import { createWriteStream, openSync, closeSync, readSync, existsSync, renameSync, statSync } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import { createHash } from "node:crypto";
 import { MultimodalGraph, TransitNode, TransitEdge } from "./model.mjs";
 import { graphCoverage } from "../routing/api.mjs";
@@ -133,52 +134,158 @@ export async function saveGraphToDisk(graph, filePath) {
   return { checksum, nodeCount: graph.nodeCount, edgeCount: graph.edgeCount, coverage };
 }
 
-/** Returns null (never throws) on anything from "file doesn't exist" to "corrupt JSON"
+const TRAILER = /\n([0-9a-f]{64})\s*$/;
+const READ_CHUNK_BYTES = 1 << 20;   // 1 MiB
+
+/**
+ * Returns null (never throws) on anything from "file doesn't exist" to "corrupt JSON"
  * to "written by an older, incompatible format version" to "checksum mismatch" — every
- * one of those just means "fall back to a real rebuild", not a boot failure. */
-export function loadGraphFromDisk(filePath) {
+ * one of those just means "fall back to a real rebuild", not a boot failure.
+ *
+ * STREAMS the file in 1 MiB chunks instead of `readFileSync` + one `JSON.parse`. That used to hold the
+ * whole file as a JS string (two bytes per character once a Chinese name is in it — ~2x the file),
+ * a second copy for hashing, and the fully parsed object tree, all at the same instant: ~390 MB of
+ * peak for a 76k-node / 320k-edge graph, on top of the server itself — which is what pushed a 512 MB
+ * Render instance over its limit on every restart. Now only the current chunk, the header and the
+ * graph being built are resident; the sha256 is computed over the same bytes as they stream past.
+ *
+ * Repeated strings (an edge's `source`, `serviceKey`, `routeId`) are interned: JSON.parse gives every
+ * edge its own copy of them, which a freshly built graph never had (it shares one constant).
+ *
+ * `options.chunkBytes` exists so tests can force many tiny chunks; `options.stats`, if given, receives
+ * { chunks, maxBufferedChars } so a test can prove memory stays bounded.
+ */
+export function loadGraphFromDisk(filePath, { chunkBytes = READ_CHUNK_BYTES, stats = null } = {}) {
   if (!existsSync(filePath)) return null;
-  let raw;
+  let fd;
   try {
-    raw = readFileSync(filePath, "utf8");
-  } catch {
+    fd = openSync(filePath, "r");
+    return readGraph(fd, statSync(filePath).size, chunkBytes, stats);
+  } catch (e) {
+    if (!(e instanceof SyntaxError)) console.warn(`[routing] graph cache unreadable: ${e.message}`);
     return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
+}
 
-  const trimmed = raw.trimEnd();
-  const lastNewline = trimmed.lastIndexOf("\n");
-  if (lastNewline === -1) return null;
-  const jsonPart = trimmed.slice(0, lastNewline);
-  const storedChecksum = trimmed.slice(lastNewline + 1).trim();
-  if (!/^[0-9a-f]{64}$/.test(storedChecksum)) return null;
+function readGraph(fd, size, chunkBytes, stats) {
+  // The trailing "\n<sha256>\n" line is not part of the checksummed payload.
+  const tailLen = Math.min(size, 200);
+  const tail = Buffer.alloc(tailLen);
+  readSync(fd, tail, 0, tailLen, size - tailLen);
+  const tailText = tail.toString("latin1");
+  const m = TRAILER.exec(tailText);
+  if (!m) return null;
+  const storedChecksum = m[1];
+  const payloadBytes = size - (tailText.length - m.index);
 
-  const actualChecksum = createHash("sha256").update(jsonPart).digest("hex");
-  if (actualChecksum !== storedChecksum) {
+  const hash = createHash("sha256");
+  const decoder = new StringDecoder("utf8");
+  const buf = Buffer.alloc(chunkBytes);
+  const graph = new MultimodalGraph();
+  const intern = new Map();
+  const shared = (v) => { if (typeof v !== "string") return v; const hit = intern.get(v); if (hit) return hit; intern.set(v, v); return v; };
+
+  let header = null;
+  let mode = "header";          // header -> nodes -> edges -> done
+  let text = "";
+  let nodes = 0, edges = 0, chunks = 0, maxBuffered = 0;
+
+  const NODES_MARK = ',"nodes":[';
+  const EDGES_MARK = '],"edges":[';
+
+  // Consumes as much of `text` as forms complete elements; leaves the incomplete tail in `text`.
+  const drain = (final) => {
+    for (;;) {
+      if (mode === "header") {
+        // the first marker after which the text before it is a complete header object (a warning string
+        // could, in principle, contain the marker itself)
+        let i = text.indexOf(NODES_MARK), found = false;
+        while (i >= 0) {
+          try { header = JSON.parse(`${text.slice(0, i)}}`); found = true; break; }
+          catch { i = text.indexOf(NODES_MARK, i + 1); }
+        }
+        if (!found) return;
+        text = text.slice(i + NODES_MARK.length);
+        mode = "nodes";
+        continue;
+      }
+      if (mode === "done") return;
+      // an array section: [ elem , elem ... ]  — elements are flat objects
+      let pos = 0;
+      let progressed = false;
+      for (;;) {
+        if (pos >= text.length) break;
+        if (text[pos] === "]" ) {   // empty section, or the end after the last element
+          const marker = mode === "nodes" ? EDGES_MARK : "]}";
+          if (text.length - pos < marker.length) break;   // need more bytes to tell
+          if (!text.startsWith(marker, pos)) throw new SyntaxError("unexpected array end");
+          text = text.slice(pos + marker.length); pos = 0;
+          mode = mode === "nodes" ? "edges" : "done";
+          progressed = true;
+          break;
+        }
+        // find the end of the next element: the nearest "},{" or "}]" that leaves a parseable object
+        let from = pos, item = null, endAt = -1;
+        for (;;) {
+          // Nearest "},{" (between elements) or "}]" (end of section). Only look for "}]" in the stretch BEFORE
+          // the next "},{" — scanning to the end of the buffer for every element would be quadratic.
+          const a = text.indexOf("},{", from);
+          let j;
+          if (a < 0) j = text.indexOf("}]", from);
+          else { const local = text.slice(from, a + 1).indexOf("}]"); j = local >= 0 ? from + local : a; }
+          if (j < 0) break;
+          try { item = JSON.parse(text.slice(pos, j + 1)); endAt = j + 1; break; }
+          catch { from = j + 1; }   // that "},{" was inside a string: extend the element
+        }
+        if (item === null) break;   // element not complete in the buffer yet
+        if (mode === "nodes") { graph.addNode(new TransitNode(item)); nodes++; }
+        else {
+          item.source = shared(item.source); item.serviceKey = shared(item.serviceKey); item.routeId = shared(item.routeId); item.mode = shared(item.mode);
+          graph.addEdge(new TransitEdge(item)); edges++;
+        }
+        pos = endAt + (text[endAt] === "," ? 1 : 0);
+        progressed = true;
+      }
+      if (pos > 0) text = text.slice(pos);
+      if (!progressed || mode === "done") return;
+      if (!final && mode !== "nodes" && mode !== "edges") return;
+      if (text.length === 0) return;
+    }
+  };
+
+  let readBytes = 0;
+  while (readBytes < payloadBytes) {
+    const want = Math.min(chunkBytes, payloadBytes - readBytes);
+    const n = readSync(fd, buf, 0, want, readBytes);
+    if (n <= 0) return null;
+    readBytes += n;
+    hash.update(buf.subarray(0, n));
+    text += decoder.write(buf.subarray(0, n));
+    chunks++;
+    if (text.length > maxBuffered) maxBuffered = text.length;
+    drain(false);
+  }
+  text += decoder.end();
+  drain(true);
+  if (stats) { stats.chunks = chunks; stats.maxBufferedChars = maxBuffered; }
+
+  if (hash.digest("hex") !== storedChecksum) {
     console.warn("[routing] graph cache checksum mismatch — ignoring cache, staying empty until a rebuild");
     return null;
   }
-
-  let payload;
-  try {
-    payload = JSON.parse(jsonPart);
-  } catch {
-    return null;
-  }
-  if (payload?.formatVersion !== FORMAT_VERSION) return null;
-  if (typeof payload.nodeCount !== "number" || typeof payload.edgeCount !== "number") return null;
-  if (!Array.isArray(payload.nodes) || !Array.isArray(payload.edges)) return null;
-  if (payload.nodes.length !== payload.nodeCount || payload.edges.length !== payload.edgeCount) {
+  if (mode !== "done" || header?.formatVersion !== FORMAT_VERSION) return null;
+  if (typeof header.nodeCount !== "number" || typeof header.edgeCount !== "number") return null;
+  if (nodes !== header.nodeCount || edges !== header.edgeCount) {
     console.warn("[routing] graph cache node/edge count mismatch — ignoring cache");
     return null;
   }
 
-  const graph = new MultimodalGraph();
-  graph.builtAt = payload.builtAt;
-  graph.dataVersion = payload.dataVersion;
-  graph.warnings = payload.warnings ?? [];
-  graph.serviceCalendar = serviceCalendarFromJSON(payload.serviceCalendar);
-  for (const n of payload.nodes) graph.addNode(new TransitNode(n));
-  for (const e of payload.edges) graph.addEdge(new TransitEdge(e));
+  graph.builtAt = header.builtAt;
+  graph.dataVersion = header.dataVersion;
+  graph.warnings = header.warnings ?? [];
+  graph.serviceCalendar = serviceCalendarFromJSON(header.serviceCalendar);
   return graph;
 }
 
