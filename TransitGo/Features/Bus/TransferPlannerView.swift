@@ -381,6 +381,8 @@ struct TransferPlannerView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
     @State private var startedInitialTrip = false
+    /// The route the user is about to follow — set when 開始行程 is tapped, cleared once the location notice is answered.
+    @State private var pendingTripRoute: MultimodalRoute?
     @State private var editorSpec: TripSpec?
     @State private var model = TransferPlannerViewModel()
     @State private var path = NavigationPath()
@@ -589,6 +591,12 @@ struct TransferPlannerView: View {
                             }
                         }
                         Button {
+                            pendingTripRoute = route
+                        } label: {
+                            Label("開始行程", systemImage: "figure.walk.motion").frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Button {
                             let legs = navigationLegs(for: route)
                             guard !legs.isEmpty else { return }
                             multimodalNavTarget = MultimodalNavTarget(legs: legs, tripName: model.destination?.name ?? "目的地")
@@ -714,6 +722,17 @@ struct TransferPlannerView: View {
             .fullScreenCover(item: $multimodalNavTarget) { target in
                 InAppNavigationView(legs: target.legs, tripName: target.tripName)
             }
+            .alert("開始行程", isPresented: Binding(get: { pendingTripRoute != nil }, set: { if !$0 { pendingTripRoute = nil } })) {
+                Button("開始導航") {
+                    if let route = pendingTripRoute, let spec = model.currentSpec {
+                        let originEndpoint = spec.origin.isCurrentLocation ? TripEndpoint(name: "目前位置", kind: .address, coordinate: origin) : spec.origin
+                        TripNavigationCenter.shared.start(route: route, origin: originEndpoint, destination: spec.destination, profile: model.preferredProfile, city: city, metroOperator: metroOperator)
+                        dismiss()
+                    }
+                    pendingTripRoute = nil
+                }
+                Button("只查看路線", role: .cancel) { pendingTripRoute = nil }
+            } message: { Text("TransitGo 需要你的所在位置，才能提供即時行程導航。") }
             .sheet(item: Binding(get: { editorSpec.map(SpecBox.init) }, set: { editorSpec = $0?.spec })) { box in
                 FavoriteTripEditor(existing: nil, initial: box.spec, context: TripEditorContext(city: city, near: origin))
             }

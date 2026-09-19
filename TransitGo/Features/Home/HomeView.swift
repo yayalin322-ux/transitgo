@@ -125,6 +125,7 @@ struct HomeView: View {
     @State private var launchedTrip: FavoriteTrip?
     @State private var tripEditor: TripEditorTarget?
     @State private var needsLocationAlert = false
+    @State private var tripCenter = TripNavigationCenter.shared
 
     @State private var path = NavigationPath()
 
@@ -146,6 +147,14 @@ struct HomeView: View {
 
                 if let w = model.weather {
                     weatherRow(w)
+                }
+
+                if let resumable = tripCenter.resumable {
+                    Section {
+                        ResumeTripRow(session: resumable,
+                                      onResume: { tripCenter.resume(city: region?.busCity, metroOperator: region?.metroOperator) },
+                                      onDiscard: { tripCenter.discardResumable() })
+                    }
                 }
 
                 FavoriteTripsSection(
@@ -219,6 +228,9 @@ struct HomeView: View {
             .sheet(item: $tripEditor) { target in
                 FavoriteTripEditor(existing: target.existing, initial: nil,
                                    context: TripEditorContext(city: region?.busCity, near: location.location?.coordinate))
+            }
+            .fullScreenCover(isPresented: $tripCenter.isPresenting) {
+                if let service = tripCenter.service { TripNavigationView(service: service, onClose: { tripCenter.closeScreen() }) }
             }
             .alert("需要目前位置", isPresented: $needsLocationAlert) {
                 Button("好") {}

@@ -4,7 +4,7 @@ import CoreLocation
 /// One real per-stop hop from the backend's own routing engine — kept for detail/debug;
 /// the UI itself should prefer `MultimodalRoute.segments` (one per real boarding, not
 /// one per stop-to-stop edge).
-struct MultimodalLeg: Decodable, Identifiable {
+struct MultimodalLeg: Codable, Identifiable {
     let mode: String
     let routeId: String?
     let from: String
@@ -23,7 +23,7 @@ struct MultimodalLeg: Decodable, Identifiable {
 /// One YouBike station's realtime state, as the backend's single availability snapshot reports it
 /// (the same snapshot route planning used). `isRentable`/`isReturnable` already account for
 /// "station in service" — the client never re-derives them from the counts.
-struct BikeStationRealtime: Decodable {
+struct BikeStationRealtime: Codable {
     let stationId: String
     let availableBikes: Int?
     let availableDocks: Int?
@@ -37,7 +37,7 @@ struct BikeStationRealtime: Decodable {
 
 /// Availability of the two stations a bike leg depends on. `unknown` = the realtime snapshot could
 /// not be read (or didn't contain the station): the route is still valid, only the counts are missing.
-struct BikeLegAvailability: Decodable {
+struct BikeLegAvailability: Codable {
     let status: String        // "known" | "unknown"
     let reason: String?
     let rent: BikeStationRealtime?
@@ -48,7 +48,7 @@ struct BikeLegAvailability: Decodable {
 
 /// What a shared-bike leg adds to a segment. Distance and time are ESTIMATES (`isEstimated` is always
 /// true today): straight line x a detour factor at an assumed speed — there is no bike-path network.
-struct BikeSegmentDetail: Decodable {
+struct BikeSegmentDetail: Codable {
     let rentStationId: String
     let rentStationName: String?
     let returnStationId: String
@@ -64,7 +64,7 @@ struct BikeSegmentDetail: Decodable {
 /// One real boarding — WALK, or a continuous ride on one BUS/TRA/METRO route from the
 /// stop you got on to the stop you get off, with real stop names from the backend's
 /// ingested data (not fabricated). This is what the UI should render, one row each.
-struct MultimodalSegment: Decodable, Identifiable {
+struct MultimodalSegment: Codable, Identifiable {
     let mode: String
     let routeId: String?
     /// The route's real TDX display name (e.g. "20", "5900") — what TDX's live-position
@@ -204,7 +204,7 @@ struct MultimodalSegment: Decodable, Identifiable {
     var arrivalClock: String? { Self.clockText(arrivalTime) }
 }
 
-struct MultimodalRealtimeStatus: Decodable {
+struct MultimodalRealtimeStatus: Codable {
     let available: Bool
     /// "捷運營運正常" / "捷運營運通阻：…" / "即時資料暫時無法取得"
     let summary: String
@@ -212,7 +212,7 @@ struct MultimodalRealtimeStatus: Decodable {
 
 /// One real ranked itinerary — engine's own label (最快/最均衡/少轉乘/少走路) describing
 /// which real metric it wins on.
-struct MultimodalRoute: Decodable, Identifiable {
+struct MultimodalRoute: Codable, Identifiable {
     let routeId: String
     let label: String
     let durationSeconds: Int

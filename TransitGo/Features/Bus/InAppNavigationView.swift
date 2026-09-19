@@ -18,6 +18,10 @@ final class NavigationLocationTracker: NSObject, CLLocationManagerDelegate {
     /// `CLLocation` isn't Equatable, so SwiftUI can't `.onChange(of: location)` — observe
     /// this monotonic counter instead (bumped on every fix).
     var updateTick = 0
+    /// Push callbacks for consumers that need every fix / authorization change (the trip navigation service).
+    /// Same tracker, no second CLLocationManager.
+    @ObservationIgnored var onLocation: ((CLLocation) -> Void)?
+    @ObservationIgnored var onAuthorizationChange: ((CLAuthorizationStatus) -> Void)?
 
     override init() {
         super.init()
@@ -49,6 +53,7 @@ final class NavigationLocationTracker: NSObject, CLLocationManagerDelegate {
         let status = manager.authorizationStatus
         Task { @MainActor in
             self.authorization = status
+            self.onAuthorizationChange?(status)
             if status == .authorizedWhenInUse || status == .authorizedAlways { self.start() }
         }
     }
@@ -58,6 +63,7 @@ final class NavigationLocationTracker: NSObject, CLLocationManagerDelegate {
         Task { @MainActor in
             self.location = loc
             self.updateTick += 1
+            self.onLocation?(loc)
         }
     }
 
