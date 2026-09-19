@@ -53,6 +53,11 @@ export class TransitEdge {
     // patterns, holidays, 停駛 cancellations). Only meaningful for time-dependent
     // (real-trip) edges — headway edges aren't tied to one gtfs_trips row.
     serviceKey = null,
+    // True when real per-hop travel time exists but there is NO real headway or
+    // timetable for this route (e.g. a metro line TDX publishes run times for but no
+    // Frequency band) — the edge is usable, but the routing engine must treat the wait
+    // as genuinely unknown (null in the result), never as 0 and never as a guess.
+    waitUnknown = false,
   }) {
     this.id = id;
     this.fromNodeId = fromNodeId;
@@ -69,6 +74,7 @@ export class TransitEdge {
     this.fare = fare;
     this.source = source;   // e.g. "TDX real timetable", "TDX real headway", "walk estimate"
     this.serviceKey = serviceKey;
+    this.waitUnknown = waitUnknown;
   }
   get isTimeDependent() { return this.departureSeconds != null; }
   get isHeadwayBased() { return this.headwaySeconds != null; }
