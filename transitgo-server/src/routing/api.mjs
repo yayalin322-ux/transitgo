@@ -183,6 +183,7 @@ export async function planRoute(graph, requestBody, db, { realtime = null } = {}
         // What kind of walk: a metro interchange (real TDX transfer minutes, no distance),
         // a metro-station-to-nearby-stop link, or an ordinary street walk (null).
         walkKind: walkKindOf(l.source),
+        tripId: l.serviceKey ? l.serviceKey.slice(l.serviceKey.indexOf(":") + 1) : null,
       });
     }
     routes.push({
@@ -290,6 +291,7 @@ function collapseToSegments(legs) {
         stopsPassed: 1,
         isEstimated: leg.isEstimated,
         walkKind: leg.walkKind ?? null,
+        tripId: leg.tripId ?? null,
         // Metro rides carry the fields an itinerary needs: which line, which direction,
         // where you board/alight and every station in between (real station names).
         ...(leg.mode === "MRT" ? {

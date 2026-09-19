@@ -212,6 +212,9 @@ function reconstruct(finalState) {
       // "TDX LineTransfer (...)" for an in-station interchange walk, "Haversine estimate"
       // for a street walk, etc. — lets a client tell a metro interchange from a street walk.
       source: s.previousEdge.source ?? null,
+      // "TRA:TRA_152_2026-09-14" for a real-trip edge — lets the realtime overlay know WHICH
+      // train a leg boards (headway edges have no single trip, so null).
+      serviceKey: s.previousEdge.isTimeDependent ? (s.previousEdge.serviceKey ?? null) : null,
     });
     s = s.previousState;
   }
