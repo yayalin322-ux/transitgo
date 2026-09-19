@@ -24,7 +24,7 @@ enum RouteTransportMode: String {
         switch multimodalMode {
         case "WALK": self = .walk
         case "BUS": self = .bus
-        case "METRO": self = .metro
+        case "METRO", "MRT": self = .metro   // the backend engine emits "MRT"
         case "TRA": self = .tra
         case "HSR": self = .hsr
         case "BIKE": self = .bike
@@ -47,6 +47,12 @@ struct RouteResultLeg: Identifiable {
     /// (the legacy bus/metro planners don't; the multimodal engine does).
     let departureClock: String?
     let arrivalClock: String?
+    /// Metro only: "往頂埔" (real, from the route's own last station).
+    let towards: String?
+    /// Metro only: every real station name from boarding to alighting.
+    let stopNames: [String]?
+    /// WALK only: "MRT_TRANSFER_WALK" / "MRT_STATION_LINK" / nil (street walk).
+    let walkKind: String?
 }
 
 /// Which planner actually produced this candidate — kept so the UI can label a result's
@@ -76,13 +82,17 @@ struct RouteResult: Identifiable {
     let arrival: Date?
     let durationSeconds: Int?
     let transfers: Int?
+    /// nil = unknown (a legacy planner never knew it, or the boarded ride has no real
+    /// headway/timetable) — never 0 standing in for "unknown".
+    let waitingSeconds: Int?
     let walkingDistanceMeters: Double?
     /// nil = genuinely unknown — never 0 standing in for "unknown" (see astar.mjs on the
     /// backend: a route's fare is only ever a real number when every leg's price is
     /// actually known).
     let fare: Int?
-    /// Live delay/cancellation status — not implemented yet (Phase 10, TDX realtime).
-    /// Always nil today; the field exists now so that phase doesn't need a new type.
+    /// Live status text ("捷運營運正常" / "捷運營運通阻：…" / "即時資料暫時無法取得"). Metro-only
+    /// for now (TDX v2/Rail/Metro/Alert); nil when the trip has nothing to report on. It is
+    /// strictly additive — a nil or "unavailable" status never changes whether the route exists.
     let realtimeStatus: String?
     let source: RouteResultSource
 }
@@ -135,14 +145,23 @@ enum UnifiedRoutingService {
     ) async -> Result {
         async let busResult = TransferPlanner.plan(city: city, from: origin, to: destination)
         async let multimodalResult = MultimodalRoutingService.plan(from: origin, to: destination, departureTime: departureTime)
-        async let metroResult: [MetroItinerary] = {
-            guard let metroOperator else { return [] }
-            return await MetroTransferPlanner.planNearby(operator: metroOperator, from: origin, to: destination)
-        }()
 
         let bus = await busResult
         let multimodal = await multimodalResult
-        let metro = await metroResult
+
+        // The backend engine now plans metro for real (station graph, real run times and
+        // headways, real interchange times, connected to bus/TRA/HSR). The legacy
+        // same-line-only planner runs ONLY as a fallback — for a region/operator the engine
+        // has no metro data for, or when the engine could not be reached — so nothing that
+        // worked before regresses, but a covered trip is never answered by the old planner.
+        var metro: [MetroItinerary] = []
+        var engineHasMetro = false
+        if case .success(let routes) = multimodal {
+            engineHasMetro = routes.contains { $0.segments.contains { $0.mode == "MRT" || $0.mode == "METRO" } }
+        }
+        if !engineHasMetro, let metroOperator {
+            metro = await Self.legacyMetroFallback(operator: metroOperator, from: origin, to: destination)
+        }
 
         var result = Result()
         result.busItineraries = bus.itineraries
@@ -162,6 +181,12 @@ enum UnifiedRoutingService {
         return result
     }
 
+    /// Isolated so the one remaining call into the deprecated planner is greppable.
+    @available(*, deprecated, message: "Legacy same-line metro planner; fallback only until backend MRT coverage reaches every region.")
+    private static func legacyMetroFallback(operator op: MetroOperator, from origin: CLLocationCoordinate2D, to destination: CLLocationCoordinate2D) async -> [MetroItinerary] {
+        await MetroTransferPlanner.planNearby(operator: op, from: origin, to: destination)
+    }
+
     // MARK: - Normalization (each planner's own shape -> RouteResult)
 
     private static let isoFormatter = ISO8601DateFormatter()
@@ -170,11 +195,14 @@ enum UnifiedRoutingService {
         let legs = route.segments.map { seg in
             RouteResultLeg(
                 mode: RouteTransportMode(multimodalMode: seg.mode),
-                routeName: seg.routeShortName ?? seg.routeId,
+                routeName: seg.line ?? seg.routeShortName ?? seg.routeId,
                 fromName: seg.fromName,
                 toName: seg.toName,
                 departureClock: seg.departureClock,
-                arrivalClock: seg.arrivalClock
+                arrivalClock: seg.arrivalClock,
+                towards: seg.towards,
+                stopNames: seg.stops,
+                walkKind: seg.walkKind
             )
         }
         return RouteResult(
@@ -185,9 +213,10 @@ enum UnifiedRoutingService {
             arrival: isoFormatter.date(from: route.arrivalTime),
             durationSeconds: route.durationSeconds,
             transfers: route.transfers,
+            waitingSeconds: route.waitingSeconds,
             walkingDistanceMeters: route.walkingDistanceMeters,
             fare: route.fare,
-            realtimeStatus: nil,
+            realtimeStatus: route.realtimeStatus?.summary,
             source: .multimodalEngine
         )
     }
@@ -200,7 +229,10 @@ enum UnifiedRoutingService {
                 fromName: leg.boardStop.stopName.display,
                 toName: leg.alightStop.stopName.display,
                 departureClock: nil,
-                arrivalClock: nil
+                arrivalClock: nil,
+                towards: nil,
+                stopNames: nil,
+                walkKind: nil
             )
         }
         return RouteResult(
@@ -211,6 +243,7 @@ enum UnifiedRoutingService {
             arrival: nil,
             durationSeconds: nil,
             transfers: itinerary.isDirect ? 0 : 1,
+            waitingSeconds: nil,
             walkingDistanceMeters: nil,
             fare: nil,
             realtimeStatus: nil,
@@ -226,7 +259,10 @@ enum UnifiedRoutingService {
                 fromName: leg.fromStation.name,
                 toName: leg.toStation.name,
                 departureClock: nil,
-                arrivalClock: nil
+                arrivalClock: nil,
+                towards: nil,
+                stopNames: nil,
+                walkKind: nil
             )
         }
         return RouteResult(
@@ -237,6 +273,7 @@ enum UnifiedRoutingService {
             arrival: nil,
             durationSeconds: nil,
             transfers: max(0, itinerary.legs.count - 1),
+            waitingSeconds: nil,
             walkingDistanceMeters: nil,
             fare: nil,
             realtimeStatus: nil,

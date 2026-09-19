@@ -31,6 +31,229 @@ export function normalizeMetroStationSequence(rawStationOfLine, lineId) {
   return rows;
 }
 
+/** Metro stations from TDX's v2/Rail/Metro/Station — same fields as normalizeMetroStations, kept as-is. */
+
+/** "HH:MM" -> minutes since midnight, or null. */
+function hhmmToMinutes(t) {
+  const m = /^(\d{1,2}):(\d{2})/.exec(t ?? "");
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+}
+
+/** A band that ends at or before its start (e.g. "23:00"-"00:00") runs past midnight —
+ * express it GTFS-style ("24:00") so the routing engine's plain seconds-since-midnight
+ * comparison keeps the band usable instead of silently turning it into a zero-length one. */
+function normalizeBandEnd(start, end) {
+  const s = hhmmToMinutes(start), e = hhmmToMinutes(end);
+  if (s == null || e == null || e > s) return end;
+  const total = e + 24 * 60;
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+/**
+ * Real per-hop metro run times (TDX v2/Rail/Metro/S2STravelTime). Real TDX data comes in
+ * two shapes, both handled without inventing anything:
+ *
+ *   - CHAIN (台北捷運, 新北, 高雄捷運): each row is one consecutive hop, and a row's
+ *     FromStationID is the previous row's ToStationID.
+ *   - MATRIX (桃園機場捷運): rows are origin-to-every-station times, not hops. The stop
+ *     order is recovered from the first origin's increasing times, and each consecutive
+ *     hop uses the explicit row for that exact pair when TDX published one, else the
+ *     difference of the two cumulative times. A hop with neither gets no edge.
+ * Rows with no real RunTime, or a FromStationID equal to the ToStationID (KLRT's loop
+ * rows), never produce a hop.
+ *
+ * Direction: TDX often publishes ONE direction per route (BL-1 runs 南港展覽館 -> 頂埔
+ * only). The opposite direction is emitted as its own route (`${route_id}-R`) reusing the
+ * published direction's per-hop time — a modeling assumption (recorded in `source`) — unless
+ * TDX ALSO published that opposite direction itself (KRTC does), in which case the real
+ * numbers are used and nothing is mirrored. A matrix also carries explicit reverse pairs,
+ * used when present.
+ *
+ * Per hop `stop_seconds` is dwell at the FROM station; a hop's ride-plus-dwell is
+ * run_seconds + stop_seconds. `base` is TDX's own RouteID (null when TDX gave none) — it is
+ * what a Frequency row's RouteID is matched against.
+ */
+const MAX_PLAUSIBLE_HOP_SECONDS = 30 * 60;
+
+export function normalizeMetroTravelTimes(rawS2S) {
+  const SRC = "TDX v2/Rail/Metro/S2STravelTime";
+  const SRC_MIRROR = `${SRC} (published for one direction only; opposite direction assumes the same run time)`;
+  const SRC_DERIVED = `${SRC} (origin-to-station matrix; hop time derived from cumulative times)`;
+
+  // 1) Per entry: the ordered stop list plus the seconds for each forward/backward hop.
+  const parsed = [];
+  for (const entry of rawS2S ?? []) {
+    const rows = [...(entry.TravelTimes ?? [])]
+      .filter((h) => h.FromStationID && h.ToStationID && h.FromStationID !== h.ToStationID && Number.isFinite(h.RunTime))
+      .sort((a, b) => a.Sequence - b.Sequence);
+    if (rows.length === 0) continue;
+    const pairSeconds = new Map();   // "a>b" -> seconds (first row wins)
+    for (const h of rows) {
+      const k = `${h.FromStationID}>${h.ToStationID}`;
+      if (!pairSeconds.has(k)) pairSeconds.set(k, { run: h.RunTime, stop: h.StopTime ?? 0 });
+    }
+
+    const isChain = rows.every((h, i) => i === 0 || h.FromStationID === rows[i - 1].ToStationID);
+    let stops;
+    let forward;   // Map "a>b" -> {run, stop, derived}
+    let backward;  // Map "b>a" -> {run, stop} for real published reverse hops (matrix only)
+    if (isChain) {
+      stops = [rows[0].FromStationID, ...rows.map((h) => h.ToStationID)];
+      forward = new Map(rows.map((h) => [`${h.FromStationID}>${h.ToStationID}`, { run: h.RunTime, stop: h.StopTime ?? 0, derived: false }]));
+      backward = new Map();
+    } else {
+      const origin = rows[0].FromStationID;
+      const fromOrigin = rows.filter((h) => h.FromStationID === origin).sort((a, b) => a.RunTime - b.RunTime);
+      // A genuine origin-to-everywhere matrix has the first origin reaching (nearly) every
+      // other station in the entry. A shape that doesn't (KLRT's per-destination rows do
+      // not) can't be turned into an order without guessing, so it yields no hops at all.
+      const allStations = new Set(rows.flatMap((h) => [h.FromStationID, h.ToStationID]));
+      if (fromOrigin.length < 2 || fromOrigin.length < 0.6 * (allStations.size - 1)) continue;
+      const cumulative = new Map([[origin, 0]]);
+      stops = [origin];
+      for (const h of fromOrigin) {
+        if (cumulative.has(h.ToStationID)) continue;
+        cumulative.set(h.ToStationID, h.RunTime + (h.StopTime ?? 0));
+        stops.push(h.ToStationID);
+      }
+      forward = new Map();
+      backward = new Map();
+      for (let i = 0; i < stops.length - 1; i++) {
+        const a = stops[i], b = stops[i + 1];
+        const explicit = pairSeconds.get(`${a}>${b}`);
+        if (explicit) forward.set(`${a}>${b}`, { ...explicit, derived: false });
+        else {
+          const diff = cumulative.get(b) - cumulative.get(a);
+          if (diff > 0) forward.set(`${a}>${b}`, { run: diff, stop: 0, derived: true });
+        }
+        const reverse = pairSeconds.get(`${b}>${a}`);
+        if (reverse) backward.set(`${b}>${a}`, reverse);
+      }
+    }
+    if (stops.length < 2) continue;
+    // Data-quality guard, not an estimate: no station-to-station metro hop takes more than
+    // half an hour. An entry that implies one (KLRT's per-destination loop rows recover a
+    // "hop" of 88 minutes) is a mis-shaped source, not a real timing — drop the whole entry
+    // rather than build edges out of numbers that can't be right.
+    if ([...forward.values()].some((h) => h.run + h.stop > MAX_PLAUSIBLE_HOP_SECONDS)) continue;
+    parsed.push({ entry, stops, forward, backward, published: new Set() });
+  }
+
+  // 2) Is a route's opposite direction already published as its own entry (KRTC)? Compare stop lists.
+  const stopKey = (arr) => arr.join(",");
+  const publishedKeys = new Set(parsed.map((p) => stopKey(p.stops)));
+
+  const routes = [];
+  const segments = [];
+  const usedIds = new Set();
+  for (const p of parsed) {
+    const e = p.entry;
+    const base = e.RouteID || null;
+    let routeId = base ?? `${e.LineID || e.LineNo || "M"}-T${e.TrainType ?? 0}`;
+    if (usedIds.has(routeId)) routeId = `${routeId}@${p.stops[0]}>${p.stops[p.stops.length - 1]}`;
+    usedIds.add(routeId);
+    const lineId = e.LineID || e.LineNo || null;
+
+    routes.push({ route_id: routeId, base, line_id: lineId, stops: p.stops });
+    p.stops.slice(0, -1).forEach((a, i) => {
+      const b = p.stops[i + 1];
+      const h = p.forward.get(`${a}>${b}`);
+      if (!h) return;
+      segments.push({ route_id: routeId, direction: 0, stop_sequence: i + 1, from_stop_id: a, to_stop_id: b, run_seconds: h.run, stop_seconds: h.stop, source: h.derived ? SRC_DERIVED : SRC });
+    });
+
+    const reverseStops = [...p.stops].reverse();
+    if (publishedKeys.has(stopKey(reverseStops))) continue;   // TDX published the opposite direction itself — don't mirror
+    const reverseId = `${routeId}-R`;
+    routes.push({ route_id: reverseId, base, line_id: lineId, stops: reverseStops });
+    reverseStops.slice(0, -1).forEach((a, i) => {
+      const b = reverseStops[i + 1];
+      const real = p.backward.get(`${a}>${b}`);
+      const mirrored = p.forward.get(`${b}>${a}`);
+      const h = real ?? mirrored;
+      if (!h) return;
+      segments.push({ route_id: reverseId, direction: 0, stop_sequence: i + 1, from_stop_id: a, to_stop_id: b, run_seconds: h.run, stop_seconds: h.stop, source: real ? SRC : SRC_MIRROR });
+    });
+  }
+  return { routes, segments };
+}
+
+/**
+ * Real metro headway bands (TDX v2/Rail/Metro/Frequency) plus the service-day calendar
+ * rows they need. A band is published per RouteID and ServiceTag (平日/假日/…) and is
+ * applied to every route `normalizeMetroTravelTimes` derived from that RouteID (including
+ * a mirrored `-R` opposite). A route with no matching band simply gets no headway rows —
+ * the Graph Builder then marks it wait-unknown rather than guessing. `NationalHolidays`
+ * has no date list behind it anywhere in this data, so a weekday national holiday is NOT
+ * modeled: the calendar encodes only the weekday flags TDX actually published.
+ */
+export function normalizeMetroFrequencies(rawFrequency, routes = []) {
+  const routesByBase = new Map();
+  for (const r of routes) {
+    if (!r.base) continue;
+    if (!routesByBase.has(r.base)) routesByBase.set(r.base, []);
+    routesByBase.get(r.base).push(r.route_id);
+  }
+  const frequencies = [];
+  const calendars = new Map();
+  for (const entry of rawFrequency ?? []) {
+    const tag = entry.ServiceDay?.ServiceTag;
+    const targets = routesByBase.get(entry.RouteID);
+    if (!tag || !targets) continue;
+    const d = entry.ServiceDay;
+    calendars.set(tag, {
+      service_id: tag,
+      monday: d.Monday ? 1 : 0, tuesday: d.Tuesday ? 1 : 0, wednesday: d.Wednesday ? 1 : 0, thursday: d.Thursday ? 1 : 0,
+      friday: d.Friday ? 1 : 0, saturday: d.Saturday ? 1 : 0, sunday: d.Sunday ? 1 : 0,
+    });
+    for (const h of entry.Headways ?? []) {
+      if (!h.StartTime || !h.EndTime) continue;
+      if (h.MinHeadwayMins == null && h.MaxHeadwayMins == null) continue;
+      for (const rid of targets) {
+        frequencies.push({
+          route_id: rid, direction: 0, sub_route_name: null, service_day_label: tag,
+          start_time: h.StartTime, end_time: normalizeBandEnd(h.StartTime, h.EndTime),
+          min_headway_mins: h.MinHeadwayMins ?? null, max_headway_mins: h.MaxHeadwayMins ?? null,
+        });
+      }
+    }
+  }
+  return { frequencies, calendars: [...calendars.values()] };
+}
+
+/**
+ * Real interchange links (TDX v2/Rail/Metro/LineTransfer): `TransferTime` is the
+ * operator-published minutes to change between the two stations, converted to seconds.
+ * Only rows with a real TransferTime are kept — a link with no time is dropped, not
+ * defaulted. TDX often lists only one direction of an interchange; the reverse is added
+ * with the same time only when the source didn't also list it explicitly.
+ */
+export function normalizeMetroTransfers(rawTransfers) {
+  const byPair = new Map();
+  for (const t of rawTransfers ?? []) {
+    if (!t.FromStationID || !t.ToStationID || !(t.TransferTime > 0)) continue;
+    byPair.set(`${t.FromStationID}>${t.ToStationID}`, {
+      from_stop_id: t.FromStationID, to_stop_id: t.ToStationID,
+      transfer_seconds: Math.round(t.TransferTime * 60), on_site: t.IsOnSiteTransfer ?? null,
+    });
+  }
+  for (const t of [...byPair.values()]) {
+    const key = `${t.to_stop_id}>${t.from_stop_id}`;
+    if (!byPair.has(key)) byPair.set(key, { ...t, from_stop_id: t.to_stop_id, to_stop_id: t.from_stop_id });
+  }
+  return [...byPair.values()];
+}
+
+/** Real line display names: `Line` rows (LineID -> LineName.Zh_tw), falling back to the id. */
+export function normalizeMetroLineNames(rawLines) {
+  const names = new Map();
+  for (const l of rawLines ?? []) {
+    const id = l.LineID ?? l.LineNo;
+    if (id && l.LineName?.Zh_tw) names.set(id, l.LineName.Zh_tw);
+  }
+  return names;
+}
+
 export function normalizeTRAStations(rawStations) {
   return (rawStations ?? []).map((s) => ({
     stop_id: s.StationID,

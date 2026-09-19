@@ -256,6 +256,18 @@ struct MultimodalNavTarget: Identifiable {
     let tripName: String
 }
 
+/// A WALK segment's label: a metro interchange is real TDX transfer minutes inside/between
+/// stations (no distance is published, so none is shown), a station link is a short walk
+/// to/from a metro station, anything else is an ordinary street walk.
+private func walkLabel(_ seg: MultimodalSegment) -> String {
+    let minutes = max(1, Int((Double(seg.durationSeconds) / 60).rounded()))
+    switch seg.walkKind {
+    case "MRT_TRANSFER_WALK": return "站內轉乘 \(minutes) 分鐘"
+    case "MRT_STATION_LINK": return "走路 \(minutes) 分鐘（往返捷運站）"
+    default: return "走路 \(seg.durationSeconds / 60) 分鐘"
+    }
+}
+
 /// Real per-boarding segments (from the routing engine's own ingested data) → the
 /// sequential legs InAppNavigationView already knows how to run: a WALK segment becomes
 /// a real turn-by-turn walking leg to the next boarding point; a BUS/TRA/METRO segment
@@ -436,7 +448,7 @@ struct TransferPlannerView: View {
                                 Image(systemName: seg.modeIcon).foregroundStyle(.blue).frame(width: 18)
                                 VStack(alignment: .leading, spacing: 2) {
                                     if seg.mode == "WALK" {
-                                        Text("走路 \(seg.durationSeconds / 60) 分鐘")
+                                        Text(walkLabel(seg))
                                             .font(.subheadline)
                                     } else {
                                         Text(seg.modeLabel).font(.subheadline.weight(.semibold))
@@ -470,10 +482,18 @@ struct TransferPlannerView: View {
                             // "共1小時24分・轉乘2次・步行680m・約NT$165" — omits any piece
                             // the backend didn't actually send a real value for (walking
                             // distance on an older deploy) rather than show a fake 0.
+                            // Live metro status (best effort) — its absence or "unavailable"
+                            // never changes the route above it.
+                            if let live = route.realtimeStatus {
+                                Text(live.summary)
+                                    .font(.caption2)
+                                    .foregroundStyle(live.available ? Color.secondary : Color.orange)
+                            }
                             Text([
                                 "共\(route.durationSeconds >= 3600 ? "\(route.durationSeconds / 3600)小時" : "")\(route.durationSeconds % 3600 / 60)分",
                                 "轉乘\(route.transfers)次",
                                 route.walkingDistanceText,
+                                route.waitingText,
                                 route.fareText,
                             ].compactMap { $0 }.joined(separator: "・"))
                                 .font(.caption2).foregroundStyle(.secondary)

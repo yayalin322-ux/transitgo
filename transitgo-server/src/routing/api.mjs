@@ -27,7 +27,14 @@ const FEED_SCOPE_PATHS = {
 const FEED_LABELS = {
   HSZ: "新竹市公車", HSQ: "新竹縣公車", TYC: "桃園市公車", TPE: "臺北市公車", NTC: "新北市公車",
   THB: "跨區客運", TRA: "台鐵", THSR: "高鐵",
+  // Metro operators (feed id = "MRT_" + TDX operator code, see ingestMetroOperator).
+  MRT_TRTC: "台北捷運", MRT_TYMC: "桃園捷運", MRT_NTMC: "新北捷運", MRT_KRTC: "高雄捷運",
 };
+
+const METRO_FEED_PREFIX = "MRT_";
+function isMetroFeed(feedId) {
+  return String(feedId).startsWith(METRO_FEED_PREFIX);
+}
 
 const ERROR_MESSAGES = {
   SAME_ORIGIN_DESTINATION: "起點與終點相同",
@@ -65,7 +72,7 @@ function secondsToIso(baseDate, seconds) {
  * optional (tests can omit it) — only used to resolve each leg's real route_short_name
  * for the client to look up live vehicle positions with; omitted, those fields are null.
  */
-export async function planRoute(graph, requestBody, db) {
+export async function planRoute(graph, requestBody, db, { realtime = null } = {}) {
   const body = requestBody || {};
   const origin = body.origin;
   const destination = body.destination;
@@ -136,12 +143,17 @@ export async function planRoute(graph, requestBody, db) {
 
   const routeInfoCache = new Map();
   const routeInfo = async (fromNodeId, routeId) => {
-    if (!db || !routeId) return { routeShortName: null, scopePath: null };
+    if (!db || !routeId) return { routeShortName: null, scopePath: null, towards: null };
     const feedId = String(fromNodeId).split(":")[0];
     const key = `${feedId}:${routeId}`;
     if (routeInfoCache.has(key)) return routeInfoCache.get(key);
-    const row = await db.prepare(`SELECT route_short_name FROM gtfs_routes WHERE feed_id = ? AND route_id = ?`).get(feedId, routeId);
-    const info = { routeShortName: row?.route_short_name ?? null, scopePath: FEED_SCOPE_PATHS[feedId] ?? null };
+    const row = await db.prepare(`SELECT route_short_name, route_long_name FROM gtfs_routes WHERE feed_id = ? AND route_id = ?`).get(feedId, routeId);
+    const info = {
+      routeShortName: row?.route_short_name ?? null,
+      scopePath: FEED_SCOPE_PATHS[feedId] ?? null,
+      // Metro only: "往{terminus}", derived at ingest from the route's own last real station.
+      towards: isMetroFeed(feedId) ? (row?.route_long_name ?? null) : null,
+    };
     routeInfoCache.set(key, info);
     return info;
   };
@@ -150,11 +162,11 @@ export async function planRoute(graph, requestBody, db) {
   for (const [i, r] of result.routes.entries()) {
     const legs = [];
     for (const l of r.route.legs) {
-      const { routeShortName, scopePath } = await routeInfo(l.fromNodeId, l.routeId);
+      const { routeShortName, scopePath, towards } = await routeInfo(l.fromNodeId, l.routeId);
       legs.push({
         mode: l.mode,
         routeId: l.routeId,
-        routeShortName, scopePath,
+        routeShortName, scopePath, towards,
         from: l.fromNodeId,
         to: l.toNodeId,
         fromName: graph.nodes.get(l.fromNodeId)?.name ?? null,
@@ -168,6 +180,9 @@ export async function planRoute(graph, requestBody, db) {
         durationSeconds: l.arrivalSeconds - l.departureSeconds,
         isEstimated: l.isEstimated ?? false,
         distanceMeters: l.distanceMeters ?? null,
+        // What kind of walk: a metro interchange (real TDX transfer minutes, no distance),
+        // a metro-station-to-nearby-stop link, or an ordinary street walk (null).
+        walkKind: walkKindOf(l.source),
       });
     }
     routes.push({
@@ -182,6 +197,10 @@ export async function planRoute(graph, requestBody, db) {
       transfers: r.route.transfers,
       fare: r.route.fare,
       walkingDistanceMeters: r.route.walkingDistanceMeters,
+      // Best-effort live metro status (see routing/metroRealtime.mjs) — null when the trip
+      // has no metro leg or no realtime provider is configured; { available: false } when
+      // one was asked and couldn't answer. Never affects whether the route itself exists.
+      realtimeStatus: null,
       legs,
       // One entry per real boarding, not per graph edge — the router's own edges are
       // one per stop-to-stop hop (so a 9-stop bus ride is 9 edges), which is correct for
@@ -191,7 +210,49 @@ export async function planRoute(graph, requestBody, db) {
     });
   }
 
+  if (realtime) await attachMetroRealtime(routes, realtime);
+
   return { status: 200, body: { requestId, routes } };
+}
+
+/** "MRT_TRTC:BL12" -> "TRTC" (the TDX operator code a realtime lookup needs). */
+function metroOperatorOfNode(nodeId) {
+  const feedId = String(nodeId).split(":")[0];
+  return isMetroFeed(feedId) ? feedId.slice(METRO_FEED_PREFIX.length) : null;
+}
+
+function walkKindOf(source) {
+  if (typeof source !== "string") return null;
+  if (source.startsWith("TDX LineTransfer")) return "MRT_TRANSFER_WALK";
+  if (source.startsWith("Haversine estimate (metro station")) return "MRT_STATION_LINK";
+  return null;
+}
+
+/**
+ * Adds `realtimeStatus` to every route that rides a metro operator. A realtime lookup that
+ * throws, times out or returns nothing yields `{ available: false }` for that operator —
+ * the route, its times and its legs are already fully built and are never touched here, so
+ * a realtime outage cannot turn a found route into a failed one.
+ */
+async function attachMetroRealtime(routes, realtime) {
+  for (const route of routes) {
+    const operators = [...new Set(route.legs.filter((l) => l.mode === "MRT").map((l) => metroOperatorOfNode(l.from)).filter(Boolean))];
+    if (operators.length === 0) continue;
+    const results = await Promise.all(operators.map(async (op) => {
+      try {
+        return { operator: op, status: await realtime.metroStatus(op) };
+      } catch {
+        return { operator: op, status: null };
+      }
+    }));
+    const unavailable = results.some((r) => !r.status);
+    const alerts = results.flatMap((r) => r.status?.alerts ?? []);
+    route.realtimeStatus = {
+      available: !unavailable,
+      summary: unavailable ? "即時資料暫時無法取得" : (alerts.length > 0 ? `捷運營運通阻：${alerts.map((a) => a.title).join("、")}` : "捷運營運正常"),
+      alerts,
+    };
+  }
 }
 
 /**
@@ -215,6 +276,7 @@ function collapseToSegments(legs) {
       last.durationSeconds = (Date.parse(leg.arrivalTime) - Date.parse(last.departureTime)) / 1000;
       last.stopsPassed += 1;
       last.isEstimated = last.isEstimated || leg.isEstimated;
+      if (last.stops) { last.stops.push(leg.toName); last.alightingStation = leg.toName; }
     } else {
       segments.push({
         mode: leg.mode,
@@ -227,6 +289,16 @@ function collapseToSegments(legs) {
         durationSeconds: leg.durationSeconds,
         stopsPassed: 1,
         isEstimated: leg.isEstimated,
+        walkKind: leg.walkKind ?? null,
+        // Metro rides carry the fields an itinerary needs: which line, which direction,
+        // where you board/alight and every station in between (real station names).
+        ...(leg.mode === "MRT" ? {
+          line: leg.routeShortName ?? null,
+          towards: leg.towards ?? null,
+          boardingStation: leg.fromName,
+          alightingStation: leg.toName,
+          stops: [leg.fromName, leg.toName],
+        } : {}),
       });
     }
   }
@@ -246,15 +318,22 @@ export function graphCoverage(graph) {
     const feedId = String(id).split(":")[0];
     feedIds.add(feedId);
   }
-  const bus = [], rail = [];
+  const bus = [], rail = [], metro = [];
   for (const feedId of feedIds) {
     const label = FEED_LABELS[feedId];
     if (!label) continue;   // an internal feed id nothing here recognizes yet — omit rather than show a raw code
-    (feedId === "TRA" || feedId === "THSR" ? rail : bus).push(label);
+    if (isMetroFeed(feedId)) metro.push(label);
+    else (feedId === "TRA" || feedId === "THSR" ? rail : bus).push(label);
   }
+  let metroStations = 0;
+  for (const id of graph.nodes.keys()) if (isMetroFeed(String(id).split(":")[0])) metroStations++;
   return {
     bus: bus.sort(),
     rail: rail.sort(),
+    // Metro operators that actually have real stations + run times in the live graph —
+    // computed from the graph itself, so an operator whose ingest was skipped (no real
+    // run times) never shows up here.
+    mrt: { available: metro.length > 0, operators: metro.sort(), stationCount: metroStations },
     nodeCount: graph.nodeCount,
     edgeCount: graph.edgeCount,
     builtAt: graph.builtAt,

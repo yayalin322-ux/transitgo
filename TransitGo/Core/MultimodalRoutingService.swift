@@ -44,6 +44,16 @@ struct MultimodalSegment: Decodable, Identifiable {
     let durationSeconds: Int
     let stopsPassed: Int
     let isEstimated: Bool
+    /// Metro rides only (nil for everything else, and for an older backend deploy): the
+    /// real line name (e.g. 板南線), direction ("往頂埔", derived from the route's own last
+    /// station), and every station name from boarding to alighting.
+    let line: String?
+    let towards: String?
+    let stops: [String]?
+    /// WALK legs only: "MRT_TRANSFER_WALK" (a metro interchange — real TDX transfer minutes,
+    /// no distance), "MRT_STATION_LINK" (walk between a metro station and a nearby stop), or
+    /// nil for an ordinary street walk.
+    let walkKind: String?
     var id: String { (fromName ?? "") + (toName ?? "") + departureTime }
 
     var fromCoordinate: CLLocationCoordinate2D? {
@@ -61,7 +71,8 @@ struct MultimodalSegment: Decodable, Identifiable {
         case "WALK": return "figure.walk"
         case "BUS": return "bus.fill"
         case "TRA": return "tram.fill"
-        case "METRO": return "tram.fill.tunnel"
+        case "METRO", "MRT": return "tram.fill.tunnel"
+        case "HSR": return "tram.fill"
         default: return "arrow.forward"
         }
     }
@@ -71,7 +82,11 @@ struct MultimodalSegment: Decodable, Identifiable {
         case "WALK": return "走路"
         case "BUS": return "公車" + (routeShortName.map { " \($0)" } ?? routeId.map { " \($0)" } ?? "")
         case "TRA": return "台鐵"
-        case "METRO": return "捷運"
+        case "METRO", "MRT":
+            // "捷運 板南線 往頂埔" — every piece is real backend data; any missing piece is
+            // just left out rather than replaced with a placeholder.
+            return ["捷運", line, towards].compactMap { $0 }.joined(separator: " ")
+        case "HSR": return "高鐵"
         default: return mode
         }
     }
@@ -92,6 +107,12 @@ struct MultimodalSegment: Decodable, Identifiable {
     var arrivalClock: String? { Self.clockText(arrivalTime) }
 }
 
+struct MultimodalRealtimeStatus: Decodable {
+    let available: Bool
+    /// "捷運營運正常" / "捷運營運通阻：…" / "即時資料暫時無法取得"
+    let summary: String
+}
+
 /// One real ranked itinerary — engine's own label (最快/最均衡/少轉乘/少走路) describing
 /// which real metric it wins on.
 struct MultimodalRoute: Decodable, Identifiable {
@@ -101,7 +122,10 @@ struct MultimodalRoute: Decodable, Identifiable {
     let departureTime: String
     let arrivalTime: String
     let walkingSeconds: Int
-    let waitingSeconds: Int
+    /// nil = the route boards a ride with no real headway/timetable behind it (e.g. 桃園機場
+    /// 捷運), so the wait is genuinely unknown — never 0. Must stay Optional or decoding the
+    /// whole response throws the moment any route has an unknown wait.
+    let waitingSeconds: Int?
     let transitSeconds: Int
     let transfers: Int
     /// nil means "we don't have real fare data for this trip" — the backend never sends
@@ -114,6 +138,9 @@ struct MultimodalRoute: Decodable, Identifiable {
     /// Real distance, summed from every WALK leg's own measured distance — 0 (not nil)
     /// when the trip genuinely has no walking, since that's a known, real answer.
     let walkingDistanceMeters: Double?
+    /// Best-effort live metro status; nil when the trip has no metro leg (or an older
+    /// backend). `available == false` means "asked, couldn't get it" — the route is unaffected.
+    let realtimeStatus: MultimodalRealtimeStatus?
     let legs: [MultimodalLeg]
     let segments: [MultimodalSegment]
     var id: String { routeId }
@@ -130,6 +157,13 @@ struct MultimodalRoute: Decodable, Identifiable {
         guard let dep = ISO8601DateFormatter().date(from: departureTime),
               let arr = ISO8601DateFormatter().date(from: arrivalTime) else { return nil }
         return "\(Self.clockFormatter.string(from: dep)) 出發，預計 \(Self.clockFormatter.string(from: arr)) 抵達"
+    }
+
+    /// "等車約 5 分" (expected half-headway wait from real headway data) or "等車時間未知"
+    /// when a boarded ride has no real headway/timetable — never "等車 0 分".
+    var waitingText: String {
+        guard let waitingSeconds else { return "等車時間未知" }
+        return "等車約\(max(1, Int((Double(waitingSeconds) / 60).rounded())))分"
     }
 
     /// "約 NT$165" when real, "票價暫無資料" when not — never "NT$0", which would read as

@@ -44,8 +44,9 @@ import { RebuildLock } from "./graph/rebuildLock.mjs";
 import { buildAndPublishGraph, downloadAndLoadGraph } from "./graph/graphPersistence.mjs";
 import { storageConfigured } from "./graph/graphStorage.mjs";
 import { planRoute, graphCoverage } from "./routing/api.mjs";
+import { createMetroRealtime } from "./routing/metroRealtime.mjs";
 import { TDXProvider } from "./tdx/adapter.mjs";
-import { ingestTRAStations, ingestTRAPair, ingestTHSRStations, ingestTHSRPair, ingestBusRouteSchedule } from "./tdx/ingest.mjs";
+import { ingestTRAStations, ingestTRAPair, ingestTHSRStations, ingestTHSRPair, ingestBusRouteSchedule, ingestMetroOperator } from "./tdx/ingest.mjs";
 
 // load .env (no dependency)
 try {
@@ -454,9 +455,11 @@ if (!storageConfigured()) {
     .catch((e) => console.error(`[routing] unexpected error during boot graph recovery: ${e.message}`));
 }
 
+const metroRealtime = createMetroRealtime();
+
 app.post("/api/v1/routes", async (req, res) => {
   if (!routingGraph) return res.status(503).json({ ok: false, error: "routing graph still initializing, try again shortly" });
-  const result = await planRoute(routingGraph, req.body, db);
+  const result = await planRoute(routingGraph, req.body, db, { realtime: metroRealtime });
   res.status(result.status).json(result.body);
 });
 
@@ -650,6 +653,24 @@ app.post("/v1/admin/routing/ingest/thsr-pair", requireAdmin, async (req, res) =>
   }
   try {
     const result = await ingestTHSRPair(db, "THSR", fromStationID, toStationID, date);
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
+/**
+ * Ingests one real metro operator's routing data (stations, per-hop run times, headway
+ * bands, interchange times) from TDX. Body: {operator: "TRTC"}. Sequential and
+ * rate-limit-paced (TDX allows ~5 requests/minute) — takes a minute or two per operator;
+ * an operator TDX publishes no usable run times for returns `ingested: false` and adds
+ * nothing to the graph.
+ */
+app.post("/v1/admin/routing/ingest/metro-operator", requireAdmin, async (req, res) => {
+  const { operator } = req.body || {};
+  if (!operator || !/^[A-Z]{2,10}$/.test(operator)) return res.status(400).json({ ok: false, error: "need operator (TDX code, e.g. TRTC)" });
+  try {
+    const result = await ingestMetroOperator(db, operator, { pauseMs: 6000 });
     res.json({ ok: true, ...result });
   } catch (e) {
     res.status(502).json({ ok: false, error: e.message });

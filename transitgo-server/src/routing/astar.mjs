@@ -9,7 +9,7 @@ import { isServiceActiveOn } from "../graph/calendar.mjs";
  * reconstruct the actual route once the destination is reached.
  */
 class RoutingState {
-  constructor({ nodeId, time, cost = 0, walkingSeconds = 0, waitingSeconds = 0, transitSeconds = 0, transfers = 0, fare = 0, fareKnown = true, lastTripKey = null, previousState = null, previousEdge = null }) {
+  constructor({ nodeId, time, cost = 0, walkingSeconds = 0, waitingSeconds = 0, transitSeconds = 0, transfers = 0, fare = 0, fareKnown = true, waitKnown = true, lastTripKey = null, onboardKey = null, previousState = null, previousEdge = null }) {
     this.nodeId = nodeId;
     this.time = time;               // real clock time (seconds since midnight) — drives which real trips/headway windows are reachable
     this.cost = cost;               // accumulated g(n) under the active RoutingProfile's weights — drives ranking/pruning, not real time
@@ -23,7 +23,16 @@ class RoutingState {
     // wrong number that happens to look like one. See reconstruct(): a route whose
     // fareKnown ends up false reports fare: null, never a misleading 0.
     this.fareKnown = fareKnown;
+    // Sticky false once any boarded ride has no real headway/timetable behind it (see
+    // TransitEdge.waitUnknown) — the route's waiting time is then genuinely unknown, and
+    // reconstruct() reports waitingSeconds: null instead of a misleading 0.
+    this.waitKnown = waitKnown;
+    // The last *ride* boarded (persists across walking legs, so walk-then-board a
+    // different ride still counts as a transfer) vs. the ride the previous edge itself was
+    // on (null right after any walk) — only the latter means "still sitting on the same
+    // train/bus", i.e. no new wait to pay.
     this.lastTripKey = lastTripKey;
+    this.onboardKey = onboardKey;
     this.previousState = previousState;
     this.previousEdge = previousEdge;
   }
@@ -79,7 +88,12 @@ export function findRoute(graph, originId, destinationId, departureTimeSeconds, 
   open.push({ priority: heuristic(originId), state: startState });
   // Pruning is on accumulated *cost* (profile-weighted), not raw arrival time — under
   // e.g. LEAST_WALKING, an earlier-arriving-but-more-walking path is not "better".
-  const bestCostAt = new Map([[originId, 0]]);
+  // Keyed by node AND the ride you're still sitting on: arriving at a station already
+  // aboard a train (no new wait to pay for the next hop) is a different, not-comparable
+  // state from arriving there on foot at a slightly lower cost — collapsing them would let
+  // the cheaper-but-must-wait-again state wrongly prune the on-board one.
+  const stateKey = (nodeId, onboardKey) => (onboardKey ? `${nodeId}|${onboardKey}` : nodeId);
+  const bestCostAt = new Map([[stateKey(originId, null), 0]]);
 
   let expanded = 0;
   const MAX_EXPANSIONS = 200_000;   // circuit breaker, not a tuning knob — section 18's "找不到路線" must terminate, not hang
@@ -89,11 +103,13 @@ export function findRoute(graph, originId, destinationId, departureTimeSeconds, 
     const { state } = open.pop();
 
     if (state.nodeId === destinationId) return { route: reconstruct(state) };
-    if (state.cost > (bestCostAt.get(state.nodeId) ?? Infinity)) continue;   // stale queue entry, a better path to this node already won
+    if (state.cost > (bestCostAt.get(stateKey(state.nodeId, state.onboardKey)) ?? Infinity)) continue;   // stale queue entry, a better path to this node already won
 
     for (const edge of graph.neighbors(state.nodeId)) {
       let nextTime, addedCost, walkingSeconds = state.walkingSeconds, waitingSeconds = state.waitingSeconds,
-        transitSeconds = state.transitSeconds, transfers = state.transfers, fare = state.fare, fareKnown = state.fareKnown;
+        transitSeconds = state.transitSeconds, transfers = state.transfers, fare = state.fare, fareKnown = state.fareKnown,
+        waitKnown = state.waitKnown;
+      let nextOnboardKey = null;
 
       if (edge.mode === Mode.WALK) {
         if (edge.travelSeconds == null) continue;
@@ -101,7 +117,16 @@ export function findRoute(graph, originId, destinationId, departureTimeSeconds, 
         nextTime = state.time + edge.travelSeconds;
         walkingSeconds += edge.travelSeconds;
         addedCost = profile.walkingWeight * edge.travelSeconds;
-      } else if (edge.isTimeDependent || edge.isHeadwayBased) {
+      } else if (edge.isTimeDependent || edge.isHeadwayBased || edge.waitUnknown) {
+        // A transfer is boarding a *different ride* than the one you last rode — not
+        // merely a different Mode enum value (bus route 1 to bus route 5 is a real transfer
+        // even though both are Mode.BUS), and it still counts when a WALK sits in between
+        // (station-to-station interchange), since lastTripKey persists across walking.
+        const tripKey = `${edge.mode}:${edge.routeId ?? ""}`;
+        // Already sitting on this exact ride from the previous hop: no boarding, so no new
+        // wait — without this every stop-to-stop hop of one ride would each charge a fresh
+        // half-headway wait (a 20-station metro ride would be padded by ~20 phantom waits).
+        const continuingRide = state.onboardKey === tripKey;
         let wait, ride;
         if (edge.isTimeDependent) {
           if (dateStr && edge.serviceKey && !isServiceActiveOn(graph.serviceCalendar?.get(edge.serviceKey), dateStr)) continue;   // real 停駛/off-calendar — this specific trip isn't running on this date
@@ -113,21 +138,25 @@ export function findRoute(graph, originId, destinationId, departureTimeSeconds, 
           // Real headway band, real service window (e.g. TDX's own "07:00"-"09:00" peak
           // band) — outside it this route/direction isn't running at that frequency
           // (may not be running at all), so the edge simply isn't usable then.
+          if (dateStr && edge.serviceKey && !isServiceActiveOn(graph.serviceCalendar?.get(edge.serviceKey), dateStr)) continue;   // e.g. a weekday-only headway band on a Sunday
           const timeOfDay = state.time % 86400;
           if (edge.windowStartSeconds != null && timeOfDay < edge.windowStartSeconds) continue;
           if (edge.windowEndSeconds != null && timeOfDay > edge.windowEndSeconds) continue;
-          // Expected wait under an assumption of uniform arrivals relative to the bus
-          // schedule (half the real headway) — a standard, documented approximation
-          // for headway-based routing, not an arbitrary number.
-          wait = edge.headwaySeconds / 2;
+          if (edge.waitUnknown) {
+            // Real per-hop travel time but NO real headway/timetable for this route — the
+            // wait is genuinely unknown, so it is neither guessed nor charged; the route
+            // is flagged instead (waitKnown=false -> waitingSeconds: null in the result).
+            wait = 0;
+            if (!continuingRide) waitKnown = false;
+          } else {
+            // Expected wait under an assumption of uniform arrivals relative to the
+            // schedule (half the real headway) — a standard, documented approximation for
+            // headway-based routing, not an arbitrary number. Paid once, on boarding.
+            wait = continuingRide ? 0 : edge.headwaySeconds / 2;
+          }
           ride = edge.travelSeconds ?? 0;
           nextTime = state.time + wait + ride;
         }
-        // A transfer is boarding a *different ride* than the one you were just on — not
-        // merely a different Mode enum value. Switching from bus route 1 to bus route 5
-        // is a real transfer even though both are Mode.BUS; comparing by mode alone
-        // missed exactly that case.
-        const tripKey = `${edge.mode}:${edge.routeId ?? ""}`;
         const isTransfer = state.lastTripKey != null && state.lastTripKey !== tripKey;
         if (isTransfer) {
           transfers += 1;
@@ -139,19 +168,22 @@ export function findRoute(graph, originId, destinationId, departureTimeSeconds, 
         else fare += edge.fare;
         addedCost = profile.timeWeight * ride + profile.waitingWeight * wait
           + (isTransfer ? profile.transferPenaltySeconds : 0) + profile.fareWeight * (edge.fare ?? 0);
+        nextOnboardKey = tripKey;
       } else {
         continue;
       }
 
       const nextCost = state.cost + addedCost;
-      const known = bestCostAt.get(edge.toNodeId);
+      const nextKey = stateKey(edge.toNodeId, nextOnboardKey);
+      const known = bestCostAt.get(nextKey);
       if (known != null && nextCost >= known) continue;   // dominated — a strictly-as-good-or-better cost already found
-      bestCostAt.set(edge.toNodeId, nextCost);
+      bestCostAt.set(nextKey, nextCost);
 
       const nextState = new RoutingState({
         nodeId: edge.toNodeId, time: nextTime, cost: nextCost,
-        walkingSeconds, waitingSeconds, transitSeconds, transfers, fare, fareKnown,
-        lastTripKey: edge.mode === Mode.WALK ? null : `${edge.mode}:${edge.routeId ?? ""}`,
+        walkingSeconds, waitingSeconds, transitSeconds, transfers, fare, fareKnown, waitKnown,
+        lastTripKey: edge.mode === Mode.WALK ? state.lastTripKey : nextOnboardKey,
+        onboardKey: nextOnboardKey,
         previousState: state, previousEdge: edge,
       });
       open.push({ priority: nextCost + heuristic(edge.toNodeId), state: nextState });
@@ -175,8 +207,11 @@ function reconstruct(finalState) {
       departureSeconds: s.previousEdge.departureSeconds
         ?? (s.previousEdge.travelSeconds != null ? s.time - s.previousEdge.travelSeconds : s.previousState.time),
       arrivalSeconds: s.time,
-      isEstimated: s.previousEdge.isHeadwayBased,
+      isEstimated: s.previousEdge.isHeadwayBased || s.previousEdge.waitUnknown,
       distanceMeters: s.previousEdge.distanceMeters,
+      // "TDX LineTransfer (...)" for an in-station interchange walk, "Haversine estimate"
+      // for a street walk, etc. — lets a client tell a metro interchange from a street walk.
+      source: s.previousEdge.source ?? null,
     });
     s = s.previousState;
   }
@@ -190,7 +225,8 @@ function reconstruct(finalState) {
     arrivalTime: finalState.time,
     durationSeconds: finalState.time - s.time,
     walkingSeconds: finalState.walkingSeconds,
-    waitingSeconds: finalState.waitingSeconds,
+    // null (not 0) when a boarded ride has no real headway/timetable data — see waitKnown.
+    waitingSeconds: finalState.waitKnown ? finalState.waitingSeconds : null,
     transitSeconds: finalState.transitSeconds,
     transfers: finalState.transfers,
     fare: finalState.fareKnown ? finalState.fare : null,
