@@ -1,4 +1,4 @@
-import { NodeType } from "./model.mjs";
+import { NodeType, Mode } from "./model.mjs";
 
 /**
  * A grid-bucket spatial index over a graph's real (non-virtual) stop nodes — swaps out
@@ -21,11 +21,17 @@ function cellKey(lat, lon) {
 }
 
 export class SpatialIndex {
-  constructor(nodes) {
+  /**
+   * `bikeOnly` builds the index of bike stations ONLY; the default index holds every real node
+   * EXCEPT bike stations, so a bike dock never shows up as a "nearby stop" (it would otherwise
+   * satisfy findNearbyStops' first non-empty radius and stop the search from widening to real stops).
+   */
+  constructor(nodes, { bikeOnly = false } = {}) {
     /** @type {Map<string, object[]>} */
     this.cells = new Map();
     for (const node of nodes) {
       if (node.type === NodeType.VIRTUAL || node.lat == null || node.lon == null) continue;
+      if ((node.mode === Mode.BIKE) !== bikeOnly) continue;
       const key = cellKey(node.lat, node.lon);
       if (!this.cells.has(key)) this.cells.set(key, []);
       this.cells.get(key).push(node);

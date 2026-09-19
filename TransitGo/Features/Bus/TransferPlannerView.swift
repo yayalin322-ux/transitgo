@@ -359,7 +359,7 @@ private func walkLabel(_ seg: MultimodalSegment) -> String {
 private func navigationLegs(for route: MultimodalRoute) -> [NavigationLeg] {
     route.segments.compactMap { seg -> NavigationLeg? in
         guard let coord = seg.toCoordinate else { return nil }
-        let name = seg.toName ?? (seg.mode == "WALK" ? "轉乘點" : "下車站")
+        let name = seg.toName ?? (seg.mode == "WALK" ? "轉乘點" : "\(seg.alightLabel)站")
         if seg.mode == "WALK" {
             return NavigationLeg(coordinate: coord, name: name, transportType: .walking)
         }
@@ -572,12 +572,16 @@ struct TransferPlannerView: View {
                                     } else {
                                         Text(seg.modeLabel).font(.subheadline.weight(.semibold))
                                         if let from = seg.fromName {
-                                            Text("上車：\(from)" + (seg.departureClock.map { " (\($0)) " } ?? ""))
+                                            Text("\(seg.boardLabel)：\(from)" + (seg.departureClock.map { " (\($0)) " } ?? ""))
                                                 .font(.caption).foregroundStyle(.secondary)
                                         }
                                         if let to = seg.toName {
-                                            Text("下車：\(to)" + (seg.arrivalClock.map { " (\($0)) " } ?? "") + (seg.stopsPassed > 1 ? "・經過\(seg.stopsPassed)站" : ""))
+                                            Text("\(seg.alightLabel)：\(to)" + (seg.arrivalClock.map { " (\($0)) " } ?? "") + (seg.stopsPassed > 1 && seg.bike == nil ? "・經過\(seg.stopsPassed)站" : ""))
                                                 .font(.caption).foregroundStyle(.secondary)
+                                        }
+                                        // Mode-specific extras (e.g. a bike leg's availability/distance) come from the model.
+                                        ForEach(seg.detailLines, id: \.self) { line in
+                                            Text(line).font(.caption).foregroundStyle(seg.bike?.availability.isKnown == false ? Color.orange : Color.secondary)
                                         }
                                     }
                                 }
@@ -604,6 +608,7 @@ struct TransferPlannerView: View {
                             // Live status (optional overlay) — its absence or "unavailable"
                             // never changes the route above it, and it never replaces the
                             // scheduled times shown in the line above.
+                            Text(route.explanationText).font(.caption).foregroundStyle(.secondary)
                             RealtimeRouteLine(lookup: model.realtimeByRouteId[route.id])
                             Text([
                                 "共\(route.durationSeconds >= 3600 ? "\(route.durationSeconds / 3600)小時" : "")\(route.durationSeconds % 3600 / 60)分",

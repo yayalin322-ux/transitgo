@@ -66,7 +66,7 @@ final class HomeViewModel {
         }
 
         if let bc = region?.bikeCity {
-            var list = await SharedBikeService.nearby(near: location.coordinate, radius: 700, city: bc) ?? []
+            var list = await BikeStationService.nearby(near: location.coordinate, radius: 700, city: bc) ?? []
             if list.isEmpty {
                 list = (try? await BikeService.shared.nearbyLive(city: bc, near: location.coordinate)) ?? []
             }

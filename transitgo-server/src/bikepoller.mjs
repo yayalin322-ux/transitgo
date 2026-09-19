@@ -172,7 +172,7 @@ function splitCsvLine(line) {
   return out;
 }
 
-const DIRECT_FEEDS = {
+export const DIRECT_FEEDS = {
   Taipei: fetchTaipeiDirect,
   NewTaipei: fetchNewTaipeiDirect,
   Taichung: fetchTaichungDirect,

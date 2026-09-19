@@ -272,7 +272,7 @@ struct BikeStationDetailView: View {
             try? await Task.sleep(for: .milliseconds(350))
             if Task.isCancelled { return }
             searching = true
-            var results = await SharedBikeService.search(keyword: keyword) ?? []
+            var results = await BikeStationService.search(keyword: keyword) ?? []
             if results.isEmpty {
                 let local = await BikeStationCatalog.shared.search(keyword)
                 results = local.prefix(30).map { BikeStationLive(station: $0.station, city: $0.city) }
@@ -305,7 +305,7 @@ struct BikeStationDetailView: View {
     private func sweep(at center: CLLocationCoordinate2D, radius: Int, seedSelection: Bool = false) async {
         sweeping = true
         defer { sweeping = false }
-        var fresh = await SharedBikeService.nearby(near: center, radius: radius, city: nil) ?? []
+        var fresh = await BikeStationService.nearby(near: center, radius: radius, city: nil) ?? []
         if fresh.isEmpty {
             let cities = BikeCity.nearest(to: center, count: 2)
             fresh = await BikeService.shared.nearbyLive(cities: cities, near: center, radius: min(radius, 3000))

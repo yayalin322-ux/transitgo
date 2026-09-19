@@ -3,6 +3,7 @@ import { haversineMeters } from "./virtual.mjs";
 import { SpatialIndex } from "./spatialIndex.mjs";
 import { loadServiceCalendar } from "./calendar.mjs";
 import { logMemory, resetMemoryTracking } from "./memlog.mjs";
+import { addBikeNetwork, loadBikeStations } from "./bikeNetwork.mjs";
 
 /**
  * No verified TDX endpoint gives real stop-to-stop bus travel time (S2STravelTime exists
@@ -338,6 +339,14 @@ export async function buildGraph(db, { feedIds = null, dataVersion = null, onPro
 
   const linkStats = await addMetroTransferEdges(db, graph, feeds);
   report("metro_links_complete", { edgeCount: graph.edgeCount, ...linkStats });
+
+  // YouBike layer: static stations + sparse bike edges + stop links. Availability is NOT in the graph
+  // (it is a realtime overlay applied at search time), so a poller refresh never needs a rebuild.
+  const bikeStats = addBikeNetwork(graph, await loadBikeStations(db));
+  report("bike_network_complete", { nodeCount: graph.nodeCount, edgeCount: graph.edgeCount, ...bikeStats });
+  if (bikeStats.stations > 0) {
+    graph.warnings.push(`${bikeStats.stations} YouBike stations, ${bikeStats.bikeEdges} sparse bike edges (K-nearest, spatial index) and ${bikeStats.stopLinkEdges} station-to-stop walking links. Ride distance and time are ESTIMATES (straight line x detour factor at an assumed speed) — no bike-path network or fare data exists; realtime availability is applied at search time, not stored here.`);
+  }
 
   if (skippedForMissingStopId > 0) {
     graph.warnings.push(`${skippedForMissingStopId} stop_times rows have no resolved stop_id yet (bus per-trip times not yet joined to StopOfRoute sequence) — excluded from edges, not guessed.`);
