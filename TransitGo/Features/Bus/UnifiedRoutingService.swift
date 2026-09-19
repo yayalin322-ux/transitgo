@@ -232,7 +232,6 @@ enum UnifiedRoutingService {
 
     // MARK: - Normalization (each planner's own shape -> RouteResult)
 
-    private static let isoFormatter = ISO8601DateFormatter()
 
     private static func normalize(_ route: MultimodalRoute) -> RouteResult {
         let legs = route.segments.map { seg in
@@ -255,8 +254,8 @@ enum UnifiedRoutingService {
             summary: route.label,
             legs: legs,
             transportModes: Array(Set(legs.map(\.mode))).sorted { $0.rawValue < $1.rawValue },
-            departure: isoFormatter.date(from: route.departureTime),
-            arrival: isoFormatter.date(from: route.arrivalTime),
+            departure: RealtimeTime.parse(route.departureTime),
+            arrival: RealtimeTime.parse(route.arrivalTime),
             durationSeconds: route.durationSeconds,
             transfers: route.transfers,
             waitingSeconds: route.waitingSeconds,

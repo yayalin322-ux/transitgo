@@ -126,8 +126,8 @@ struct TripPlan: Codable {
         self.route = route
         self.routeId = route.routeId
         self.label = route.label
-        let iso = ISO8601DateFormatter()
-        func date(_ s: String) -> Date { iso.date(from: s) ?? Date.distantPast }
+        // The backend's timestamps carry milliseconds; a parse failure must not silently become year 1.
+        func date(_ s: String) -> Date { RealtimeTime.parse(s) ?? Date.distantPast }
         self.departure = date(route.departureTime)
         self.arrival = date(route.arrivalTime)
         self.legs = route.segments.enumerated().map { i, seg in

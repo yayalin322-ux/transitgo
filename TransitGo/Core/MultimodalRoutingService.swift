@@ -196,7 +196,7 @@ struct MultimodalSegment: Codable, Identifiable {
     }()
 
     private static func clockText(_ iso: String) -> String? {
-        guard let d = ISO8601DateFormatter().date(from: iso) else { return nil }
+        guard let d = RealtimeTime.parse(iso) else { return nil }   // the backend's timestamps carry milliseconds (…00.000Z)
         return clockFormatter.string(from: d)
     }
 
@@ -264,8 +264,8 @@ struct MultimodalRoute: Codable, Identifiable {
 
     /// "9:15 出發，預計 9:44 抵達" — nil if either timestamp fails to parse.
     var summaryText: String? {
-        guard let dep = ISO8601DateFormatter().date(from: departureTime),
-              let arr = ISO8601DateFormatter().date(from: arrivalTime) else { return nil }
+        guard let dep = RealtimeTime.parse(departureTime),
+              let arr = RealtimeTime.parse(arrivalTime) else { return nil }
         return "\(Self.clockFormatter.string(from: dep)) 出發，預計 \(Self.clockFormatter.string(from: arr)) 抵達"
     }
 

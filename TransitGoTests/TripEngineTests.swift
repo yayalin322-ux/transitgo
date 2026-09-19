@@ -377,6 +377,22 @@ final class TripEngineTests: XCTestCase {
         XCTAssertGreaterThan(e.session.progress, 0)
     }
 
+    /// Regression: the backend sends "…T14:06:00.000Z"; parsing that with a plain ISO formatter fails and used to turn
+    /// every time in the plan into year 1 (shown as "08:06 出發", remaining time 2 minutes).
+    func testBackendTimestampsWithMillisecondsAreParsed() throws {
+        let route = try Nav.walkBusMrtWalk()
+        XCTAssertTrue(route.departureTime.contains(".000Z"), "fixture uses the backend's real format")
+        let plan = TripPlan(route: route)
+        XCTAssertEqual(plan.departure, Nav.at(0))
+        XCTAssertEqual(plan.arrival, Nav.at(2060))
+        XCTAssertEqual(plan.legs[1].scheduledDeparture, Nav.at(300))
+        XCTAssertEqual(plan.totalDurationSeconds, 2060)
+        XCTAssertNotNil(route.summaryText, "the route card's 'HH:mm 出發，預計 HH:mm 抵達' line needs the same parsing")
+        XCTAssertEqual(route.segments[1].departureClock, TripInstructionText.clockText(Nav.at(300)))
+        let e = engine(route)
+        XCTAssertGreaterThan(e.session.remainingDurationSeconds ?? 0, 1_800, "whole-trip remaining time, not just the first walk")
+    }
+
     func testPolicyValuesAreSane() {
         XCTAssertLessThanOrEqual(TripPolicy.approachingWalkDistance, 50)
         XCTAssertGreaterThan(TripPolicy.offRouteWalk, TripPolicy.destinationRadius)

@@ -27,6 +27,9 @@ enum Nav {
         TripFix(lat: p.lat, lon: p.lon, accuracy: accuracy, timestamp: t0.addingTimeInterval(t), speed: speed)
     }
     static func at(_ t: TimeInterval) -> Date { t0.addingTimeInterval(t) }
+    static let backendISO: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
+    }()
 
     /// JSON null for a missing value.
     private static func ns(_ v: Any?) -> Any { v ?? NSNull() }
@@ -39,7 +42,8 @@ enum Nav {
     }
 
     static func route(_ segs: [Seg], id: String = "R001", label: String = "最快") throws -> MultimodalRoute {
-        func iso(_ t: TimeInterval) -> String { ISO8601DateFormatter().string(from: at(t)) }
+        // Exactly the backend's format (Date.toISOString): UTC with milliseconds.
+        func iso(_ t: TimeInterval) -> String { Nav.backendISO.string(from: at(t)) }
         let segJSON: [[String: Any]] = segs.map { s in
             var d: [String: Any] = [
                 "mode": s.mode, "routeId": NSNull(), "routeShortName": ns(s.line), "scopePath": NSNull(),
