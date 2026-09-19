@@ -83,7 +83,20 @@ function requireAdmin(req, res, next) {
 // GIT_COMMIT lets us confirm from the outside which build is actually live on Render —
 // deploys have silently lagged behind pushes before, and "the fix is deployed" is
 // otherwise unverifiable without dashboard access.
-app.get("/v1/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString(), commit: process.env.RENDER_GIT_COMMIT || null }));
+app.get("/v1/health", (_req, res) => {
+  // Memory is reported here because Render's own memory chart is a paid feature and this service runs
+  // near the 512 MB limit. `peakRssMB` is the highest resident memory since the process started (Node's
+  // resourceUsage().maxRSS, kilobytes) — it includes the moment the routing graph is loaded at boot, which
+  // is what once got the instance killed. Numbers only: nothing here is sensitive.
+  const mb = (bytes) => Math.round((bytes / 1048576) * 10) / 10;
+  const mem = process.memoryUsage();
+  res.json({
+    ok: true, time: new Date().toISOString(), commit: process.env.RENDER_GIT_COMMIT || null,
+    uptimeSeconds: Math.round(process.uptime()),
+    memory: { rssMB: mb(mem.rss), heapUsedMB: mb(mem.heapUsed), peakRssMB: mb(process.resourceUsage().maxRSS * 1024), limitMB: 512 },
+    graph: { loaded: routingGraph !== null, nodeCount: routingGraph?.nodeCount ?? null, edgeCount: routingGraph?.edgeCount ?? null },
+  });
+});
 
 // Which storage backend is actually active — never echoes the connection string itself,
 // just whether DATABASE_URL was seen and a real query against it succeeds.
