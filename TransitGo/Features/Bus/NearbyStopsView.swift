@@ -239,7 +239,7 @@ final class BikeNearbyViewModel {
         isLoading = items.isEmpty
         errorText = nil
         defer { isLoading = false }
-        if let shared = await SharedBikeService.nearby(near: location.coordinate, radius: 3000, city: nil), !shared.isEmpty {
+        if let shared = await BikeStationService.nearby(near: location.coordinate, radius: 3000, city: nil), !shared.isEmpty {
             items = shared
             return
         }

@@ -53,6 +53,13 @@ struct RouteResultLeg: Identifiable {
     let stopNames: [String]?
     /// WALK only: "MRT_TRANSFER_WALK" / "MRT_STATION_LINK" / nil (street walk).
     let walkKind: String?
+    /// Mode-specific extra lines (a bike leg's availability / estimated distance / riding time) —
+    /// produced by the model layer, so consumers render them without knowing which mode they belong to.
+    var detailLines: [String] = []
+    /// Estimated distance for a leg that has one (bike). nil for a leg whose distance the engine doesn't report.
+    var distanceMeters: Double? = nil
+    /// False when a leg's realtime data was asked for and could not be confirmed (shown as a warning).
+    var realtimeConfirmed: Bool = true
 }
 
 /// Which planner actually produced this candidate — kept so the UI can label a result's
@@ -225,7 +232,6 @@ enum UnifiedRoutingService {
 
     // MARK: - Normalization (each planner's own shape -> RouteResult)
 
-    private static let isoFormatter = ISO8601DateFormatter()
 
     private static func normalize(_ route: MultimodalRoute) -> RouteResult {
         let legs = route.segments.map { seg in
@@ -238,15 +244,18 @@ enum UnifiedRoutingService {
                 arrivalClock: seg.arrivalClock,
                 towards: seg.towards,
                 stopNames: seg.stops,
-                walkKind: seg.walkKind
+                walkKind: seg.walkKind,
+                detailLines: seg.detailLines,
+                distanceMeters: seg.reportedDistanceMeters,
+                realtimeConfirmed: seg.realtimeConfirmed
             )
         }
         var result = RouteResult(
             summary: route.label,
             legs: legs,
             transportModes: Array(Set(legs.map(\.mode))).sorted { $0.rawValue < $1.rawValue },
-            departure: isoFormatter.date(from: route.departureTime),
-            arrival: isoFormatter.date(from: route.arrivalTime),
+            departure: RealtimeTime.parse(route.departureTime),
+            arrival: RealtimeTime.parse(route.arrivalTime),
             durationSeconds: route.durationSeconds,
             transfers: route.transfers,
             waitingSeconds: route.waitingSeconds,

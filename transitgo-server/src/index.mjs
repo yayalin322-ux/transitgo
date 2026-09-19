@@ -46,6 +46,8 @@ import { storageConfigured } from "./graph/graphStorage.mjs";
 import { planRoute, graphCoverage } from "./routing/api.mjs";
 import { createRealtimeService } from "./realtime/service.mjs";
 import { getRouting } from "./tdx.mjs";
+import { createBikeRealtime } from "./bike/realtime.mjs";
+import { findNearbyBikeStations } from "./graph/virtual.mjs";
 import { TDXProvider } from "./tdx/adapter.mjs";
 import { ingestTRAStations, ingestTRAPair, ingestTHSRStations, ingestTHSRPair, ingestBusRouteSchedule, ingestMetroOperator } from "./tdx/ingest.mjs";
 
@@ -474,10 +476,13 @@ if (!storageConfigured()) {
 // TDX calls use the routing engine's own credentials (the iOS app's embedded TDX key is
 // currently rejected by TDX, so realtime cannot go app -> TDX directly anyway).
 const realtime = createRealtimeService({ tdxGet: getRouting, db });
+// YouBike availability: ONE snapshot (the poller's shared cache), cached + de-duplicated, read by
+// route planning and by the app's availability/candidates calls alike.
+const bikeRealtime = createBikeRealtime({ loadCaches: allBikeCaches });
 
 app.post("/api/v1/routes", async (req, res) => {
   if (!routingGraph) return res.status(503).json({ ok: false, error: "routing graph still initializing, try again shortly" });
-  const result = await planRoute(routingGraph, req.body, db);
+  const result = await planRoute(routingGraph, req.body, db, { bikeRealtime });
   res.status(result.status).json(result.body);
 });
 
@@ -500,6 +505,35 @@ app.get("/v1/realtime/bus/stops", async (req, res) => {
   const stops = typeof req.query.stops === "string" ? req.query.stops.split(",").filter(Boolean) : [];
   if (!/^(City\/[A-Za-z]+|InterCity)$/.test(scope) || stops.length === 0 || stops.length > 12) return res.status(400).json({ ok: false, error: "need scope=City/<City>|InterCity and 1-12 stops" });
   res.json({ ok: true, ...(await realtime.busStopArrivals({ scopePath: scope, stopUIDs: stops })) });
+});
+
+/** Realtime availability for specific YouBike stations (ids as routing returns them, "BIKE_Taipei:500101001"). */
+app.get("/v1/bike/availability", async (req, res) => {
+  const ids = typeof req.query.stations === "string" ? req.query.stations.split(",").filter(Boolean) : [];
+  if (ids.length === 0 || ids.length > 50 || ids.some((i) => !/^BIKE_[A-Za-z]+:[\w.-]+$/.test(i))) return res.status(400).json({ ok: false, error: "need 1-50 station ids like BIKE_Taipei:500101001" });
+  res.json({ ok: true, ...(await bikeRealtime.availability(ids)) });
+});
+
+/** Routing candidates: the nearest stations that can actually be used right now for `role`
+ * ("rent" = has a bike, "return" = has a free dock). Same graph index and same availability
+ * snapshot the router uses. Stations whose state can't be confirmed are returned flagged, not dropped. */
+app.get("/v1/bike/candidates", async (req, res) => {
+  const lat = parseFloat(req.query.lat), lon = parseFloat(req.query.lon);
+  const role = req.query.role === "return" ? "return" : "rent";
+  const radius = Math.min(2000, parseInt(req.query.radius, 10) || 800);
+  if (Number.isNaN(lat) || Number.isNaN(lon)) return res.status(400).json({ ok: false, error: "lat/lon required" });
+  if (!routingGraph) return res.status(503).json({ ok: false, error: "routing graph still initializing, try again shortly" });
+  const snap = await bikeRealtime.snapshot();
+  const near = findNearbyBikeStations(routingGraph, lat, lon, { maxRadius: radius, limit: 40 });
+  const out = [];
+  for (const { node, distanceMeters } of near) {
+    const st = snap.stations.get(node.id) ?? null;
+    const usable = st ? (role === "rent" ? st.isRentable : st.isReturnable) : null;   // null = unknown
+    if (usable === false) continue;
+    out.push({ stationId: node.id, name: node.name, lat: node.lat, lon: node.lon, distanceMeters: Math.round(distanceMeters), availability: st, availabilityKnown: st !== null });
+    if (out.length >= 8) break;
+  }
+  res.json({ ok: true, role, realtimeAvailable: snap.ok, reason: snap.ok ? null : snap.reason, stations: out });
 });
 
 /** What realtime each mode really has, its sources, refresh/TTL and known limits. */

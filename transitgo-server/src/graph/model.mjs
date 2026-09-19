@@ -58,6 +58,10 @@ export class TransitEdge {
     // Frequency band) — the edge is usable, but the routing engine must treat the wait
     // as genuinely unknown (null in the result), never as 0 and never as a guess.
     waitUnknown = false,
+    // BIKE edges only: the un-detoured straight-line distance the (estimated) ride distance
+    // `distanceMeters` was derived from — kept so the estimate is auditable, never mistaken
+    // for a measured road distance.
+    straightLineMeters = null,
   }) {
     this.id = id;
     this.fromNodeId = fromNodeId;
@@ -75,6 +79,8 @@ export class TransitEdge {
     this.source = source;   // e.g. "TDX real timetable", "TDX real headway", "walk estimate"
     this.serviceKey = serviceKey;
     this.waitUnknown = waitUnknown;
+    // Only set on BIKE edges: keeps every other edge (and the persisted artifact) exactly as before.
+    if (straightLineMeters != null) this.straightLineMeters = straightLineMeters;
   }
   get isTimeDependent() { return this.departureSeconds != null; }
   get isHeadwayBased() { return this.headwaySeconds != null; }

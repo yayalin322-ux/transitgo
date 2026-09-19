@@ -179,7 +179,7 @@ actor RealtimeTransitService {
             departureTime: route.departureTime, arrivalTime: route.arrivalTime
         )
         let key = "route|" + route.segments.map { "\($0.mode)/\($0.from ?? "")/\($0.to ?? "")/\($0.tripId ?? "")/\($0.departureTime)" }.joined(separator: ";")
-        return await shared(key: key, ttl: routeTTL, isFailure: { if case .unavailable = $0 { return true } else { return false } }) { [self] in
+        return await coalesced(key: key, ttl: routeTTL, isFailure: { if case .unavailable = $0 { return true } else { return false } }) { [self] in
             await self.fetchRouteOverlay(request)
         }
     }
@@ -212,7 +212,7 @@ actor RealtimeTransitService {
         // The backend accepts at most 12 stops per call; merged stops are a handful.
         let batch = Array(uids.prefix(12))
         let key = "busStops|\(scopePath)|\(batch.joined(separator: ","))"
-        let result = await shared(key: key, ttl: routeTTL, isFailure: { if case .failure = $0 { return true } else { return false } }) { [self] in
+        let result = await coalesced(key: key, ttl: routeTTL, isFailure: { if case .failure = $0 { return true } else { return false } }) { [self] in
             await self.fetchBusArrivals(scopePath: scopePath, stopUIDs: batch)
         }
         return try result.get()
@@ -239,9 +239,10 @@ actor RealtimeTransitService {
 
     // MARK: Cache + in-flight sharing
 
+    /// (Also used by `BikeStationService` — one cache + de-duplication policy for every realtime read.)
     /// Returns a fresh cached value, or joins the request already running for `key`, or starts
     /// one. Failures are cached briefly so a rate-limited/offline backend isn't hammered.
-    private func shared<T: Sendable>(key: String, ttl: TimeInterval, isFailure: (T) -> Bool, load: @escaping @Sendable () async -> T) async -> T {
+    func coalesced<T: Sendable>(key: String, ttl: TimeInterval, isFailure: (T) -> Bool, load: @escaping @Sendable () async -> T) async -> T {
         if let hit = cache[key], Date().timeIntervalSince(hit.at) < hit.ttl, let value = hit.value as? T { return value }
         if let running = inflight[key], let value = await running.value as? T { return value }
         let task = Task<Any, Never> { await load() }

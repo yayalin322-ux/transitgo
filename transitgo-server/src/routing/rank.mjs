@@ -36,15 +36,7 @@ export function rankRoutes(graph, originId, destinationId, departureTimeSeconds,
   const bySignature = new Map();
   let anyNetworkIssue = false;
 
-  for (const [profileKey, profile] of Object.entries(PROFILES)) {
-    const result = findRoute(graph, originId, destinationId, departureTimeSeconds, { ...searchOptions, profile });
-    if (result.error) {
-      if (result.error === "SAME_ORIGIN_DESTINATION" || result.error === "UNKNOWN_DESTINATION") {
-        return { error: result.error };   // not profile-dependent — no point trying the others
-      }
-      if (result.error === "SEARCH_TOO_LARGE") anyNetworkIssue = true;
-      continue;
-    }
+  const consider = (result, profileKey) => {
     const sig = routeSignature(result.route);
     // Same real route can legitimately win under more than one profile — keep the
     // instance whichever profile is most "native" to it (first one found), not a
@@ -54,6 +46,26 @@ export function rankRoutes(graph, originId, destinationId, departureTimeSeconds,
       candidates.push(bySignature.get(sig));
     } else {
       bySignature.get(sig).profileKeys.push(profileKey);
+    }
+  };
+
+  for (const [profileKey, profile] of Object.entries(PROFILES)) {
+    const result = findRoute(graph, originId, destinationId, departureTimeSeconds, { ...searchOptions, profile });
+    if (result.error) {
+      if (result.error === "SAME_ORIGIN_DESTINATION" || result.error === "UNKNOWN_DESTINATION") {
+        return { error: result.error };   // not profile-dependent — no point trying the others
+      }
+      if (result.error === "SEARCH_TOO_LARGE") anyNetworkIssue = true;
+      continue;
+    }
+    consider(result, profileKey);
+
+    // A bike leg must ADD candidates, never crowd the others out: when this profile's best route
+    // uses a bike, also search the same profile with the bike layer off, so the best non-bike route
+    // (e.g. the bus) stays a candidate. Dominance below still drops it if the bike route truly beats it.
+    if (searchOptions.bike && result.route.legs.some((l) => l.mode === "BIKE")) {
+      const alt = findRoute(graph, originId, destinationId, departureTimeSeconds, { ...searchOptions, bike: null, profile });
+      if (!alt.error) consider(alt, profileKey);
     }
   }
 

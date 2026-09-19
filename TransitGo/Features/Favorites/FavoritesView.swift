@@ -6,31 +6,43 @@ import SwiftData
 /// reached from every other entry point).
 struct FavoritesView: View {
     var onOpen: (FavoriteItem) -> Void
+    /// Opens a saved journey (the caller records the use and plans it again).
+    var onOpenTrip: ((FavoriteTrip) -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var context
     @Query(sort: \FavoriteItem.createdAt, order: .reverse) private var items: [FavoriteItem]
+    @Query private var trips: [FavoriteTrip]
+    @State private var editing: FavoriteTrip?
+
+    /// Favorites are grouped by what they are — journeys, bus routes, stops, bike stations — never one mixed list.
+    private func items(of kinds: [FavoriteKind]) -> [FavoriteItem] {
+        items.filter { kinds.contains(FavoriteKind(rawValue: $0.kind) ?? .busRoute) }
+    }
 
     var body: some View {
         NavigationStack {
             Group {
-                if items.isEmpty {
+                if items.isEmpty && trips.isEmpty {
                     ContentUnavailableView("尚無最愛", systemImage: "star",
-                                           description: Text("在路線頁或 YouBike 站點頁點星號即可加入"))
+                                           description: Text("在路線頁或 YouBike 站點頁點星號、或在轉乘規劃儲存常用旅程"))
                 } else {
                     List {
-                        ForEach(items) { item in
-                            Button {
-                                onOpen(item)
-                                dismiss()
-                            } label: {
-                                row(item)
+                        if !trips.isEmpty {
+                            Section("常用旅程") {
+                                ForEach(TripStore(context: context).favorites()) { trip in
+                                    Button { onOpenTrip?(trip); dismiss() } label: { FavoriteTripRow(trip: trip) }
+                                        .buttonStyle(.plain)
+                                        .swipeActions {
+                                            Button("刪除", role: .destructive) { try? TripStore(context: context).delete(trip) }
+                                            Button("編輯") { editing = trip }.tint(.blue)
+                                        }
+                                }
                             }
-                            .buttonStyle(.plain)
                         }
-                        .onDelete { offsets in
-                            for i in offsets { context.delete(items[i]) }
-                        }
+                        favoriteSection("公車路線", items(of: [.busRoute]))
+                        favoriteSection("站牌", items(of: [.busStop]))
+                        favoriteSection("YouBike 站點", items(of: [.bikeStation]))
                     }
                 }
             }
@@ -43,6 +55,21 @@ struct FavoritesView: View {
             }
         }
         .presentationDetents([.medium, .large])
+        .sheet(item: $editing) { trip in
+            FavoriteTripEditor(existing: trip, initial: nil, context: TripEditorContext(city: nil, near: nil))
+        }
+    }
+
+    @ViewBuilder
+    private func favoriteSection(_ title: String, _ list: [FavoriteItem]) -> some View {
+        if !list.isEmpty {
+            Section(title) {
+                ForEach(list) { item in
+                    Button { onOpen(item); dismiss() } label: { row(item) }.buttonStyle(.plain)
+                }
+                .onDelete { offsets in for i in offsets { context.delete(list[i]) } }
+            }
+        }
     }
 
     private func row(_ item: FavoriteItem) -> some View {

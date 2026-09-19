@@ -1,6 +1,7 @@
 import { TransitNode, TransitEdge, NodeType, Mode } from "./model.mjs";
 import { SpatialIndex } from "./spatialIndex.mjs";
 import { logMemory } from "./memlog.mjs";
+import { BIKE_CONFIG } from "../bike/config.mjs";
 
 const R = 6371000;
 export function haversineMeters(lat1, lon1, lat2, lon2) {
@@ -64,10 +65,27 @@ export function findNearbyStops(graph, lat, lon, { radii = [500, 800, 1200], max
   return [];
 }
 
+/**
+ * The nearest YouBike stations to a point, through the graph's bike SpatialIndex (built lazily
+ * on first use — it is not persisted with the graph). Returns at most `limit` stations, nearest
+ * first, all within `maxRadius`; [] when the graph has no bike layer. Availability is NOT
+ * checked here — that is the realtime overlay's job at search time.
+ */
+export function findNearbyBikeStations(graph, lat, lon, { maxRadius = BIKE_CONFIG.walkToStationMaxMeters, limit = BIKE_CONFIG.walkToStationCandidates } = {}) {
+  let index = graph._spatialBikeIndex;
+  if (!index) {
+    index = new SpatialIndex(graph.nodes.values(), { bikeOnly: true });
+    graph._spatialBikeIndex = index;
+  }
+  return index.near(lat, lon, maxRadius, haversineMeters)
+    .sort((a, b) => a.distanceMeters - b.distanceMeters)
+    .slice(0, limit);
+}
+
 function linearScanNearby(graph, lat, lon, radius) {
   const hits = [];
   for (const node of graph.nodes.values()) {
-    if (node.type === NodeType.VIRTUAL || node.lat == null || node.lon == null) continue;
+    if (node.type === NodeType.VIRTUAL || node.lat == null || node.lon == null || node.mode === Mode.BIKE) continue;
     const d = haversineMeters(lat, lon, node.lat, node.lon);
     if (d <= radius) hits.push({ node, distanceMeters: d });
   }
@@ -84,12 +102,23 @@ function walkSeconds(distanceMeters, walkingSpeedMps) {
  * nothing is within maxWalkingDistance — callers must handle that as a real "no nearby
  * transit" error (section 18 #1), not retry silently forever.
  */
-export function attachVirtualOrigin(graph, id, lat, lon, { walkingSpeedMps = DEFAULT_WALKING_SPEED_MPS, maxWalkingMeters = 1200 } = {}) {
+export function attachVirtualOrigin(graph, id, lat, lon, { walkingSpeedMps = DEFAULT_WALKING_SPEED_MPS, maxWalkingMeters = 1200, includeBike = true } = {}) {
   const nearby = findNearbyStops(graph, lat, lon, { maxRadius: maxWalkingMeters });
-  if (nearby.length === 0) return null;
+  // Walk -> YouBike: the nearest few real stations (spatial index, never a scan). With no bike
+  // layer (or includeBike false) this is exactly the transit-only behavior it always was.
+  const bikeNearby = includeBike ? findNearbyBikeStations(graph, lat, lon, { maxRadius: Math.min(maxWalkingMeters, BIKE_CONFIG.walkToStationMaxMeters) }) : [];
+  if (nearby.length === 0 && bikeNearby.length === 0) return null;
 
   graph.addNode(new TransitNode({ id, type: NodeType.VIRTUAL, lat, lon, name: "起點" }));
   for (const { node, distanceMeters } of nearby) {
+    graph.addEdge(new TransitEdge({
+      id: `walk_${id}_to_${node.id}`,
+      fromNodeId: id, toNodeId: node.id, mode: Mode.WALK,
+      travelSeconds: walkSeconds(distanceMeters, walkingSpeedMps),
+      distanceMeters, source: "Haversine estimate",
+    }));
+  }
+  for (const { node, distanceMeters } of bikeNearby) {
     graph.addEdge(new TransitEdge({
       id: `walk_${id}_to_${node.id}`,
       fromNodeId: id, toNodeId: node.id, mode: Mode.WALK,
@@ -101,12 +130,21 @@ export function attachVirtualOrigin(graph, id, lat, lon, { walkingSpeedMps = DEF
 }
 
 /** Same idea, reversed — real stops get a WALK edge INTO the virtual destination. */
-export function attachVirtualDestination(graph, id, lat, lon, { walkingSpeedMps = DEFAULT_WALKING_SPEED_MPS, maxWalkingMeters = 1200 } = {}) {
+export function attachVirtualDestination(graph, id, lat, lon, { walkingSpeedMps = DEFAULT_WALKING_SPEED_MPS, maxWalkingMeters = 1200, includeBike = true } = {}) {
   const nearby = findNearbyStops(graph, lat, lon, { maxRadius: maxWalkingMeters });
-  if (nearby.length === 0) return null;
+  const bikeNearby = includeBike ? findNearbyBikeStations(graph, lat, lon, { maxRadius: Math.min(maxWalkingMeters, BIKE_CONFIG.walkToStationMaxMeters) }) : [];
+  if (nearby.length === 0 && bikeNearby.length === 0) return null;
 
   graph.addNode(new TransitNode({ id, type: NodeType.VIRTUAL, lat, lon, name: "目的地" }));
   for (const { node, distanceMeters } of nearby) {
+    graph.addEdge(new TransitEdge({
+      id: `walk_${node.id}_to_${id}`,
+      fromNodeId: node.id, toNodeId: id, mode: Mode.WALK,
+      travelSeconds: walkSeconds(distanceMeters, walkingSpeedMps),
+      distanceMeters, source: "Haversine estimate",
+    }));
+  }
+  for (const { node, distanceMeters } of bikeNearby) {
     graph.addEdge(new TransitEdge({
       id: `walk_${node.id}_to_${id}`,
       fromNodeId: node.id, toNodeId: id, mode: Mode.WALK,

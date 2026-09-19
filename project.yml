@@ -85,3 +85,29 @@ targets:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
         TDXClientID: $(TDX_CLIENT_ID)
         TDXClientSecret: $(TDX_CLIENT_SECRET)
+
+  TransitGoTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: TransitGoTests
+    dependencies:
+      - target: TransitGo
+    configFiles:
+      Debug: Config/Secrets.xcconfig
+      Release: Config/Secrets.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: tw.yayalin.TransitGoTests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/TransitGo.app/TransitGo
+        BUNDLE_LOADER: $(TEST_HOST)
+
+schemes:
+  TransitGo:
+    build:
+      targets:
+        TransitGo: all
+    test:
+      targets:
+        - TransitGoTests

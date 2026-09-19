@@ -205,7 +205,7 @@ struct YouBikeLegPickerView: View {
     /// city's *entire* availability table directly, which is slow — especially doubled up
     /// for both the rent and return searches running at once.
     private func nearby(_ coord: CLLocationCoordinate2D) async -> [BikeStationLive] {
-        if let shared = await SharedBikeService.nearby(near: coord, radius: 700, city: nil), !shared.isEmpty {
+        if let shared = await BikeStationService.nearby(near: coord, radius: 700, city: nil), !shared.isEmpty {
             return shared
         }
         let cities = BikeCity.nearest(to: coord, count: 2)

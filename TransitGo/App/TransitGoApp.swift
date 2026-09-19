@@ -6,6 +6,17 @@ struct TransitGoApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
 
+    /// One container for the whole app, built through the migration plan (V1 -> V2 adds favorite trips).
+    /// If the store can't be opened the app must still launch: it falls back to an in-memory store
+    /// rather than crashing (and never deletes the on-disk data).
+    private static let container: ModelContainer = {
+        do { return try AppStore.makeContainer() }
+        catch {
+            NSLog("[store] could not open the persistent store: %@", String(describing: error))
+            return (try? AppStore.makeContainer(inMemory: true)) ?? { fatalError("no SwiftData container available") }()
+        }
+    }()
+
     var body: some Scene {
         WindowGroup {
             RootView()
@@ -24,6 +35,6 @@ struct TransitGoApp: App {
                     }
                 }
         }
-        .modelContainer(for: [FavoriteItem.self, RailTicket.self])
+        .modelContainer(Self.container)
     }
 }

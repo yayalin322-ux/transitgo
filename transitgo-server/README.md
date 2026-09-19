@@ -30,6 +30,30 @@ npm start
 | `GET`  | `/v1/admin/announcements` | 全部公告（含已下架） |
 | `GET`  | `/v1/admin/reports?limit=` | 看 App 回報 |
 
+### 路線 / 即時 / YouBike（另見專案根目錄 README 的架構說明）
+
+| 方法 | 路徑 | 說明 |
+|------|------|------|
+| `POST` | `/api/v1/routes` | 多模式路線規劃（WALK/BUS/MRT/TRA/HSR/BIKE）；可帶 `options.allowBike:false`、`options.bikeUnavailable:"exclude"` |
+| `GET`  | `/v1/routing/coverage` | graph 目前真正涵蓋的公車/軌道/捷運/YouBike |
+| `POST` | `/v1/realtime/route` | 對一條已規劃路線的即時疊加（每段可用性、延誤、公告）；失敗回 `available:false` 與原因，不回錯誤碼 |
+| `GET`  | `/v1/realtime/bus/stops?scope=&stops=` | 附近站牌的即時到站（最多 12 站） |
+| `GET`  | `/v1/realtime/capabilities` | 各運具真實有的即時資料、TTL 與限制 |
+| `GET`  | `/v1/bike/nearby` · `/v1/bike/search` | YouBike 附近站與名稱搜尋（共用快取） |
+| `GET`  | `/v1/bike/availability?stations=` | 指定站（`BIKE_<city>:<uid>`）的可借/可還 |
+| `GET`  | `/v1/bike/candidates?lat&lon&role=rent\|return` | 路線規劃用的候選站（與規劃器同一份 graph 索引與可借還快照） |
+| `POST` | `/v1/admin/routing/rebuild` | 重建 graph（需 admin；graph 變更後必須執行） |
+
+TDX 憑證只存在後端環境變數（`TDX_ROUTING_CLIENT_ID/SECRET`），App 不需要也不應該持有。
+
+### 測試
+
+```bash
+npm test     # 全部套件（路線、graph、MRT、即時、YouBike…），使用真實 TDX/政府資料的擷取檔，不連網
+```
+
+不屬於 `npm test` 的手動工具（需要 `.env`，會連真實資料）：`test/live_realtime.mjs`、`test/live_bike_routing.mjs`、`test/bike_density_probe.mjs`、`test/bike_proximity_probe.mjs`、`test/capture_bike_fixture.mjs`、`test/local_backend.mjs`。
+
 ### 手動發佈（例：張文/旅客事件）
 
 ```bash
