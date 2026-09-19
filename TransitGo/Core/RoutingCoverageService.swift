@@ -9,13 +9,22 @@ import Foundation
 struct RoutingCoverage: Decodable {
     let bus: [String]
     let rail: [String]
+    /// Metro operators the live graph really has stations + run times for (nil on a backend
+    /// deploy that predates MRT routing — decodes cleanly either way).
+    let mrt: MetroCoverage?
     let nodeCount: Int
     let edgeCount: Int
     let builtAt: String?
 
-    /// "新竹市公車、新竹縣公車、台鐵、高鐵" — nil only when there's genuinely nothing yet.
+    struct MetroCoverage: Decodable {
+        let available: Bool
+        let operators: [String]
+        let stationCount: Int
+    }
+
+    /// "新竹市公車、新竹縣公車、台鐵、高鐵、台北捷運" — nil only when there's genuinely nothing yet.
     var summaryText: String? {
-        let parts = bus + rail
+        let parts = bus + rail + (mrt?.available == true ? mrt!.operators : [])
         guard !parts.isEmpty else { return nil }
         return parts.joined(separator: "、")
     }

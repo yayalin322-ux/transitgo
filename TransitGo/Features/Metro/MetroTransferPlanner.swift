@@ -19,7 +19,14 @@ struct MetroItinerary: Identifiable {
 /// Metro lines are simple loops/lines (no branches the way bus routes have), so "can I get
 /// there" is just "do both stations sit on the same line" — no transfer search needed for
 /// a single-operator system. Cross-operator or cross-line transfers aren't attempted.
+///
+/// DEPRECATED — superseded by the backend routing engine's real metro graph (station-to-
+/// station edges from TDX S2STravelTime, real headways, real interchange times, connected
+/// to walking/bus/TRA/HSR), reached through `UnifiedRoutingService`. It is kept only as
+/// `UnifiedRoutingService`'s fallback for a region or operator the engine has no metro data
+/// for; no ViewModel or View may call it directly.
 enum MetroTransferPlanner {
+    @available(*, deprecated, message: "Use UnifiedRoutingService.plan — backend MRT routing replaces same-line-only planning.")
     static func plan(operator op: MetroOperator, from origin: MetroStation, to destination: MetroStation) async -> [MetroItinerary] {
         guard origin.stationID != destination.stationID,
               let stationsOfLines = try? await MetroService.shared.stationsOfLine(operator: op),
@@ -40,6 +47,7 @@ enum MetroTransferPlanner {
     /// `radius` of each point (not a hand-picked exact station) and checks same-line
     /// reachability, the way a user would actually approach "closest station to me" and
     /// "closest station to where I'm going".
+    @available(*, deprecated, message: "Use UnifiedRoutingService.plan — backend MRT routing replaces same-line-only planning.")
     static func planNearby(
         operator op: MetroOperator, from origin: CLLocationCoordinate2D, to destination: CLLocationCoordinate2D,
         radius: CLLocationDistance = 800
