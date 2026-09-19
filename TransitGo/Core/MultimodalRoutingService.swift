@@ -20,6 +20,47 @@ struct MultimodalLeg: Decodable, Identifiable {
     var id: String { from + to + departureTime }
 }
 
+/// One YouBike station's realtime state, as the backend's single availability snapshot reports it
+/// (the same snapshot route planning used). `isRentable`/`isReturnable` already account for
+/// "station in service" — the client never re-derives them from the counts.
+struct BikeStationRealtime: Decodable {
+    let stationId: String
+    let availableBikes: Int?
+    let availableDocks: Int?
+    let electricBikes: Int?
+    let isRentable: Bool
+    let isReturnable: Bool
+    let inService: Bool
+    /// ISO-8601, the source's own update time.
+    let updatedAt: String?
+}
+
+/// Availability of the two stations a bike leg depends on. `unknown` = the realtime snapshot could
+/// not be read (or didn't contain the station): the route is still valid, only the counts are missing.
+struct BikeLegAvailability: Decodable {
+    let status: String        // "known" | "unknown"
+    let reason: String?
+    let rent: BikeStationRealtime?
+    let returnStation: BikeStationRealtime?
+    enum CodingKeys: String, CodingKey { case status, reason, rent, returnStation = "return" }
+    var isKnown: Bool { status == "known" }
+}
+
+/// What a shared-bike leg adds to a segment. Distance and time are ESTIMATES (`isEstimated` is always
+/// true today): straight line x a detour factor at an assumed speed — there is no bike-path network.
+struct BikeSegmentDetail: Decodable {
+    let rentStationId: String
+    let rentStationName: String?
+    let returnStationId: String
+    let returnStationName: String?
+    let bikeDistanceMeters: Double?
+    let straightLineMeters: Double?
+    let bikeDurationSeconds: Int
+    let handlingSeconds: Int
+    let isEstimated: Bool
+    let availability: BikeLegAvailability
+}
+
 /// One real boarding — WALK, or a continuous ride on one BUS/TRA/METRO route from the
 /// stop you got on to the stop you get off, with real stop names from the backend's
 /// ingested data (not fabricated). This is what the UI should render, one row each.
@@ -59,6 +100,9 @@ struct MultimodalSegment: Decodable, Identifiable {
     /// no distance), "MRT_STATION_LINK" (walk between a metro station and a nearby stop), or
     /// nil for an ordinary street walk.
     let walkKind: String?
+    /// Shared-bike legs only (nil for everything else, and on an older deploy).
+    let distanceMeters: Double?
+    let bike: BikeSegmentDetail?
     var id: String { (fromName ?? "") + (toName ?? "") + departureTime }
 
     var fromCoordinate: CLLocationCoordinate2D? {
@@ -78,6 +122,7 @@ struct MultimodalSegment: Decodable, Identifiable {
         case "TRA": return "tram.fill"
         case "METRO", "MRT": return "tram.fill.tunnel"
         case "HSR": return "tram.fill"
+        case "BIKE": return "bicycle"
         default: return "arrow.forward"
         }
     }
@@ -92,7 +137,54 @@ struct MultimodalSegment: Decodable, Identifiable {
             // just left out rather than replaced with a placeholder.
             return ["捷運", line, towards].compactMap { $0 }.joined(separator: " ")
         case "HSR": return "高鐵"
+        case "BIKE": return "YouBike"
         default: return mode
+        }
+    }
+
+    /// "上車" / "借車" — the verbs a leg's two ends use. Kept here (with modeLabel), so a view renders
+    /// every ride the same way and never switches on the mode itself.
+    var boardLabel: String { mode == "BIKE" ? "借車" : "上車" }
+    var alightLabel: String { mode == "BIKE" ? "還車" : "下車" }
+
+    /// Extra lines under a ride, in display order; empty for a plain ride. A bike leg reads
+    ///   可借 8 輛 ・ 約 1.2 km（估計）・ 騎乘約 6 分鐘（估計） ・ 還車站空位 6
+    /// or, when the realtime snapshot was unavailable, 即時車輛資訊暫時無法取得 — never made-up counts.
+    var detailLines: [String] {
+        guard let bike else { return [] }
+        var lines: [String] = []
+        if let rent = bike.availability.rent, let bikes = rent.availableBikes {
+            lines.append(rent.isRentable ? "可借 \(bikes) 輛" : "此站目前無車可借")
+        } else {
+            lines.append("即時車輛資訊暫時無法取得")
+        }
+        var ride: [String] = []
+        if let m = bike.bikeDistanceMeters {
+            ride.append(m < 1000 ? "約 \(Int(m.rounded())) m（估計）" : String(format: "約 %.1f km（估計）", m / 1000))
+        }
+        ride.append("騎乘約 \(max(1, Int((Double(bike.bikeDurationSeconds) / 60).rounded()))) 分鐘（估計）")
+        lines.append(ride.joined(separator: "・"))
+        if let ret = bike.availability.returnStation, let docks = ret.availableDocks {
+            lines.append(ret.isReturnable ? "還車站空位 \(docks)" : "還車站目前沒有空位")
+        }
+        return lines
+    }
+
+    /// The leg's own (estimated) distance where the engine reports one; nil otherwise.
+    var reportedDistanceMeters: Double? { bike?.bikeDistanceMeters }
+    /// False when this leg depends on realtime data that could not be confirmed.
+    var realtimeConfirmed: Bool { bike?.availability.isKnown ?? true }
+
+    /// One glyph per mode for the route explanation line.
+    var emoji: String {
+        switch mode {
+        case "WALK": return "🚶"
+        case "BUS": return "🚌"
+        case "TRA": return "🚆"
+        case "METRO", "MRT": return "🚇"
+        case "HSR": return "🚄"
+        case "BIKE": return "🚲"
+        default: return "➡️"
         }
     }
 
@@ -146,9 +238,22 @@ struct MultimodalRoute: Decodable, Identifiable {
     /// Best-effort live metro status; nil when the trip has no metro leg (or an older
     /// backend). `available == false` means "asked, couldn't get it" — the route is unaffected.
     let realtimeStatus: MultimodalRealtimeStatus?
+    /// Shared-bike totals (estimates), nil when the route has no bike leg / an older deploy.
+    let bikeDistanceMeters: Double?
+    let bikeSeconds: Int?
+    /// "known" | "unknown" — whether the realtime availability of every bike station was confirmed.
+    let bikeAvailability: String?
     let legs: [MultimodalLeg]
     let segments: [MultimodalSegment]
     var id: String { routeId }
+
+    /// "🚶 4 分 → 🚲 8 分 → 🚇 16 分 → 🚶 3 分（共 31 分鐘）" — why this route looks the way it does,
+    /// one step per real segment with its real duration. Mode-agnostic: every segment brings its own glyph.
+    var explanationText: String {
+        let steps = segments.map { "\($0.emoji) \(max(1, Int((Double($0.durationSeconds) / 60).rounded()))) 分" }
+        let total = max(1, Int((Double(durationSeconds) / 60).rounded()))
+        return steps.joined(separator: " → ") + "（共 \(total) 分鐘）"
+    }
 
     private static let clockFormatter: DateFormatter = {
         let f = DateFormatter()
