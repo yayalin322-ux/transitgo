@@ -370,8 +370,11 @@ struct StopArrival: Identifiable {
     let direction: Int
     let estimateTime: Int?
     let stopStatus: Int?
+    /// True when the arrival came from the InterCity (公路客運 / 快捷) feed rather than a city feed.
+    var isInterCity = false
 
-    var id: String { "\(routeName)-\(direction)" }
+    /// InterCity and city routes may share a number, so they must not collapse into one row.
+    var id: String { "\(isInterCity ? "IC-" : "")\(routeName)-\(direction)" }
 
     var displayText: String {
         switch stopStatus {

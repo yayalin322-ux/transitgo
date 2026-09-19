@@ -36,26 +36,21 @@ final class HomeViewModel {
                         "$top": "40",
                     ]
                 )
+                // Highway coaches / 快捷 lines live under InterCity — see NearbyViewModel.load.
+                let interCity: [NearbyStop] = (try? await TDXClient.shared.get(
+                    "v2/Bus/Stop/InterCity",
+                    query: [
+                        "$spatialFilter": "nearby(\(location.coordinate.latitude),\(location.coordinate.longitude),400)",
+                        "$select": "StopUID,StopName,StopPosition",
+                        "$top": "40",
+                    ]
+                )) ?? []
                 // Merge same-physical-stop name variants (see NearbyStopsView.MergedStop).
-                var order: [String] = []
-                var groups: [String: [NearbyStop]] = [:]
-                for s in raw {
-                    let key = normalizedStopName(s.stopName.display)
-                    if groups[key] == nil { order.append(key) }
-                    groups[key, default: []].append(s)
-                }
-                let merged = order.compactMap { key -> MergedStop? in
-                    guard let items = groups[key] else { return nil }
-                    let name = items.map(\.stopName.display).min(by: { $0.count < $1.count }) ?? key
-                    return MergedStop(
-                        stopUIDs: items.map(\.stopUID), displayName: name,
-                        coordinate: items.first(where: { $0.coordinate != nil })?.coordinate
-                    )
-                }
+                let merged = MergedStop.group(city: raw, interCity: interCity)
                 let top = merged.sorted { dist($0, location) < dist($1, location) }.prefix(3)
                 var built: [NearStopEntry] = []
                 for m in top {
-                    let arrivals = (try? await BusService.shared.arrivals(city: city, stopUIDs: m.stopUIDs))?
+                    let arrivals = (try? await BusService.shared.arrivals(city: city, stopUIDs: m.stopUIDs, interCityUIDs: m.interCityUIDs))?
                         .sorted { $0.sortKey < $1.sortKey } ?? []
                     built.append(NearStopEntry(stop: m, distance: dist(m, location), arrivals: arrivals))
                 }
@@ -257,7 +252,7 @@ struct HomeView: View {
             }
             .navigationDestination(for: MergedStop.self) { stop in
                 if let c = region?.busCity {
-                    NearbyStopDetailView(city: c, stopUIDs: stop.stopUIDs, displayName: stop.displayName)
+                    NearbyStopDetailView(city: c, stopUIDs: stop.stopUIDs, interCityUIDs: stop.interCityUIDs, displayName: stop.displayName)
                 }
             }
             .navigationDestination(for: BikeStation.self) { station in
