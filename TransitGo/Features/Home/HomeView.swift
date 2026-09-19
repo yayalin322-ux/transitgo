@@ -107,6 +107,11 @@ final class HomeViewModel {
     }
 }
 
+struct TripEditorTarget: Identifiable {
+    let id = UUID()
+    let existing: FavoriteTrip?
+}
+
 struct HomeView: View {
     @State private var location = LocationManager()
     @State private var resolver = RegionResolver.shared
@@ -115,10 +120,22 @@ struct HomeView: View {
     @State private var showSettings = false
     @State private var showFavorites = false
     @State private var showTransferPlanner = false
+    @Environment(\.modelContext) private var modelContext
+    /// A favorite trip that was tapped: opens the planner, which plans it again for right now.
+    @State private var launchedTrip: FavoriteTrip?
+    @State private var tripEditor: TripEditorTarget?
+    @State private var needsLocationAlert = false
 
     @State private var path = NavigationPath()
 
     private var region: LocalRegion? { resolver.region }
+
+    /// Tapping a favorite trip: count the use, then open the planner, which plans it again now.
+    private func openFavorite(_ trip: FavoriteTrip) {
+        if trip.spec.origin.isCurrentLocation, location.location == nil { needsLocationAlert = true; return }
+        try? TripStore(context: modelContext).recordUse(trip)
+        launchedTrip = trip
+    }
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -130,6 +147,12 @@ struct HomeView: View {
                 if let w = model.weather {
                     weatherRow(w)
                 }
+
+                FavoriteTripsSection(
+                    onOpen: { trip in openFavorite(trip) },
+                    onAdd: { tripEditor = TripEditorTarget(existing: nil) },
+                    onEdit: { trip in tripEditor = TripEditorTarget(existing: trip) }
+                )
 
                 if location.location == nil {
                     Section {
@@ -171,16 +194,35 @@ struct HomeView: View {
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showFavorites) {
-                FavoritesView { item in
+                FavoritesView(onOpen: { item in
                     showFavorites = false
                     path.append(item)
-                }
+                }, onOpenTrip: { trip in
+                    showFavorites = false
+                    // present after the sheet has gone
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { openFavorite(trip) }
+                })
             }
             .sheet(isPresented: $showTransferPlanner) {
                 if let city = region?.busCity, let loc = location.location {
                     TransferPlannerView(city: city, origin: loc.coordinate, metroOperator: region?.metroOperator)
                 }
             }
+            .sheet(item: $launchedTrip) { trip in
+                TransferPlannerView(
+                    city: region?.busCity ?? .taipei,
+                    origin: location.location?.coordinate ?? trip.spec.origin.coordinate,
+                    metroOperator: region?.metroOperator,
+                    initialTrip: trip.spec
+                )
+            }
+            .sheet(item: $tripEditor) { target in
+                FavoriteTripEditor(existing: target.existing, initial: nil,
+                                   context: TripEditorContext(city: region?.busCity, near: location.location?.coordinate))
+            }
+            .alert("需要目前位置", isPresented: $needsLocationAlert) {
+                Button("好") {}
+            } message: { Text("這個旅程從「目前位置」出發，請先開啟定位。") }
             .onAppear { location.request() }
             .task(id: taskKey) {
                 guard let loc = location.location else { return }

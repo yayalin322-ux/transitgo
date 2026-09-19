@@ -10,6 +10,26 @@ struct DestinationCandidate: Identifiable {
     let subtitle: String?
     let coordinate: CLLocationCoordinate2D
     let isLandmark: Bool
+    /// What the place is (and its stop id when it is a stop) — the identity a saved trip keeps, since
+    /// the display name alone is not one.
+    var kind: TripEndpointKind = .poi
+    var refId: String? = nil
+
+    var endpoint: TripEndpoint { TripEndpoint(name: name, kind: kind, refId: refId, coordinate: coordinate) }
+
+    init(name: String, subtitle: String?, coordinate: CLLocationCoordinate2D, isLandmark: Bool, kind: TripEndpointKind? = nil, refId: String? = nil) {
+        self.name = name; self.subtitle = subtitle; self.coordinate = coordinate; self.isLandmark = isLandmark
+        self.kind = kind ?? (isLandmark ? .poi : .busStop)
+        self.refId = refId
+    }
+
+    init(endpoint: TripEndpoint, currentLocation: CLLocationCoordinate2D? = nil) {
+        self.init(
+            name: endpoint.name, subtitle: nil,
+            coordinate: endpoint.isCurrentLocation ? (currentLocation ?? endpoint.coordinate) : endpoint.coordinate,
+            isLandmark: endpoint.kind != .busStop, kind: endpoint.kind, refId: endpoint.refId
+        )
+    }
 }
 
 @MainActor
@@ -33,6 +53,12 @@ final class TransferPlannerViewModel {
     /// future route-result UI (Phase 6) should render from. Populated alongside the
     /// typed arrays above, from the same single planning call.
     var unifiedRoutes: [RouteResult] = []
+    /// How the user wants results ordered (from a saved trip, or the default). The preferred route is shown first.
+    var preferredProfile: TripProfile = .fastest
+    /// Why planning produced no routes, in words a person can act on (nil while everything is fine).
+    var tripNotice: TripPlanOutcome?
+    /// Told about every journey planned, so it can be remembered as a recent search.
+    var onPlan: ((TripSpec) -> Void)?
     /// Optional live status per multimodal route id, filled in AFTER the static routes are
     /// already on screen. Missing/unavailable never affects the routes themselves.
     var realtimeByRouteId: [String: RealtimeLookup] = [:]
@@ -106,7 +132,7 @@ final class TransferPlannerViewModel {
         }
     }
 
-    private static func searchStops(_ keyword: String, city: BusCity) async -> [DestinationCandidate] {
+    static func searchStops(_ keyword: String, city: BusCity) async -> [DestinationCandidate] {
         let escaped = keyword.replacingOccurrences(of: "'", with: "''")
         let raw: [NearbyStop] = (try? await TDXClient.shared.get(
             "v2/Bus/Stop/City/\(city.rawValue)",
@@ -118,7 +144,7 @@ final class TransferPlannerViewModel {
         )) ?? []
         return raw.compactMap { s in
             guard let c = s.coordinate else { return nil }
-            return DestinationCandidate(name: s.stopName.display, subtitle: "公車站", coordinate: c, isLandmark: false)
+            return DestinationCandidate(name: s.stopName.display, subtitle: "公車站", coordinate: c, isLandmark: false, kind: .busStop, refId: s.stopUID)
         }
     }
 
@@ -129,7 +155,7 @@ final class TransferPlannerViewModel {
     /// results without the landmark itself in there at all. Re-rank by actual name
     /// match first, then distance, and collapse near-duplicate entries (sub-tenants of
     /// the same building) down to one.
-    private static func searchLandmarks(_ keyword: String, near: CLLocationCoordinate2D) async -> [DestinationCandidate] {
+    static func searchLandmarks(_ keyword: String, near: CLLocationCoordinate2D) async -> [DestinationCandidate] {
         let request = MKLocalSearch.Request()
         request.naturalLanguageQuery = keyword
         request.region = MKCoordinateRegion(center: near, span: MKCoordinateSpan(latitudeDelta: 0.3, longitudeDelta: 0.3))
@@ -161,10 +187,41 @@ final class TransferPlannerViewModel {
                     .distance(from: CLLocation(latitude: c.latitude, longitude: c.longitude)) < 40
             }
             guard !isDuplicate, let name = entry.item.name else { continue }
-            out.append(DestinationCandidate(name: name, subtitle: entry.item.placemark.title, coordinate: c, isLandmark: true))
+            out.append(DestinationCandidate(name: name, subtitle: entry.item.placemark.title, coordinate: c, isLandmark: true,
+                                            kind: entry.item.pointOfInterestCategory != nil ? .poi : .address))
             if out.count >= 8 { break }
         }
         return out
+    }
+
+    // MARK: Saved / recent journeys
+
+    /// The journey currently on screen as a value (origin defaults to "current location").
+    var currentSpec: TripSpec? {
+        guard let destination else { return nil }
+        return TripSpec(origin: originOverride?.endpoint ?? .currentLocation, destination: destination.endpoint, profile: preferredProfile)
+    }
+
+    /// Loads a saved/recent journey into the form (does not plan — the caller does).
+    func load(_ spec: TripSpec, currentLocation: CLLocationCoordinate2D) {
+        preferredProfile = spec.profile
+        if spec.origin.isCurrentLocation {
+            originOverride = nil
+            originText = ""
+        } else {
+            originOverride = DestinationCandidate(endpoint: spec.origin)
+            originText = spec.origin.name
+        }
+        destination = DestinationCandidate(endpoint: spec.destination, currentLocation: currentLocation)
+        destinationText = spec.destination.name
+        originResults = []
+        destinationResults = []
+    }
+
+    /// ⇅ — swap the two ends. "Current location" travels with whichever end it was on.
+    func reverse(currentLocation: CLLocationCoordinate2D) {
+        guard let spec = currentSpec else { return }
+        load(spec.reversed, currentLocation: currentLocation)
     }
 
     /// Runs bus AND metro planning together (metro skipped where the region has none) and
@@ -172,6 +229,7 @@ final class TransferPlannerViewModel {
     /// search, whichever mode actually has an answer.
     func planAll(city: BusCity, metroOperator: MetroOperator?, from origin: CLLocationCoordinate2D) async {
         guard let dest = destination?.coordinate else { return }
+        if let spec = currentSpec { onPlan?(spec) }
         // Give the backend a head start waking up (Render free tier sleeps when idle) —
         // by the time the user scrolls to and taps the YouBike option, it's had several
         // seconds/tens of seconds to come back, instead of the picker's own request being
@@ -185,6 +243,7 @@ final class TransferPlannerViewModel {
         multimodalRoutes = []
         unifiedRoutes = []
         realtimeByRouteId = [:]
+        tripNotice = nil
         planGeneration += 1
         let generation = planGeneration
         multimodalDebug = nil
@@ -193,17 +252,21 @@ final class TransferPlannerViewModel {
         // One call, one place that decides which planners to run and how to combine them —
         // this ViewModel no longer orchestrates TransferPlanner/MultimodalRoutingService/
         // MetroTransferPlanner itself. See UnifiedRoutingService.
-        let result = await UnifiedRoutingService.plan(
+        var result = await UnifiedRoutingService.plan(
             city: city, metroOperator: metroOperator, from: origin, to: dest, departureTime: multimodalDepartAt
         )
+        // Read the result the way a person would: routes (preferred one first) or WHY there are none.
+        let outcome = TripPlanner.outcome(from: result, profile: preferredProfile)
+        if case .routes(let ordered, _) = outcome { result = ordered } else { tripNotice = outcome }
         itineraries = result.busItineraries
         metroItineraries = result.metroItineraries
         unifiedRoutes = result.routes
         // Static routing is done and on screen. Realtime is a separate, optional second step:
         // it runs detached, can only add `realtimeByRouteId`, and its failure changes nothing above.
-        if !result.multimodalRoutes.isEmpty {
+        let planned = result
+        if !planned.multimodalRoutes.isEmpty {
             Task { [weak self] in
-                let enriched = await UnifiedRoutingService.attachRealtime(to: result)
+                let enriched = await UnifiedRoutingService.attachRealtime(to: planned)
                 guard let self, self.planGeneration == generation else { return }
                 self.realtimeByRouteId = enriched.realtimeByRouteId
                 self.unifiedRoutes = enriched.routes
@@ -311,8 +374,14 @@ struct TransferPlannerView: View {
     let city: BusCity
     let origin: CLLocationCoordinate2D
     var metroOperator: MetroOperator?
+    /// Opened from a saved/recent journey: the two places and preference are loaded and the journey is
+    /// planned again right away, against the current time.
+    var initialTrip: TripSpec? = nil
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @State private var startedInitialTrip = false
+    @State private var editorSpec: TripSpec?
     @State private var model = TransferPlannerViewModel()
     @State private var path = NavigationPath()
     @State private var showBikePicker = false
@@ -323,6 +392,8 @@ struct TransferPlannerView: View {
     /// service at 8am" for a time other than now. To check that, open the route/line from
     /// the results and look at its own 時刻表 section.
     @State private var railDepartAt = Date()
+
+    private struct SpecBox: Identifiable { let spec: TripSpec; var id: String { spec.identity } }
 
     struct NavTarget: Identifiable {
         let id = UUID()
@@ -395,6 +466,14 @@ struct TransferPlannerView: View {
                     }
                 }
 
+                Section {
+                    Button {
+                        model.reverse(currentLocation: origin)
+                        Task { await model.planAll(city: city, metroOperator: metroOperator, from: effectiveOrigin) }
+                    } label: { Label("互換起點與目的地", systemImage: "arrow.up.arrow.down") }
+                    .disabled(model.destination == nil)
+                }
+
                 Section("目的地") {
                     savedPlaceChips { place in
                         model.destination = DestinationCandidate(name: place.name, subtitle: nil, coordinate: place.coordinate, isLandmark: true)
@@ -446,8 +525,30 @@ struct TransferPlannerView: View {
                         }
                 }
 
+                if let spec = model.currentSpec, spec.isValid {
+                    Section {
+                        if TripStore(context: modelContext).isFavorite(spec) {
+                            Label("已在常用旅程", systemImage: "star.fill").font(.footnote).foregroundStyle(.secondary)
+                        } else {
+                            Button { editorSpec = spec } label: { Label("存為常用旅程", systemImage: "star") }
+                        }
+                    }
+                }
+
                 if model.isPlanning {
-                    Section { HStack { Spacer(); ProgressView("規劃路線中…"); Spacer() } }
+                    Section { HStack { Spacer(); ProgressView("正在重新規劃…"); Spacer() } }
+                }
+                if let notice = model.tripNotice, let message = notice.message, !model.isPlanning {
+                    Section {
+                        Text(message).font(.footnote).foregroundStyle(.orange)
+                        if case .endpointUnusable(let side) = notice {
+                            Button("重新選擇") {
+                                if side == .origin { model.originOverride = nil; model.originText = "" }
+                                else { model.destination = nil; model.destinationText = "" }
+                                model.tripNotice = nil
+                            }
+                        }
+                    }
                 }
                 if let err = model.errorText, !model.isPlanning {
                     Section { Text(err).font(.footnote).foregroundStyle(.secondary) }
@@ -556,6 +657,13 @@ struct TransferPlannerView: View {
                     }
                 }
 
+                if model.destination == nil {
+                    RecentTripsSection { spec in
+                        model.load(spec, currentLocation: origin)
+                        Task { await model.planAll(city: city, metroOperator: metroOperator, from: effectiveOrigin) }
+                    }
+                }
+
                 railContent
             }
             .navigationTitle("轉乘規劃")
@@ -563,6 +671,16 @@ struct TransferPlannerView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("關閉") { dismiss() }
+                }
+            }
+            .task {
+                // Every journey planned here is remembered as a recent search (capped, de-duplicated by place).
+                model.onPlan = { [modelContext] spec in try? TripStore(context: modelContext).recordSearch(spec) }
+                // Opened from a saved/recent journey: load it and plan it again NOW (a favorite never carries a route).
+                if let initialTrip, !startedInitialTrip {
+                    startedInitialTrip = true
+                    model.load(initialTrip, currentLocation: origin)
+                    await model.planAll(city: city, metroOperator: metroOperator, from: effectiveOrigin)
                 }
             }
             .task { await RailStationStore.shared.loadIfNeeded() }
@@ -590,6 +708,9 @@ struct TransferPlannerView: View {
             }
             .fullScreenCover(item: $multimodalNavTarget) { target in
                 InAppNavigationView(legs: target.legs, tripName: target.tripName)
+            }
+            .sheet(item: Binding(get: { editorSpec.map(SpecBox.init) }, set: { editorSpec = $0?.spec })) { box in
+                FavoriteTripEditor(existing: nil, initial: box.spec, context: TripEditorContext(city: city, near: origin))
             }
             .sheet(item: $editingSavedPlaceRole) { role in
                 SetSavedPlaceView(role: role, near: origin)
