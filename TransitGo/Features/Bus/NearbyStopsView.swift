@@ -190,32 +190,38 @@ final class NearbyViewModel {
         defer { isLoading = false }
         let (lat, lon) = (location.coordinate.latitude, location.coordinate.longitude)
         do {
-            let result: [NearbyStop] = try await TDXClient.shared.get(
-                "v2/Bus/Stop/City/\(city.rawValue)",
-                query: [
-                    "$spatialFilter": "nearby(\(lat),\(lon),500)",
-                    "$select": "StopUID,StopName,StopPosition,City",
-                    "$top": "80",
-                ]
-            )
-            // Highway coaches (公路客運) and 快捷 lines are listed under InterCity, not under any
-            // city — without this they never appear near stops that only they serve.
-            let interCity: [NearbyStop] = (try? await TDXClient.shared.get(
-                "v2/Bus/Stop/InterCity",
-                query: [
-                    "$spatialFilter": "nearby(\(lat),\(lon),500)",
-                    "$select": "StopUID,StopName,StopPosition",
-                    "$top": "80",
-                ]
-            )) ?? []
-            // Group by normalized name — the 500m radius is small enough that two
-            // entries sharing a name are almost always the same physical stop.
-            let byName = MergedStop.group(city: result, interCity: interCity)
-            // Second pass: fold together any *different*-named entries that sit within a
-            // few metres of each other — two stop poles that close are, in practice,
-            // always the same physical stop, whatever each bus company called it.
-            stops = Self.mergeByProximity(byName)
-                .sorted { distance($0, location) < distance($1, location) }
+            // Static stop positions come from our backend (routing graph, no TDX call); TDX is only the
+            // fallback when the backend cannot answer or has no bus data here.
+            if let fromBackend = await NearbyBusService.stops(near: location.coordinate, radius: 500, limit: 20, city: city) {
+                stops = fromBackend.sorted { distance($0, location) < distance($1, location) }
+                return
+            }
+                let result: [NearbyStop] = try await TDXClient.shared.get(
+                    "v2/Bus/Stop/City/\(city.rawValue)",
+                    query: [
+                        "$spatialFilter": "nearby(\(lat),\(lon),500)",
+                        "$select": "StopUID,StopName,StopPosition,City",
+                        "$top": "80",
+                    ]
+                )
+                // Highway coaches (公路客運) and 快捷 lines are listed under InterCity, not under any
+                // city — without this they never appear near stops that only they serve.
+                let interCity: [NearbyStop] = (try? await TDXClient.shared.get(
+                    "v2/Bus/Stop/InterCity",
+                    query: [
+                        "$spatialFilter": "nearby(\(lat),\(lon),500)",
+                        "$select": "StopUID,StopName,StopPosition",
+                        "$top": "80",
+                    ]
+                )) ?? []
+                // Group by normalized name — the 500m radius is small enough that two
+                // entries sharing a name are almost always the same physical stop.
+                let byName = MergedStop.group(city: result, interCity: interCity)
+                // Second pass: fold together any *different*-named entries that sit within a
+                // few metres of each other — two stop poles that close are, in practice,
+                // always the same physical stop, whatever each bus company called it.
+                stops = Self.mergeByProximity(byName)
+                    .sorted { distance($0, location) < distance($1, location) }
         } catch {
             errorText = error.localizedDescription
         }

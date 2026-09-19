@@ -57,4 +57,42 @@ final class NearbyStopMergeTests: XCTestCase {
         let city = try XCTUnwrap(StopArrival(realtime: status("5610")))
         XCTAssertNotEqual(ic.id, city.id)
     }
+
+    // MARK: backend response → stops
+
+    private func backend(_ json: String) throws -> NearbyBusService.Response {
+        try JSONDecoder().decode(NearbyBusService.Response.self, from: Data(json.utf8))
+    }
+
+    func testBackendStopsSplitIntoCityAndInterCityUIDs() throws {
+        let r = try backend("""
+        {"ok":true,"covered":true,"stops":[
+          {"name":"竹北火車站","lat":24.84,"lon":121.0095,"distanceMeters":169,
+           "stops":[{"scope":"City/HsinchuCounty","stopUID":"HSQ001"},{"scope":"InterCity","stopUID":"THB900"}]},
+          {"name":"飛利浦","lat":24.841,"lon":121.005,"distanceMeters":400,
+           "stops":[{"scope":"InterCity","stopUID":"THB902"}]}
+        ]}
+        """)
+        let m = NearbyBusService.merged(r, city: .hsinchuCounty)
+        XCTAssertEqual(m.count, 2)
+        XCTAssertEqual(m[0].stopUIDs, ["HSQ001"])
+        XCTAssertEqual(m[0].interCityUIDs, ["THB900"])
+        XCTAssertEqual(m[1].stopUIDs, [])
+        XCTAssertEqual(m[1].interCityUIDs, ["THB902"])
+    }
+
+    func testStopOnlyKnownUnderAnotherCityIsDroppedNotShownEmpty() throws {
+        let r = try backend("""
+        {"ok":true,"covered":true,"stops":[
+          {"name":"邊界站","lat":24.8,"lon":121.0,"distanceMeters":50,"stops":[{"scope":"City/Hsinchu","stopUID":"HSZ1"}]}
+        ]}
+        """)
+        XCTAssertTrue(NearbyBusService.merged(r, city: .hsinchuCounty).isEmpty)
+    }
+
+    func testResponseDecodesTheNotCoveredSignal() throws {
+        let r = try backend(#"{"ok":true,"radiusMeters":500,"covered":false,"stops":[]}"#)
+        XCTAssertFalse(r.covered)
+        XCTAssertTrue(r.stops.isEmpty)
+    }
 }

@@ -28,25 +28,32 @@ final class HomeViewModel {
 
         if let city = region?.busCity {
             do {
-                let raw: [NearbyStop] = try await TDXClient.shared.get(
-                    "v2/Bus/Stop/City/\(city.rawValue)",
-                    query: [
-                        "$spatialFilter": "nearby(\(location.coordinate.latitude),\(location.coordinate.longitude),400)",
-                        "$select": "StopUID,StopName,StopPosition,City",
-                        "$top": "40",
-                    ]
-                )
-                // Highway coaches / 快捷 lines live under InterCity — see NearbyViewModel.load.
-                let interCity: [NearbyStop] = (try? await TDXClient.shared.get(
-                    "v2/Bus/Stop/InterCity",
-                    query: [
-                        "$spatialFilter": "nearby(\(location.coordinate.latitude),\(location.coordinate.longitude),400)",
-                        "$select": "StopUID,StopName,StopPosition",
-                        "$top": "40",
-                    ]
-                )) ?? []
-                // Merge same-physical-stop name variants (see NearbyStopsView.MergedStop).
-                let merged = MergedStop.group(city: raw, interCity: interCity)
+                let merged: [MergedStop]
+                // Stop positions are static: ask our backend (answers from its routing graph, no TDX
+                // call). Only when it cannot answer, or has no bus data here, fall back to TDX.
+                if let fromBackend = await NearbyBusService.stops(near: location.coordinate, radius: 400, limit: 3, city: city) {
+                    merged = fromBackend
+                } else {
+                    let raw: [NearbyStop] = try await TDXClient.shared.get(
+                        "v2/Bus/Stop/City/\(city.rawValue)",
+                        query: [
+                            "$spatialFilter": "nearby(\(location.coordinate.latitude),\(location.coordinate.longitude),400)",
+                            "$select": "StopUID,StopName,StopPosition,City",
+                            "$top": "40",
+                        ]
+                    )
+                    // Highway coaches / 快捷 lines live under InterCity — see NearbyViewModel.load.
+                    let interCity: [NearbyStop] = (try? await TDXClient.shared.get(
+                        "v2/Bus/Stop/InterCity",
+                        query: [
+                            "$spatialFilter": "nearby(\(location.coordinate.latitude),\(location.coordinate.longitude),400)",
+                            "$select": "StopUID,StopName,StopPosition",
+                            "$top": "40",
+                        ]
+                    )) ?? []
+                    // Merge same-physical-stop name variants (see NearbyStopsView.MergedStop).
+                    merged = MergedStop.group(city: raw, interCity: interCity)
+                }
                 let top = merged.sorted { dist($0, location) < dist($1, location) }.prefix(3)
                 var built: [NearStopEntry] = []
                 for m in top {
