@@ -44,6 +44,7 @@ import { RebuildLock } from "./graph/rebuildLock.mjs";
 import { buildAndPublishGraph, downloadAndLoadGraph } from "./graph/graphPersistence.mjs";
 import { storageConfigured } from "./graph/graphStorage.mjs";
 import { planRoute, graphCoverage } from "./routing/api.mjs";
+import { findNearbyBusStops } from "./graph/busStops.mjs";
 import { createRealtimeService } from "./realtime/service.mjs";
 import { getRouting } from "./tdx.mjs";
 import { createBikeRealtime } from "./bike/realtime.mjs";
@@ -505,6 +506,21 @@ app.get("/v1/realtime/bus/stops", async (req, res) => {
   const stops = typeof req.query.stops === "string" ? req.query.stops.split(",").filter(Boolean) : [];
   if (!/^(City\/[A-Za-z]+|InterCity)$/.test(scope) || stops.length === 0 || stops.length > 12) return res.status(400).json({ ok: false, error: "need scope=City/<City>|InterCity and 1-12 stops" });
   res.json({ ok: true, ...(await realtime.busStopArrivals({ scopePath: scope, stopUIDs: stops })) });
+});
+
+/**
+ * Nearest bus stops from the routing graph — replaces the app querying TDX for stop lists (static
+ * data, and TDX quotas are tiny). `covered:false` means the graph has no bus data near the point:
+ * the app must treat that as "unknown" and fall back, never as "no stops here".
+ * Each physical stop lists every {scope, stopUID} to request arrivals with (scope InterCity = 公路客運/快捷).
+ */
+app.get("/v1/bus/nearby", (req, res) => {
+  const lat = parseFloat(req.query.lat), lon = parseFloat(req.query.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).json({ ok: false, error: "lat/lon required" });
+  const radius = Math.min(1000, Math.max(50, parseInt(req.query.radius, 10) || 500));
+  const limit = Math.min(20, Math.max(1, parseInt(req.query.limit, 10) || 6));
+  if (!routingGraph) return res.status(503).json({ ok: false, error: "routing graph still initializing, try again shortly" });
+  res.json({ ok: true, radiusMeters: radius, ...findNearbyBusStops(routingGraph, lat, lon, { radiusMeters: radius, limit }) });
 });
 
 /** Realtime availability for specific YouBike stations (ids as routing returns them, "BIKE_Taipei:500101001"). */
