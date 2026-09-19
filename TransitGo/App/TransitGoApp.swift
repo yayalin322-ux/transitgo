@@ -12,7 +12,7 @@ struct TransitGoApp: App {
     private static let container: ModelContainer = {
         do { return try AppStore.makeContainer() }
         catch {
-            print("[store] could not open the persistent store: \(error)")
+            NSLog("[store] could not open the persistent store: %@", String(describing: error))
             return (try? AppStore.makeContainer(inMemory: true)) ?? { fatalError("no SwiftData container available") }()
         }
     }()
