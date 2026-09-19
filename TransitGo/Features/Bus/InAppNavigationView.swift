@@ -23,6 +23,16 @@ final class NavigationLocationTracker: NSObject, CLLocationManagerDelegate {
     @ObservationIgnored var onLocation: ((CLLocation) -> Void)?
     @ObservationIgnored var onAuthorizationChange: ((CLAuthorizationStatus) -> Void)?
 
+    /// Navigation-grade fixes: drop stale/implausible fixes and smooth the rest (see `NavLocationFilter`).
+    /// Off by default so the trip-navigation service sharing this tracker keeps seeing raw fixes.
+    @ObservationIgnored private var filter = NavLocationFilter()
+    @ObservationIgnored private var filtersFixes = false
+
+    func enableNavigationFiltering() {
+        filtersFixes = true
+        manager.distanceFilter = kCLDistanceFilterNone   // ~1 fix/s while moving; 5 m steps were too coarse at speed
+    }
+
     override init() {
         super.init()
         manager.delegate = self
@@ -59,11 +69,17 @@ final class NavigationLocationTracker: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let loc = locations.last else { return }
+        guard let newest = locations.last else { return }
         Task { @MainActor in
-            self.location = loc
-            self.updateTick += 1
-            self.onLocation?(loc)
+            // Filtering must see every fix in order; the unfiltered path keeps its old "newest only".
+            let batch = self.filtersFixes ? locations : [newest]
+            for raw in batch {
+                let fix: CLLocation? = self.filtersFixes ? self.filter.process(raw) : raw
+                guard let loc = fix else { continue }
+                self.location = loc
+                self.updateTick += 1
+                self.onLocation?(loc)
+            }
         }
     }
 
@@ -192,7 +208,12 @@ struct InAppNavigationView: View {
     @State private var route: MKRoute?
     @State private var isRouting = true
     @State private var offRoute = false
-    @State private var offRouteStreak = 0
+    @State private var offRouteDetector = OffRouteDetector()
+    /// The planned route as a metric polyline, and where the latest fix sits on it.
+    @State private var track: RouteTrack?
+    @State private var progress: RouteTrack.Projection?
+    /// Along-route distance of each step's maneuver point (parallel to `route.steps`).
+    @State private var stepAlong: [Double] = []
     /// Real TDX live-position match for a "ride" leg's vehicle — the one currently
     /// closest to the user, on that real route. This is an inference, not a confirmed
     /// boarding scan, so the UI always labels it "推測" (inferred).
@@ -238,7 +259,7 @@ struct InAppNavigationView: View {
     @State private var showRating = false
     @State private var photoSpots: [RoutePhotoSpot] = []
     @State private var photoFetchCenter: CLLocationCoordinate2D?
-    private let speech = AVSpeechSynthesizer()
+    @State private var speaker = NavSpeaker()
     private let maneuverHaptic = UIImpactFeedbackGenerator(style: .light)
     private let notificationHaptic = UINotificationFeedbackGenerator()
     private let legTransitionHaptic = UIImpactFeedbackGenerator(style: .medium)
@@ -260,6 +281,7 @@ struct InAppNavigationView: View {
     /// How far into the *current* leg we are, 0...1 — for the little progress bar under the
     /// metrics card. Nil until we know both the leg's starting distance and where we are now.
     private var legProgressFraction: Double? {
+        if let track, let progress { return min(1, max(0, progress.alongMeters / track.totalMeters)) }
         guard let start = legInitialDistance, start > 0, let loc = tracker.location else { return nil }
         let remaining = loc.distance(from: CLLocation(latitude: destination.latitude, longitude: destination.longitude))
         return min(1, max(0, 1 - remaining / start))
@@ -277,8 +299,6 @@ struct InAppNavigationView: View {
     // twin running alongside, simply being in a different lane than MapKit's chosen
     // polyline can momentarily read tens of metres away — that's normal lane choice,
     // not having left the route.
-    private var offRouteThreshold: CLLocationDistance { transportType == .walking ? 40 : 120 }
-    private static let requiredOffRouteFixes = 3
 
     @Namespace private var mapScope
 
@@ -290,7 +310,7 @@ struct InAppNavigationView: View {
                 // recenter()), so that cone plus the MapCompass button both showing
                 // direction at once read as two redundant compasses. A plain dot with no
                 // heading indicator of its own removes the duplicate.
-                if let userCoord = tracker.location?.coordinate {
+                if let userCoord = displayCoordinate {
                     Annotation("", coordinate: userCoord) {
                         Circle()
                             .fill(.blue)
@@ -305,7 +325,7 @@ struct InAppNavigationView: View {
                     MapPolyline(route.polyline).stroke(.white, style: StrokeStyle(lineWidth: 11, lineCap: .round, lineJoin: .round))
                     MapPolyline(route.polyline).stroke(.blue, style: StrokeStyle(lineWidth: 7, lineCap: .round, lineJoin: .round))
                 }
-                Marker(destinationName, coordinate: destination).tint(.red)
+                Marker(destinationName, coordinate: effectiveDestination).tint(.red)
                 ForEach(photoSpots) { spot in
                     Annotation(spot.name, coordinate: spot.coordinate) {
                         AsyncImage(url: spot.imageURL) { image in
@@ -553,6 +573,7 @@ struct InAppNavigationView: View {
         }
         .navigationBarBackButtonHidden()
         .onAppear {
+            tracker.enableNavigationFiltering()
             tracker.start()
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt, options: [.duckOthers, .mixWithOthers])
             try? AVAudioSession.sharedInstance().setActive(true)
@@ -590,6 +611,7 @@ struct InAppNavigationView: View {
         .task { await computeRoute(from: tracker.location?.coordinate) }
         .onChange(of: tracker.updateTick) { _, _ in
             guard let newLoc = tracker.location else { return }
+            updateProgress(newLoc)
             if followUser { recenter() }
             checkOffRoute(newLoc)
             handleLocationUpdate(newLoc)
@@ -647,28 +669,66 @@ struct InAppNavigationView: View {
         }
     }
 
+    /// Where the destination pin and the arrival check really are. A landmark's coordinate often sits
+    /// inside a building or campus, where no road or path reaches; the route MapKit computed ends at the
+    /// nearest place you can actually get to, so that end point is the truthful target (and the pin is
+    /// drawn there — on the road). Only trusted when it lies close to the requested spot.
+    private var effectiveDestination: CLLocationCoordinate2D {
+        guard let track else { return destination }
+        let snapped = CLLocation(latitude: track.end.latitude, longitude: track.end.longitude)
+        let asked = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
+        return snapped.distance(from: asked) <= 300 ? track.end : destination
+    }
+
+    /// The user's dot: pulled onto the route line while they are on it (GPS wobbles a few metres either
+    /// side of the road), the raw fix otherwise — never hiding a real detour.
+    private var displayCoordinate: CLLocationCoordinate2D? {
+        guard let loc = tracker.location else { return nil }
+        if let progress, progress.distanceFromRoute <= max(12, loc.horizontalAccuracy * 1.5) { return progress.snapped }
+        return loc.coordinate
+    }
+
+    /// Metres left: along the road when the route is known (a bend makes the crow-flies figure too
+    /// short), straight line to the destination otherwise.
+    private var remainingMeters: Double? {
+        guard let loc = tracker.location else { return nil }
+        if let track, let progress {
+            return track.remainingMeters(fromAlong: progress.alongMeters) + progress.distanceFromRoute
+        }
+        return loc.distance(from: CLLocation(latitude: effectiveDestination.latitude, longitude: effectiveDestination.longitude))
+    }
+
     private var distanceText: String {
-        guard let loc = tracker.location else { return "—" }
-        let d = loc.distance(from: CLLocation(latitude: destination.latitude, longitude: destination.longitude))
+        guard let d = remainingMeters else { return "—" }
         return d < 1000 ? "\(Int(d)) 公尺" : String(format: "%.1f 公里", d / 1000)
     }
 
+    /// Counts down as you actually progress (recomputed from the live position on every fix), and shows
+    /// seconds for the last few minutes so the movement is visible.
     private var etaText: String {
-        guard let mins = etaMinutes else { return "—" }
+        guard let secs = etaSeconds else { return "—" }
+        let s = Int(secs.rounded())
+        if s < 60 { return "\(max(s, 0)) 秒" }
+        if s < 300 { return "\(s / 60) 分 \(String(format: "%02d", s % 60)) 秒" }
+        let mins = Int((secs / 60).rounded(.up))
         return mins < 60 ? "\(mins) 分" : "\(mins / 60) 小時 \(mins % 60) 分"
     }
 
-    /// For walking, this uses the *learned* personal pace against the live remaining
-    /// distance (so it counts down as you actually get closer, not just on reroute) rather
-    /// than the static route estimate from MapKit's generic walking-speed assumption.
-    private var etaMinutes: Int? {
-        if transportType == .walking, let loc = tracker.location {
-            let remaining = loc.distance(from: CLLocation(latitude: destination.latitude, longitude: destination.longitude))
-            return WalkingSpeedLearner.estimatedMinutes(forMeters: remaining)
+    private var etaSeconds: Double? {
+        guard let remaining = remainingMeters else { return nil }
+        // Walking uses the learned personal pace against the live remaining distance.
+        if transportType == .walking {
+            return Double(WalkingSpeedLearner.estimatedMinutes(forMeters: remaining)) * 60
         }
         guard let route else { return nil }
-        return max(0, Int((route.expectedTravelTime / 60).rounded()))
+        let routeMeters = track?.totalMeters ?? route.distance
+        return NavETA.remainingSeconds(
+            remainingMeters: remaining, routeMeters: routeMeters, routeSeconds: route.expectedTravelTime,
+            speed: tracker.location?.speed, vehicle: transportType == .automobile
+        )
     }
+
+    private var etaMinutes: Int? { etaSeconds.map { Int(($0 / 60).rounded(.up)) } }
 
     private var speedText: String {
         guard let s = tracker.location?.speed, s >= 0 else { return "—" }
@@ -774,6 +834,7 @@ struct InAppNavigationView: View {
     }
 
     private func finish() {
+        speaker.stop()
         tracker.stop()
         endActivity()
         dismiss()
@@ -791,10 +852,8 @@ struct InAppNavigationView: View {
 
     // MARK: - Voice announcements
 
-    private func speak(_ text: String) {
-        let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: "zh-TW")
-        speech.speak(utterance)
+    private func speak(_ text: String, _ priority: SpeechPriority = .normal) {
+        speaker.speak(text, priority)
     }
 
     private func handleLocationUpdate(_ loc: CLLocation) {
@@ -807,13 +866,16 @@ struct InAppNavigationView: View {
         // first MKDirections response) — acting on distance now would announce every
         // milestone a short trip already starts inside of, all at once.
         guard milestonesInitialized else { return }
-        let distance = loc.distance(from: CLLocation(latitude: destination.latitude, longitude: destination.longitude))
+        // Arrival is judged against the reachable end of the route (on the road), not a pin that may sit
+        // inside a building; milestones count road distance left, so they match the screen.
+        let straight = loc.distance(from: CLLocation(latitude: effectiveDestination.latitude, longitude: effectiveDestination.longitude))
+        let distance = remainingMeters ?? straight
         // A noisy fix (common between buildings) can read 20-30m closer than reality —
         // trusting a single such reading is exactly what caused "already arrived" to
         // fire before actually there. Require the close reading to repeat, and only
         // count it at all if this particular fix's own accuracy is good enough to trust.
         let fixIsTrustworthy = loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy <= Self.maxTrustedAccuracy
-        let isClose = distance <= Self.arrivalThreshold && fixIsTrustworthy
+        let isClose = straight <= Self.arrivalThreshold && fixIsTrustworthy
         closeFixStreak = isClose ? closeFixStreak + 1 : 0
 
         if !arrived, closeFixStreak >= Self.requiredCloseFixes {
@@ -824,7 +886,7 @@ struct InAppNavigationView: View {
                 // Some destinations sit in the middle of a road with no exact building to
                 // stand at — "抵達附近" is honest about that instead of implying you
                 // should be standing on the exact pin.
-                speak("您已抵達\(tripName)附近")
+                speak("您已抵達\(tripName)附近", .high)
                 if transportType == .automobile { Task { await loadNearbyParking() } }
             } else {
                 // Reaching an intermediate waypoint (e.g. a YouBike station) isn't trip
@@ -847,14 +909,14 @@ struct InAppNavigationView: View {
         } else if !arrived {
             for m in Self.milestones where distance <= Double(m) && !announcedMilestones.contains(m) {
                 announcedMilestones.insert(m)
-                speak(m >= 1000 ? "距離目的地還有一公里" : "距離目的地還有\(m)公尺")
+                speak(m >= 1000 ? "距離目的地還有一公里" : "距離目的地還有\(m)公尺", .low)
             }
             // Surface parking options a little before arrival, not only after — by the
             // time you're actually stopped, you'd rather already know where to go than
             // start searching. 50m still leaves room to react before pulling in.
             if isLastLeg, transportType == .automobile, distance <= 50, !earlyParkingTriggered {
                 earlyParkingTriggered = true
-                speak("即將抵達，附近有停車場可以選擇")
+                speak("即將抵達，附近有停車場可以選擇", .low)
                 Task { await loadNearbyParking() }
             }
         }
@@ -927,9 +989,7 @@ struct InAppNavigationView: View {
     // MARK: - Live Activity
 
     private func currentState() -> NavigationTripAttributes.ContentState {
-        let meters = tracker.location.map {
-            Int($0.distance(from: CLLocation(latitude: destination.latitude, longitude: destination.longitude)))
-        } ?? 0
+        let meters = Int(remainingMeters ?? 0)
         return NavigationTripAttributes.ContentState(
             distanceMeters: meters, etaMinutes: etaMinutes ?? 0, offRoute: offRoute, arrived: arrived,
             modeLabel: modeLabel, modeSymbol: modeSymbol, legProgress: legProgressText,
@@ -1001,6 +1061,7 @@ struct InAppNavigationView: View {
         // says we're near the alight stop.
         if let transitLabel = currentLeg.transitLabel {
             route = nil
+            track = nil; progress = nil; stepAlong = []
             currentVehiclePlate = nil
             if !announcedStart {
                 announcedStart = true
@@ -1041,9 +1102,11 @@ struct InAppNavigationView: View {
         }
         errorText = highwayWarning
         route = first
+        installTrack(for: first)
         Task { await loadCamerasAlongRoute(first) }
         let wasOffRoute = offRoute
         offRoute = false
+        offRouteDetector.reset()
         lastRerouteAt = .now
         // A reroute means a brand new step list — start tracking maneuvers from its
         // beginning again, not wherever the old route's index happened to be.
@@ -1055,30 +1118,43 @@ struct InAppNavigationView: View {
             speak("開始導航前往\(tripName)")
             startActivityIfNeeded()
         } else {
-            if wasOffRoute { speak("已重新規劃路線") }
+            if wasOffRoute { speak("已重新規劃路線", .high) }
             updateActivity()
         }
     }
 
-    /// Distance from `loc` to the nearest point on the current route's polyline.
-    private func checkOffRoute(_ loc: CLLocation) {
-        guard let route, !isRouting else { return }
+    /// Builds the metric track for a freshly computed route and where each step's maneuver sits on it.
+    private func installTrack(for route: MKRoute) {
         let points = route.polyline.points()
-        let count = route.polyline.pointCount
-        guard count > 0 else { return }
-        let here = MKMapPoint(loc.coordinate)
-        var minDistance = CLLocationDistance.greatestFiniteMagnitude
-        for i in 0..<count {
-            let d = here.distance(to: points[i])
-            if d < minDistance { minDistance = d }
+        let coords = (0..<route.polyline.pointCount).map { points[$0].coordinate }
+        track = RouteTrack(coordinates: coords)
+        progress = nil
+        guard let track else { stepAlong = []; return }
+        var last = 0.0
+        stepAlong = route.steps.map { step in
+            guard step.polyline.pointCount > 0 else { return last }
+            let along = track.project(step.polyline.points()[0].coordinate, after: last).alongMeters
+            last = max(last, along)
+            return last
         }
-        let strayedThisFix = minDistance > offRouteThreshold
-        offRouteStreak = strayedThisFix ? offRouteStreak + 1 : 0
-        let strayed = offRouteStreak >= Self.requiredOffRouteFixes
-        if strayed, !offRoute { speak("已偏離路線，重新規劃路線中") }
+    }
+
+    /// Where the latest fix sits on the route (distance from it and along it).
+    private func updateProgress(_ loc: CLLocation) {
+        guard let track, !isRouting else { return }
+        progress = track.project(loc.coordinate, after: progress?.alongMeters)
+    }
+
+    /// Off route = clearly away from the road for a couple of good fixes (see `OffRouteDetector`):
+    /// a wrong turn is noticed in seconds, and the reroute starts at once — within 6 s of the last
+    /// one — instead of after three slow fixes and a 12 s wait.
+    private func checkOffRoute(_ loc: CLLocation) {
+        guard route != nil, let progress, !isRouting else { return }
+        let mode: OffRouteDetector.Mode = transportType == .walking ? .walking : .vehicle
+        let strayed = offRouteDetector.update(distanceFromRoute: progress.distanceFromRoute, accuracy: loc.horizontalAccuracy, mode: mode)
+        if strayed, !offRoute { speak("已偏離路線，重新規劃路線中", .high) }
         offRoute = strayed
-        // Throttle recalculation — don't fire a new MKDirections request on every 5m tick.
-        if strayed, Date().timeIntervalSince(lastRerouteAt) > 12 {
+        if strayed, Date().timeIntervalSince(lastRerouteAt) > 6 {
             Task { await computeRoute(from: loc.coordinate, preferContinueForward: true) }
         }
     }
@@ -1094,7 +1170,14 @@ struct InAppNavigationView: View {
         let nextStep = steps[nextIndex]
         guard nextStep.polyline.pointCount > 0 else { return }
         let maneuverCoord = nextStep.polyline.points()[0].coordinate
-        let distanceToManeuver = loc.distance(from: CLLocation(latitude: maneuverCoord.latitude, longitude: maneuverCoord.longitude))
+        // Road distance to the maneuver when we are on the route (a curve makes the crow-flies figure too
+        // short, so the call-out came late), straight line otherwise.
+        let distanceToManeuver: CLLocationDistance
+        if let progress, progress.distanceFromRoute < 60, nextIndex < stepAlong.count {
+            distanceToManeuver = max(0, stepAlong[nextIndex] - progress.alongMeters)
+        } else {
+            distanceToManeuver = loc.distance(from: CLLocation(latitude: maneuverCoord.latitude, longitude: maneuverCoord.longitude))
+        }
         let fixIsTrustworthy = loc.horizontalAccuracy >= 0 && loc.horizontalAccuracy <= Self.maxTrustedAccuracy
 
         // A fixed 150m warning felt premature at low/parking-lot speed and late on a
@@ -1108,7 +1191,9 @@ struct InAppNavigationView: View {
         } else {
             announceThreshold = 150
         }
-        let passThreshold: CLLocationDistance = transportType == .walking ? 20 : 35
+        // With road distance the "passed it" test can be tight: 35 m switched the banner to the NEXT turn while
+        // the current one was still ahead — the instructions "jumped" too early.
+        let passThreshold: CLLocationDistance = transportType == .walking ? 6 : 12
 
         if distanceToManeuver <= announceThreshold, !announcedStepIndices.contains(nextIndex), !nextStep.instructions.isEmpty {
             announcedStepIndices.insert(nextIndex)
@@ -1172,7 +1257,7 @@ struct InAppNavigationView: View {
                         text += "，您已超速，目前時速\(currentKmh)公里，測速限速\(limit)公里"
                     }
                 }
-                speak(text)
+                speak(text, .high)
             }
             if announcedCamIDs.contains(cam.id), d <= announceThreshold, d > passThreshold {
                 // Prefer the closest still-relevant camera for the on-screen banner.
