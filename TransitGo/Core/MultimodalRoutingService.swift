@@ -33,6 +33,11 @@ struct MultimodalSegment: Decodable, Identifiable {
     /// Real TDX scope path this route was ingested from (e.g. "City/Hsinchu",
     /// "InterCity") — needed to call the right live-position endpoint.
     let scopePath: String?
+    /// Graph node ids ("TPE:TPE153800" = feed:stop) and the boarded trip ("TRA_152_2026-09-21")
+    /// — carried only so `RealtimeTransitService` can look the vehicle up; nil on an older deploy.
+    let from: String?
+    let to: String?
+    let tripId: String?
     let fromName: String?
     let toName: String?
     let fromLat: Double?

@@ -383,6 +383,22 @@ struct StopArrival: Identifiable {
         }
     }
     var sortKey: Int { estimateTime ?? (stopStatus == 0 ? 999_998 : 999_999) }
+
+    /// From the unified realtime model. The TDX StopStatus values (1/2/3/4) round-trip through
+    /// `RealtimeState`, so the on-screen wording (`displayText`) is unchanged.
+    init?(realtime r: RealtimeStatus) {
+        guard let name = r.routeName, let direction = r.direction else { return nil }
+        self.routeName = name
+        self.direction = direction
+        self.estimateTime = r.etaSeconds
+        switch r.state {
+        case .notDeparted: self.stopStatus = 1
+        case .notStopping: self.stopStatus = 2
+        case .lastServicePassed: self.stopStatus = 3
+        case .notOperating: self.stopStatus = 4
+        default: self.stopStatus = r.etaSeconds == nil ? nil : 0
+        }
+    }
 }
 
 struct RawStopETA: Decodable {
