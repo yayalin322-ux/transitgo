@@ -1,3 +1,15 @@
+/** An HTTP-level TDX failure with its status preserved (the message format is unchanged, so
+ * every existing `e.message` consumer keeps working) — realtime needs the status itself to
+ * tell a rate limit (429) from a credential problem (401/403) from a server error. */
+export class TdxHttpError extends Error {
+  constructor(message, status, kind = "http") {
+    super(message);
+    this.name = "TdxHttpError";
+    this.status = status;
+    this.kind = kind;   // "auth" for a token request, "http" for an API request
+  }
+}
+
 const TOKEN_URL =
   "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token";
 const BASE = "https://tdx.transportdata.tw/api/basic";
@@ -32,7 +44,7 @@ async function fetchToken(clientId, clientSecret) {
     body,
     signal: AbortSignal.timeout(20_000),
   });
-  if (!res.ok) throw new Error(`TDX auth ${res.status}`);
+  if (!res.ok) throw new TdxHttpError(`TDX auth ${res.status}`, res.status, "auth");
   const json = await res.json();
   return { token: json.access_token, expiresInMs: (json.expires_in ?? 86400) * 1000 };
 }
@@ -59,7 +71,7 @@ async function fetchWithToken(path, t) {
     headers: { authorization: `Bearer ${t}` },
     signal: AbortSignal.timeout(20_000),
   });
-  if (!res.ok) throw new Error(`TDX ${path} ${res.status}`);
+  if (!res.ok) throw new TdxHttpError(`TDX ${path} ${res.status}`, res.status);
   return res.json();
 }
 

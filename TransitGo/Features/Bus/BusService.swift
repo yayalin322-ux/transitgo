@@ -194,20 +194,15 @@ struct BusService {
     /// Same as above but scope-general — routes like intercity coach 5900 (新竹縣政府↔高鐵新竹站)
     /// live under `.interCity`, not any city, so anything scoped to a single `BusCity` alone
     /// will never see them at a stop that only intercity coaches serve.
+    ///
+    /// Goes through `RealtimeTransitService` (our backend), like every other realtime read —
+    /// the "nearby" list and route planning share one cache and one failure policy. Throws only
+    /// when the backend cannot answer; an empty array is a real "no arrivals".
     func arrivals(scope: BusScope, stopUIDs: [String]) async throws -> [StopArrival] {
         guard !stopUIDs.isEmpty else { return [] }
-        let filter = stopUIDs.map { "StopUID eq '\($0)'" }.joined(separator: " or ")
-        let raw: [RawStopETA] = try await client.get(
-            "v2/Bus/EstimatedTimeOfArrival/\(scope.pathComponent)",
-            query: [
-                "$filter": filter,
-                "$select": "RouteName,Direction,EstimateTime,StopStatus",
-                "$top": "160",
-            ]
-        )
-        return raw
-            .map { StopArrival(routeName: $0.routeName.display, direction: $0.direction,
-                               estimateTime: $0.estimateTime, stopStatus: $0.stopStatus) }
+        let result = try await RealtimeTransitService.shared.busArrivals(scopePath: scope.pathComponent, stopUIDs: stopUIDs)
+        return result.stops.values.flatMap { $0 }
+            .compactMap { StopArrival(realtime: $0) }
             .sorted {
                 $0.sortKey != $1.sortKey ? $0.sortKey < $1.sortKey : natCompare($0.routeName, $1.routeName)
             }

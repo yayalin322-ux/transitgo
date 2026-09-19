@@ -33,6 +33,11 @@ final class TransferPlannerViewModel {
     /// future route-result UI (Phase 6) should render from. Populated alongside the
     /// typed arrays above, from the same single planning call.
     var unifiedRoutes: [RouteResult] = []
+    /// Optional live status per multimodal route id, filled in AFTER the static routes are
+    /// already on screen. Missing/unavailable never affects the routes themselves.
+    var realtimeByRouteId: [String: RealtimeLookup] = [:]
+    /// Bumped on every new plan so a slow realtime reply for an OLD search can't land on a new one.
+    private var planGeneration = 0
     var isPlanning = false
     var errorText: String?
 
@@ -179,6 +184,9 @@ final class TransferPlannerViewModel {
         metroItineraries = []
         multimodalRoutes = []
         unifiedRoutes = []
+        realtimeByRouteId = [:]
+        planGeneration += 1
+        let generation = planGeneration
         multimodalDebug = nil
         defer { isPlanning = false }
 
@@ -191,6 +199,16 @@ final class TransferPlannerViewModel {
         itineraries = result.busItineraries
         metroItineraries = result.metroItineraries
         unifiedRoutes = result.routes
+        // Static routing is done and on screen. Realtime is a separate, optional second step:
+        // it runs detached, can only add `realtimeByRouteId`, and its failure changes nothing above.
+        if !result.multimodalRoutes.isEmpty {
+            Task { [weak self] in
+                let enriched = await UnifiedRoutingService.attachRealtime(to: result)
+                guard let self, self.planGeneration == generation else { return }
+                self.realtimeByRouteId = enriched.realtimeByRouteId
+                self.unifiedRoutes = enriched.routes
+            }
+        }
         switch result.multimodalStatus {
         case .success(let routes):
             multimodalRoutes = routes
@@ -482,13 +500,10 @@ struct TransferPlannerView: View {
                             // "共1小時24分・轉乘2次・步行680m・約NT$165" — omits any piece
                             // the backend didn't actually send a real value for (walking
                             // distance on an older deploy) rather than show a fake 0.
-                            // Live metro status (best effort) — its absence or "unavailable"
-                            // never changes the route above it.
-                            if let live = route.realtimeStatus {
-                                Text(live.summary)
-                                    .font(.caption2)
-                                    .foregroundStyle(live.available ? Color.secondary : Color.orange)
-                            }
+                            // Live status (optional overlay) — its absence or "unavailable"
+                            // never changes the route above it, and it never replaces the
+                            // scheduled times shown in the line above.
+                            RealtimeRouteLine(lookup: model.realtimeByRouteId[route.id])
                             Text([
                                 "共\(route.durationSeconds >= 3600 ? "\(route.durationSeconds / 3600)小時" : "")\(route.durationSeconds % 3600 / 60)分",
                                 "轉乘\(route.transfers)次",
@@ -729,5 +744,43 @@ struct TransferPlannerView: View {
                 Text("—").foregroundStyle(.tertiary)
             }
         }
+    }
+}
+
+
+/// One line under a route card: "🟠 即時：延誤 5 分・預計 9:52 抵達" / "🟢 即時：正常" /
+/// "即時資訊暫時無法取得". Static times stay in the line above; this only adds. While the
+/// lookup is still running (nil) nothing is shown at all — no spinner, no placeholder.
+private struct RealtimeRouteLine: View {
+    let lookup: RealtimeLookup?
+
+    private static let clock: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm"; f.locale = Locale(identifier: "zh_Hant_TW"); return f
+    }()
+
+    var body: some View {
+        switch lookup {
+        case .loaded(let overlay):
+            VStack(alignment: .leading, spacing: 2) {
+                Text(lineText(overlay))
+                    .font(.caption2)
+                    .foregroundStyle(overlay.isWarning || !overlay.summary.anyRealtime ? Color.orange : Color.secondary)
+                ForEach(overlay.summary.alerts.prefix(2)) { alert in
+                    Text("⚠️ \(alert.title)").font(.caption2).foregroundStyle(.orange)
+                }
+            }
+        case .unavailable(let reason):
+            Text(reason.text).font(.caption2).foregroundStyle(.orange)
+        case .notRequested, nil:
+            EmptyView()
+        }
+    }
+
+    private func lineText(_ overlay: RealtimeOverlay) -> String {
+        var text = overlay.cardLine
+        if overlay.eta.etaSource == .realtime, let est = overlay.estimatedArrival {
+            text += "・預計 \(Self.clock.string(from: est)) 抵達（即時）"
+        }
+        return text
     }
 }

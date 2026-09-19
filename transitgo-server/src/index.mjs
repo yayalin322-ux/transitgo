@@ -44,7 +44,8 @@ import { RebuildLock } from "./graph/rebuildLock.mjs";
 import { buildAndPublishGraph, downloadAndLoadGraph } from "./graph/graphPersistence.mjs";
 import { storageConfigured } from "./graph/graphStorage.mjs";
 import { planRoute, graphCoverage } from "./routing/api.mjs";
-import { createMetroRealtime } from "./routing/metroRealtime.mjs";
+import { createRealtimeService } from "./realtime/service.mjs";
+import { getRouting } from "./tdx.mjs";
 import { TDXProvider } from "./tdx/adapter.mjs";
 import { ingestTRAStations, ingestTRAPair, ingestTHSRStations, ingestTHSRPair, ingestBusRouteSchedule, ingestMetroOperator } from "./tdx/ingest.mjs";
 
@@ -455,13 +456,41 @@ if (!storageConfigured()) {
     .catch((e) => console.error(`[routing] unexpected error during boot graph recovery: ${e.message}`));
 }
 
-const metroRealtime = createMetroRealtime();
+// Realtime is a separate overlay service, never part of route planning: the route response
+// above is fully static and returns immediately; clients ask /v1/realtime/* afterwards.
+// TDX calls use the routing engine's own credentials (the iOS app's embedded TDX key is
+// currently rejected by TDX, so realtime cannot go app -> TDX directly anyway).
+const realtime = createRealtimeService({ tdxGet: getRouting, db });
 
 app.post("/api/v1/routes", async (req, res) => {
   if (!routingGraph) return res.status(503).json({ ok: false, error: "routing graph still initializing, try again shortly" });
-  const result = await planRoute(routingGraph, req.body, db, { realtime: metroRealtime });
+  const result = await planRoute(routingGraph, req.body, db);
   res.status(result.status).json(result.body);
 });
+
+/** Realtime overlay for a planned route. Body: { segments, departureTime, arrivalTime } exactly as
+ * returned by POST /api/v1/routes. Always 200 with per-leg availability — a realtime failure is
+ * data ("即時資料暫時無法取得"), never an error status, and says nothing about the route itself. */
+app.post("/v1/realtime/route", async (req, res) => {
+  const { segments, departureTime, arrivalTime } = req.body || {};
+  if (!Array.isArray(segments) || segments.length > 16) return res.status(400).json({ ok: false, error: "segments must be an array (max 16)" });
+  try {
+    res.json({ ok: true, ...(await realtime.routeOverlay({ segments, departureTime, arrivalTime })) });
+  } catch (e) {
+    res.json({ ok: true, legs: [], eta: { etaSource: "scheduled", estimatedArrivalTime: null, shiftSeconds: null, basedOnLeg: null }, summary: { anyRealtime: false, state: null, delaySeconds: null, alerts: [], unavailableReasons: ["unavailable"] } });
+  }
+});
+
+/** Next bus arrivals at a set of stops (the nearby list). ?scope=City/Taipei&stops=UID1,UID2 */
+app.get("/v1/realtime/bus/stops", async (req, res) => {
+  const scope = typeof req.query.scope === "string" ? req.query.scope : "";
+  const stops = typeof req.query.stops === "string" ? req.query.stops.split(",").filter(Boolean) : [];
+  if (!/^(City\/[A-Za-z]+|InterCity)$/.test(scope) || stops.length === 0 || stops.length > 12) return res.status(400).json({ ok: false, error: "need scope=City/<City>|InterCity and 1-12 stops" });
+  res.json({ ok: true, ...(await realtime.busStopArrivals({ scopePath: scope, stopUIDs: stops })) });
+});
+
+/** What realtime each mode really has, its sources, refresh/TTL and known limits. */
+app.get("/v1/realtime/capabilities", (_req, res) => res.json({ ok: true, capabilities: realtime.capabilities() }));
 
 /** What the multimodal engine actually has real data for right now — see graphCoverage()
  * in routing/api.mjs. The app should use this instead of a hardcoded coverage sentence. */

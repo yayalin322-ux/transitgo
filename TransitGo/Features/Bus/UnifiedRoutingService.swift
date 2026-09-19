@@ -95,6 +95,13 @@ struct RouteResult: Identifiable {
     /// strictly additive — a nil or "unavailable" status never changes whether the route exists.
     let realtimeStatus: String?
     let source: RouteResultSource
+    /// The backend's `MultimodalRoute.id` this result came from (nil for a legacy planner's
+    /// result) — the key realtime lookups are attached by.
+    var multimodalRouteId: String? = nil
+    /// Optional realtime overlay (see `UnifiedRoutingService.attachRealtime`). Always starts
+    /// as `.notRequested`: the static route above is complete without it, and nothing in this
+    /// struct is ever replaced by a realtime value — `overlay.eta` sits beside `arrival`.
+    var realtime: RealtimeLookup = .notRequested
 }
 
 /// The single facade every "plan a trip from A to B" call in the app should go through —
@@ -114,6 +121,9 @@ enum UnifiedRoutingService {
         /// real duration first; legacy bus/metro results (no duration data to sort by)
         /// follow in whatever order their own planner returned them.
         var routes: [RouteResult] = []
+        /// Realtime overlays by `MultimodalRoute.id`, filled in AFTER the static result is
+        /// returned (see `attachRealtime`); empty until then, and stays empty if realtime is down.
+        var realtimeByRouteId: [String: RealtimeLookup] = [:]
         /// True once every planner that could plausibly answer has come back empty —
         /// the point at which a caller should fall back to drive/walk/bike estimates.
         var isEmpty: Bool { routes.isEmpty }
@@ -181,6 +191,32 @@ enum UnifiedRoutingService {
         return result
     }
 
+    /// Realtime is a second, optional step: `plan` returns the static result immediately, and a
+    /// caller then awaits this to add live status. It goes through `RealtimeTransitService`
+    /// (backend only), never fails, and can only ever add `realtime` — a route found by `plan`
+    /// is never removed, reordered or re-timed here. At most `maxRoutes` of the best routes are
+    /// looked up (each identical lookup is cached and shared by the service).
+    static func attachRealtime(to result: Result, maxRoutes: Int = 3) async -> Result {
+        let targets = Array(result.multimodalRoutes.prefix(maxRoutes))
+        guard !targets.isEmpty else { return result }
+        let lookups = await withTaskGroup(of: (String, RealtimeLookup).self) { group -> [String: RealtimeLookup] in
+            for route in targets {
+                group.addTask { (route.id, await RealtimeTransitService.shared.getRealtime(route: route)) }
+            }
+            var out: [String: RealtimeLookup] = [:]
+            for await (id, lookup) in group { out[id] = lookup }
+            return out
+        }
+        var enriched = result
+        enriched.realtimeByRouteId = lookups
+        enriched.routes = result.routes.map { route in
+            var r = route
+            if let id = route.multimodalRouteId, let lookup = lookups[id] { r.realtime = lookup }
+            return r
+        }
+        return enriched
+    }
+
     /// Isolated so the one remaining call into the deprecated planner is greppable.
     @available(*, deprecated, message: "Legacy same-line metro planner; fallback only until backend MRT coverage reaches every region.")
     private static func legacyMetroFallback(operator op: MetroOperator, from origin: CLLocationCoordinate2D, to destination: CLLocationCoordinate2D) async -> [MetroItinerary] {
@@ -205,7 +241,7 @@ enum UnifiedRoutingService {
                 walkKind: seg.walkKind
             )
         }
-        return RouteResult(
+        var result = RouteResult(
             summary: route.label,
             legs: legs,
             transportModes: Array(Set(legs.map(\.mode))).sorted { $0.rawValue < $1.rawValue },
@@ -219,6 +255,8 @@ enum UnifiedRoutingService {
             realtimeStatus: route.realtimeStatus?.summary,
             source: .multimodalEngine
         )
+        result.multimodalRouteId = route.id
+        return result
     }
 
     private static func normalize(_ itinerary: TransferItinerary) -> RouteResult {
