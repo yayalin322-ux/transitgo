@@ -3,6 +3,7 @@ import { attachVirtualOrigin, attachVirtualDestination, haversineMeters } from "
 import { TransitEdge, Mode } from "../graph/model.mjs";
 import { rankRoutes } from "./rank.mjs";
 import { PROFILES } from "./profiles.mjs";
+import { BIKE_CONFIG, BIKE_FEED_PREFIX, isBikeNodeId } from "../bike/config.mjs";
 
 // Real TDX scope path for each feed this engine has ever ingested from — same
 // scopePath value the ingest admin endpoints were actually called with (see
@@ -30,6 +31,8 @@ const FEED_LABELS = {
   // Metro operators (feed id = "MRT_" + TDX operator code, see ingestMetroOperator).
   MRT_TRTC: "台北捷運", MRT_TYMC: "桃園捷運", MRT_NTMC: "新北捷運", MRT_KRTC: "高雄捷運",
 };
+// YouBike stations are feed "BIKE_<TDX city>" (see graph/bikeNetwork.mjs) — reported as its own
+// coverage entry, never mixed into the bus/rail lists.
 
 const METRO_FEED_PREFIX = "MRT_";
 function isMetroFeed(feedId) {
@@ -72,7 +75,7 @@ function secondsToIso(baseDate, seconds) {
  * optional (tests can omit it) — only used to resolve each leg's real route_short_name
  * for the client to look up live vehicle positions with; omitted, those fields are null.
  */
-export async function planRoute(graph, requestBody, db, { realtime = null } = {}) {
+export async function planRoute(graph, requestBody, db, { realtime = null, bikeRealtime = null } = {}) {
   const body = requestBody || {};
   const origin = body.origin;
   const destination = body.destination;
@@ -94,13 +97,30 @@ export async function planRoute(graph, requestBody, db, { realtime = null } = {}
   const straightLineMeters = haversineMeters(origin.lat, origin.lng, destination.lat, destination.lng);
   if (straightLineMeters < 20) return errorResponse("SAME_ORIGIN_DESTINATION");
 
+  // YouBike: on when the graph has a bike layer and the request doesn't opt out. Availability is read
+  // ONCE here (a cached, de-duplicated snapshot) BEFORE the virtual nodes exist — the search itself
+  // is synchronous and only asks the in-memory answer. A snapshot that can't be read is "unknown":
+  // bike candidates stay (flagged) or are excluded per `bikeUnavailable`, and nothing else changes.
+  const bikeEnabled = options.allowBike !== false && bikeStationCount(graph) > 0;
+  let bikeSearch = null, bikeOracle = null;
+  if (bikeEnabled) {
+    let snap = { ok: false, reason: "not_configured", stations: new Map() };
+    if (bikeRealtime) {
+      try { snap = await bikeRealtime.snapshot(); } catch { snap = { ok: false, reason: "unavailable", stations: new Map() }; }
+    }
+    bikeOracle = bikeRealtime
+      ? bikeRealtime.oracleFor(snap, { unknownPolicy: options.bikeUnavailable === "exclude" ? "exclude" : "allow" })
+      : { available: false, reason: "not_configured", check: () => (options.bikeUnavailable === "exclude" ? "no" : "unknown"), status: () => null };
+    bikeSearch = { check: bikeOracle.check, unlockSeconds: BIKE_CONFIG.unlockSeconds, returnSeconds: BIKE_CONFIG.returnSeconds };
+  }
+
   const requestId = randomUUID();
   const originId = `virtual_origin_${requestId}`;
   const destinationId = `virtual_destination_${requestId}`;
 
-  const originAttached = attachVirtualOrigin(graph, originId, origin.lat, origin.lng, { maxWalkingMeters: maxWalkingSeconds * 1.3 });
+  const originAttached = attachVirtualOrigin(graph, originId, origin.lat, origin.lng, { maxWalkingMeters: maxWalkingSeconds * 1.3, includeBike: bikeEnabled });
   if (!originAttached) return errorResponse("NO_ORIGIN_NEARBY");
-  const destAttached = attachVirtualDestination(graph, destinationId, destination.lat, destination.lng, { maxWalkingMeters: maxWalkingSeconds * 1.3 });
+  const destAttached = attachVirtualDestination(graph, destinationId, destination.lat, destination.lng, { maxWalkingMeters: maxWalkingSeconds * 1.3, includeBike: bikeEnabled });
   if (!destAttached) {
     cleanupVirtualNode(graph, originId);
     return errorResponse("NO_DESTINATION_NEARBY");
@@ -124,7 +144,7 @@ export async function planRoute(graph, requestBody, db, { realtime = null } = {}
   try {
     result = rankRoutes(graph, originId, destinationId, departure.secondsOfDay, {
       maxResults: 5,
-      searchOptions: { maxWalkingSeconds, maxTransfers, dateStr: departure.dateStr.replace(/-/g, "") },
+      searchOptions: { maxWalkingSeconds, maxTransfers, dateStr: departure.dateStr.replace(/-/g, ""), bike: bikeSearch },
     });
   } finally {
     cleanupVirtualNode(graph, originId);
@@ -184,6 +204,7 @@ export async function planRoute(graph, requestBody, db, { realtime = null } = {}
         // a metro-station-to-nearby-stop link, or an ordinary street walk (null).
         walkKind: walkKindOf(l.source),
         tripId: l.serviceKey ? l.serviceKey.slice(l.serviceKey.indexOf(":") + 1) : null,
+        ...(l.mode === "BIKE" ? { straightLineMeters: l.straightLineMeters ?? null, handlingSeconds: l.handlingSeconds ?? 0 } : {}),
       });
     }
     routes.push({
@@ -198,6 +219,9 @@ export async function planRoute(graph, requestBody, db, { realtime = null } = {}
       transfers: r.route.transfers,
       fare: r.route.fare,
       walkingDistanceMeters: r.route.walkingDistanceMeters,
+      // YouBike totals (estimated distance/time — see `assumptions` on the response); null when no bike leg.
+      bikeDistanceMeters: r.route.bikeSeconds > 0 ? r.route.bikeMeters : null,
+      bikeSeconds: r.route.bikeSeconds > 0 ? r.route.bikeSeconds : null,
       // Best-effort live metro status (see routing/metroRealtime.mjs) — null when the trip
       // has no metro leg or no realtime provider is configured; { available: false } when
       // one was asked and couldn't answer. Never affects whether the route itself exists.
@@ -213,7 +237,75 @@ export async function planRoute(graph, requestBody, db, { realtime = null } = {}
 
   if (realtime) await attachMetroRealtime(routes, realtime);
 
-  return { status: 200, body: { requestId, routes } };
+  const body2 = { requestId, routes };
+  if (routes.some((r) => r.segments.some((sg) => sg.mode === "BIKE"))) {
+    for (const route of routes) attachBikeDetails(route, bikeOracle);
+    body2.assumptions = { bike: bikeAssumptions() };
+    body2.bikeRealtime = { available: bikeOracle?.available ?? false, reason: bikeOracle?.reason ?? null };
+  }
+  return { status: 200, body: body2 };
+}
+
+/** Number of YouBike stations in the graph (counted once per graph instance — the layer never changes after a build). */
+function bikeStationCount(graph) {
+  if (graph._bikeStationCount == null) {
+    let n = 0;
+    for (const id of graph.nodes.keys()) if (isBikeNodeId(id)) n++;
+    graph._bikeStationCount = n;
+  }
+  return graph._bikeStationCount;
+}
+
+/** The estimated-model numbers, disclosed on every response that contains a bike leg. */
+function bikeAssumptions() {
+  return {
+    distanceBasis: "estimate",
+    detourFactor: BIKE_CONFIG.detourFactor,
+    speedMps: BIKE_CONFIG.speedMps,
+    unlockSeconds: BIKE_CONFIG.unlockSeconds,
+    returnSeconds: BIKE_CONFIG.returnSeconds,
+    note: "騎乘距離＝直線距離 × 繞路係數、時間＝距離 ÷ 假設車速；目前沒有自行車道路網或票價資料，皆為估計值。",
+  };
+}
+
+/**
+ * Adds the bike detail to a route: per BIKE segment the rent/return station's realtime state (as of
+ * THIS request's snapshot) and the estimate flags, and a route-level `bikeRides` summary with the
+ * walk to the dock, the ride and the walk from the dock. Realtime missing => availability
+ * "unknown" with a reason; the route and its times are never touched.
+ */
+function attachBikeDetails(route, oracle) {
+  const rides = [];
+  route.segments.forEach((seg, i) => {
+    if (seg.mode !== "BIKE") return;
+    const rentStatus = oracle?.status(seg.from) ?? null;
+    const returnStatus = oracle?.status(seg.to) ?? null;
+    const known = !!(rentStatus && returnStatus);
+    const prev = route.segments[i - 1], next = route.segments[i + 1];
+    const rideSeconds = Math.max(0, seg.durationSeconds - (seg.handlingSeconds ?? 0));
+    seg.bike = {
+      rentStationId: seg.from, rentStationName: seg.fromName,
+      returnStationId: seg.to, returnStationName: seg.toName,
+      bikeDistanceMeters: seg.distanceMeters, straightLineMeters: seg.straightLineMeters,
+      bikeDurationSeconds: rideSeconds, handlingSeconds: seg.handlingSeconds ?? 0,
+      isEstimated: true,
+      availability: {
+        status: known ? "known" : "unknown",
+        reason: known ? null : (oracle?.reason ?? (oracle?.available ? "station_not_in_snapshot" : "unavailable")),
+        rent: rentStatus, return: returnStatus,
+      },
+    };
+    seg.isEstimated = true;
+    rides.push({
+      segmentIndex: i,
+      walkingToBikeMeters: prev?.mode === "WALK" ? (route.legs.find((l) => l.to === seg.from && l.mode === "WALK")?.distanceMeters ?? null) : 0,
+      bikeDistanceMeters: seg.distanceMeters,
+      walkingFromBikeMeters: next?.mode === "WALK" ? (route.legs.find((l) => l.from === seg.to && l.mode === "WALK")?.distanceMeters ?? null) : 0,
+      bikeDurationSeconds: rideSeconds,
+    });
+  });
+  route.bikeRides = rides;
+  route.bikeAvailability = route.segments.filter((s) => s.mode === "BIKE").every((s) => s.bike.availability.status === "known") ? "known" : "unknown";
 }
 
 /** "MRT_TRTC:BL12" -> "TRTC" (the TDX operator code a realtime lookup needs). */
@@ -277,6 +369,11 @@ function collapseToSegments(legs) {
       last.durationSeconds = (Date.parse(leg.arrivalTime) - Date.parse(last.departureTime)) / 1000;
       last.stopsPassed += 1;
       last.isEstimated = last.isEstimated || leg.isEstimated;
+      if (leg.mode === "BIKE") {   // consecutive bike hops are ONE ride: sum the estimated distance
+        last.distanceMeters = (last.distanceMeters ?? 0) + (leg.distanceMeters ?? 0);
+        last.straightLineMeters = (last.straightLineMeters ?? 0) + (leg.straightLineMeters ?? 0);
+        last.handlingSeconds = (last.handlingSeconds ?? 0) + (leg.handlingSeconds ?? 0);
+      }
       if (last.stops) { last.stops.push(leg.toName); last.alightingStation = leg.toName; }
     } else {
       segments.push({
@@ -292,6 +389,7 @@ function collapseToSegments(legs) {
         isEstimated: leg.isEstimated,
         walkKind: leg.walkKind ?? null,
         tripId: leg.tripId ?? null,
+        ...(leg.mode === "BIKE" ? { distanceMeters: leg.distanceMeters ?? null, straightLineMeters: leg.straightLineMeters ?? null, handlingSeconds: leg.handlingSeconds ?? 0 } : {}),
         // Metro rides carry the fields an itinerary needs: which line, which direction,
         // where you board/alight and every station in between (real station names).
         ...(leg.mode === "MRT" ? {
@@ -329,9 +427,17 @@ export function graphCoverage(graph) {
   }
   let metroStations = 0;
   for (const id of graph.nodes.keys()) if (isMetroFeed(String(id).split(":")[0])) metroStations++;
+  const bikeCities = new Set();
+  let bikeStations = 0;
+  for (const id of graph.nodes.keys()) {
+    if (!isBikeNodeId(id)) continue;
+    bikeStations++;
+    bikeCities.add(id.slice(BIKE_FEED_PREFIX.length, id.indexOf(":")));
+  }
   return {
     bus: bus.sort(),
     rail: rail.sort(),
+    bike: { available: bikeStations > 0, stationCount: bikeStations, cities: [...bikeCities].sort() },
     // Metro operators that actually have real stations + run times in the live graph —
     // computed from the graph itself, so an operator whose ingest was skipped (no real
     // run times) never shows up here.

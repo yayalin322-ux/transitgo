@@ -2,6 +2,7 @@ import { MinHeap } from "./heap.mjs";
 import { haversineMeters } from "../graph/virtual.mjs";
 import { Mode } from "../graph/model.mjs";
 import { isServiceActiveOn } from "../graph/calendar.mjs";
+import { isBikeNodeId } from "../bike/config.mjs";
 
 /**
  * One point in the search — architecture doc section 5: "State = Node + Time", not just
@@ -9,7 +10,7 @@ import { isServiceActiveOn } from "../graph/calendar.mjs";
  * reconstruct the actual route once the destination is reached.
  */
 class RoutingState {
-  constructor({ nodeId, time, cost = 0, walkingSeconds = 0, waitingSeconds = 0, transitSeconds = 0, transfers = 0, fare = 0, fareKnown = true, waitKnown = true, lastTripKey = null, onboardKey = null, previousState = null, previousEdge = null }) {
+  constructor({ nodeId, time, cost = 0, walkingSeconds = 0, waitingSeconds = 0, transitSeconds = 0, transfers = 0, fare = 0, fareKnown = true, waitKnown = true, lastTripKey = null, onboardKey = null, riding = false, bikeSeconds = 0, bikeMeters = 0, bikeAvailabilityUnknown = false, handlingSeconds = 0, previousState = null, previousEdge = null }) {
     this.nodeId = nodeId;
     this.time = time;               // real clock time (seconds since midnight) — drives which real trips/headway windows are reachable
     this.cost = cost;               // accumulated g(n) under the active RoutingProfile's weights — drives ranking/pruning, not real time
@@ -33,6 +34,15 @@ class RoutingState {
     // train/bus", i.e. no new wait to pay.
     this.lastTripKey = lastTripKey;
     this.onboardKey = onboardKey;
+    // YouBike: true from the moment a bike is rented until it is returned at a dock. Part of the
+    // search state (a rider on a bike at a station is not comparable to a walker at the same station).
+    this.riding = riding;
+    this.bikeSeconds = bikeSeconds;
+    this.bikeMeters = bikeMeters;
+    // Sticky: some rent/return check had no usable realtime answer (see options.bike.check).
+    this.bikeAvailabilityUnknown = bikeAvailabilityUnknown;
+    // Unlock+return time folded into the FIRST bike edge of a ride (0 on every other edge).
+    this.handlingSeconds = handlingSeconds;
     this.previousState = previousState;
     this.previousEdge = previousEdge;
   }
@@ -69,6 +79,12 @@ export function findRoute(graph, originId, destinationId, departureTimeSeconds, 
     // cancellations). No date = no calendar filtering (useful for synthetic/test graphs
     // that don't model calendars at all).
     dateStr = null,
+    // YouBike layer. Absent/null = bike edges and bike stations are invisible to this search
+    // (the pre-bike behavior, exactly). When present:
+    //   check(nodeId, "rent"|"return") -> "yes" | "no" | "unknown"   realtime overlay, asked ONLY when
+    //     a candidate station is actually about to be used — the graph itself holds no availability.
+    //   unlockSeconds / returnSeconds — handling time (assumptions, see bike/config.mjs).
+    bike = null,
   } = options;
 
   if (originId === destinationId) {
@@ -110,13 +126,53 @@ export function findRoute(graph, originId, destinationId, departureTimeSeconds, 
         transitSeconds = state.transitSeconds, transfers = state.transfers, fare = state.fare, fareKnown = state.fareKnown,
         waitKnown = state.waitKnown;
       let nextOnboardKey = null;
+      let riding = false, bikeSeconds = state.bikeSeconds, bikeMeters = state.bikeMeters, bikeUnknown = state.bikeAvailabilityUnknown, handlingSeconds = 0;
 
-      if (edge.mode === Mode.WALK) {
+      if (edge.mode === Mode.BIKE) {
+        if (!bike) continue;
+        // Renting: only on foot, only at a station that really has a bike. Riding on: no check.
+        let handling = 0;
+        if (!state.riding) {
+          const verdict = bike.check(edge.fromNodeId, "rent");
+          if (verdict === "no") continue;
+          if (verdict === "unknown") bikeUnknown = true;
+          handling = (bike.unlockSeconds ?? 0) + (bike.returnSeconds ?? 0);
+        }
+        const rideSeconds = (edge.travelSeconds ?? 0) + handling;
+        nextTime = state.time + rideSeconds;
+        bikeSeconds += rideSeconds;
+        bikeMeters += edge.distanceMeters ?? 0;
+        handlingSeconds = handling;
+        // Boarding a bike after another ride is a transfer; carrying on riding is not.
+        const bikeKey = "BIKE:";
+        const isTransfer = !state.riding && state.lastTripKey != null && state.lastTripKey !== bikeKey;
+        if (isTransfer) {
+          transfers += 1;
+          if (transfers > maxTransfers) continue;
+        }
+        fareKnown = false;   // no bike fare source exists: the route's fare is unknown, never 0
+        addedCost = (profile.bikeWeight ?? profile.timeWeight) * rideSeconds + (isTransfer ? profile.transferPenaltySeconds : 0);
+        nextOnboardKey = bikeKey;
+        riding = true;
+      } else if (edge.mode === Mode.WALK) {
         if (edge.travelSeconds == null) continue;
         if (walkingSeconds + edge.travelSeconds > maxWalkingSeconds) continue;
+        if (state.riding) {
+          // Leaving a dock while riding = returning the bike here: needs a free dock.
+          const verdict = bike?.check(state.nodeId, "return") ?? "no";
+          if (verdict === "no") continue;
+          if (verdict === "unknown") bikeUnknown = true;
+          riding = false;
+        } else if (bike && isBikeNodeId(state.nodeId)) {
+          continue;   // on foot at a dock the only thing to do is rent; docks are never walking bridges
+        } else if (!bike && isBikeNodeId(edge.toNodeId)) {
+          continue;   // bike layer off: dock stations are invisible
+        }
         nextTime = state.time + edge.travelSeconds;
         walkingSeconds += edge.travelSeconds;
         addedCost = profile.walkingWeight * edge.travelSeconds;
+      } else if (state.riding) {
+        continue;   // cannot board anything while holding a bike
       } else if (edge.isTimeDependent || edge.isHeadwayBased || edge.waitUnknown) {
         // A transfer is boarding a *different ride* than the one you last rode — not
         // merely a different Mode enum value (bus route 1 to bus route 5 is a real transfer
@@ -182,6 +238,7 @@ export function findRoute(graph, originId, destinationId, departureTimeSeconds, 
       const nextState = new RoutingState({
         nodeId: edge.toNodeId, time: nextTime, cost: nextCost,
         walkingSeconds, waitingSeconds, transitSeconds, transfers, fare, fareKnown, waitKnown,
+        riding, bikeSeconds, bikeMeters, bikeAvailabilityUnknown: bikeUnknown, handlingSeconds,
         lastTripKey: edge.mode === Mode.WALK ? state.lastTripKey : nextOnboardKey,
         onboardKey: nextOnboardKey,
         previousState: state, previousEdge: edge,
@@ -205,7 +262,7 @@ function reconstruct(finalState) {
       // instant is (arrival - ride time), not the previous node's arrival time (that
       // would wrongly fold the wait into the leg's own duration).
       departureSeconds: s.previousEdge.departureSeconds
-        ?? (s.previousEdge.travelSeconds != null ? s.time - s.previousEdge.travelSeconds : s.previousState.time),
+        ?? (s.previousEdge.travelSeconds != null ? s.time - s.previousEdge.travelSeconds - (s.handlingSeconds || 0) : s.previousState.time),
       arrivalSeconds: s.time,
       isEstimated: s.previousEdge.isHeadwayBased || s.previousEdge.waitUnknown,
       distanceMeters: s.previousEdge.distanceMeters,
@@ -215,6 +272,9 @@ function reconstruct(finalState) {
       // "TRA:TRA_152_2026-09-14" for a real-trip edge — lets the realtime overlay know WHICH
       // train a leg boards (headway edges have no single trip, so null).
       serviceKey: s.previousEdge.isTimeDependent ? (s.previousEdge.serviceKey ?? null) : null,
+      // BIKE legs: the un-detoured distance the estimated ride distance came from, and the unlock+return
+      // handling time folded into this leg (first hop of a ride only).
+      ...(s.previousEdge.mode === "BIKE" ? { straightLineMeters: s.previousEdge.straightLineMeters ?? null, handlingSeconds: s.handlingSeconds || 0 } : {}),
     });
     s = s.previousState;
   }
@@ -234,6 +294,10 @@ function reconstruct(finalState) {
     transfers: finalState.transfers,
     fare: finalState.fareKnown ? finalState.fare : null,
     walkingDistanceMeters,
+    // YouBike totals (0 / false when the route has no bike leg).
+    bikeSeconds: finalState.bikeSeconds,
+    bikeMeters: finalState.bikeMeters,
+    bikeAvailabilityUnknown: finalState.bikeAvailabilityUnknown,
     cost: finalState.cost,
     legs,
   };
