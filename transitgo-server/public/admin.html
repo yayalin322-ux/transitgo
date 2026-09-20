@@ -5,241 +5,287 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>TransitGo 管理</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { font: 15px/1.5 -apple-system, "PingFang TC", system-ui, sans-serif; max-width: 720px; margin: 0 auto; padding: 20px; }
-  h1 { font-size: 20px; }
-  fieldset { border: 1px solid #8884; border-radius: 10px; margin: 16px 0; padding: 14px; }
-  legend { font-weight: 600; }
+  :root { color-scheme: light dark; --line: #8884; --muted: .65; --blue: #007aff; --red: #d70015; --amber: #b25e00; }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.5 -apple-system, "PingFang TC", system-ui, sans-serif; max-width: 860px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  header { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 12px; }
+  .pill { font-size: 12px; padding: 3px 10px; border-radius: 99px; border: 1px solid var(--line); }
+  .pill.ok { color: #1a7f37; border-color: #1a7f3766; } .pill.bad { color: var(--red); border-color: #d7001566; }
+  input, select, textarea, button { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid #8886; width: 100%; background: transparent; color: inherit; }
   label { display: block; margin: 8px 0 3px; font-size: 13px; opacity: .8; }
-  input, select, textarea, button { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid #8886; width: 100%; box-sizing: border-box; background: transparent; color: inherit; }
-  button { background: #007aff; color: #fff; border: 0; font-weight: 600; cursor: pointer; width: auto; padding: 9px 18px; }
-  .row { display: flex; gap: 10px; }
-  .row > * { flex: 1; }
-  .item { border-bottom: 1px solid #8883; padding: 8px 0; font-size: 13px; }
-  .warn { color: #d70015; } .info { color: #007aff; }
+  button { width: auto; cursor: pointer; background: var(--blue); color: #fff; border: 0; font-weight: 600; padding: 8px 14px; }
+  button.ghost { background: #8883; color: inherit; font-weight: 500; }
+  button.danger { background: var(--red); }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; } .row > * { flex: 1 1 140px; }
+  nav { display: flex; gap: 6px; border-bottom: 1px solid var(--line); margin: 12px 0; overflow-x: auto; }
+  nav button { background: none; color: inherit; border-radius: 8px 8px 0 0; font-weight: 500; opacity: .7; white-space: nowrap; }
+  nav button.on { opacity: 1; border-bottom: 3px solid var(--blue); font-weight: 700; }
+  .badge { display: inline-block; min-width: 18px; padding: 0 6px; margin-left: 4px; border-radius: 99px; background: var(--red); color: #fff; font-size: 12px; text-align: center; }
+  .badge:empty, .badge[data-n="0"] { display: none; }
+  .card { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin: 10px 0; }
+  .card h3 { margin: 0 0 6px; font-size: 15px; }
+  .item { border-bottom: 1px solid #8883; padding: 10px 0; font-size: 14px; }
+  .item:last-child { border-bottom: 0; }
+  .tag { font-size: 12px; padding: 1px 8px; border-radius: 99px; margin-right: 4px; display: inline-block; }
+  .tag.warn { background: #d7001522; color: var(--red); } .tag.info { background: #007aff22; color: var(--blue); } .tag.gray { background: #8883; }
+  small, .muted { opacity: var(--muted); font-size: 12px; }
+  .actions { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .empty { padding: 18px; text-align: center; opacity: .6; }
   pre { background: #8881; padding: 10px; border-radius: 8px; overflow: auto; font-size: 12px; }
-  code { background: #8882; padding: 1px 5px; border-radius: 4px; }
+  img.thumb { max-width: 160px; border-radius: 8px; margin-top: 6px; display: block; }
+  #toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: #222; color: #fff; padding: 10px 16px; border-radius: 10px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; z-index: 9; }
+  #toast.show { opacity: .95; } #toast.err { background: var(--red); }
+  section[hidden] { display: none; }
 </style>
 </head>
 <body>
-<h1>TransitGo 管理台</h1>
+<header>
+  <h1>TransitGo 管理台</h1>
+  <span id="status" class="pill">檢查服務中…</span>
+</header>
 
-<fieldset>
-  <legend>管理者權杖</legend>
-  <input id="token" type="password" placeholder="ADMIN_TOKEN" />
-  <p style="font-size:12px;opacity:.7">存在瀏覽器 localStorage，不會外傳。</p>
-</fieldset>
-
-<fieldset>
-  <legend>發佈公告</legend>
-  <div class="row">
-    <div><label>分類</label>
-      <select id="category">
-        <option value="metro">捷運</option>
-        <option value="rail">台鐵 / 高鐵</option>
-        <option value="bus">公車</option>
-        <option value="general">一般</option>
-      </select>
-    </div>
-    <div><label>嚴重度</label>
-      <select id="severity">
-        <option value="info">資訊</option>
-        <option value="warning" selected>警示</option>
-        <option value="critical">緊急</option>
-      </select>
-    </div>
-    <div><label>幾分鐘後過期（空=不過期）</label>
-      <input id="expires" type="number" placeholder="180" />
-    </div>
+<div class="card" id="tokenCard">
+  <div class="row" style="align-items:end">
+    <div style="flex:3 1 220px"><label for="token">管理者權杖（ADMIN_TOKEN）</label><input id="token" type="password" autocomplete="off" placeholder="貼上權杖後按 Enter" /></div>
+    <div style="flex:0 0 auto"><button id="tokenBtn">登入</button></div>
   </div>
-  <label>標題</label>
-  <input id="title" placeholder="例如：板南線忠孝復興站有旅客事件，列車延誤" />
-  <label>內文</label>
-  <textarea id="body" rows="3" placeholder="細節說明…"></textarea>
-  <p><button onclick="publish()">發佈並推播</button> <span id="pubMsg"></span></p>
-</fieldset>
+  <small>只存在這個瀏覽器的 localStorage，不會外傳。</small>
+</div>
 
-<fieldset>
-  <legend>目前公告 <button style="background:#8884;color:inherit" onclick="loadAnns()">重新整理</button></legend>
-  <div id="anns"></div>
-</fieldset>
+<nav id="tabs">
+  <button data-tab="todo" class="on">待處理<span class="badge" id="b-todo" data-n="0"></span></button>
+  <button data-tab="ann">公告</button>
+  <button data-tab="feedback">回報與評分</button>
+  <button data-tab="content">地標與評論</button>
+  <button data-tab="system">系統</button>
+</nav>
 
-<fieldset>
-  <legend>行程評分 <button style="background:#8884;color:inherit" onclick="loadRatings()">重新整理</button></legend>
-  <div id="ratingStats" style="margin-bottom:8px;font-size:15px"></div>
-  <div id="ratings"></div>
-</fieldset>
+<!-- 待處理 -->
+<section id="tab-todo">
+  <p class="muted">只列出需要你動手的：待核准的地標、被檢舉的地標或評論、自稱店家但尚未驗證的地標。處理完就會從這裡消失。</p>
+  <div id="todo"></div>
+</section>
 
-<fieldset>
-  <legend>乘客回報（上下車） <button style="background:#8884;color:inherit" onclick="loadObs()">重新整理</button></legend>
-  <div id="obs"></div>
-</fieldset>
+<!-- 公告 -->
+<section id="tab-ann" hidden>
+  <div class="card">
+    <h3>發佈公告並推播</h3>
+    <div class="row">
+      <div><label for="category">分類</label>
+        <select id="category"><option value="metro">捷運</option><option value="rail">台鐵 / 高鐵</option><option value="bus">公車</option><option value="general">一般</option></select></div>
+      <div><label for="severity">嚴重度</label>
+        <select id="severity"><option value="info">資訊</option><option value="warning" selected>警示</option><option value="critical">緊急</option></select></div>
+      <div><label for="expires">幾分鐘後過期（空 = 不過期）</label><input id="expires" type="number" min="1" placeholder="180" /></div>
+    </div>
+    <label for="title">標題</label><input id="title" maxlength="80" placeholder="例如：板南線忠孝復興站有旅客事件，列車延誤" />
+    <label for="body">內文</label><textarea id="body" rows="3" placeholder="細節說明…"></textarea>
+    <div class="actions"><button id="publishBtn">發佈並推播</button><span id="pubMsg" class="muted"></span></div>
+  </div>
+  <div class="card"><h3>目前公告</h3><div id="anns"></div></div>
+</section>
 
-<fieldset>
-  <legend>App 回報 <button style="background:#8884;color:inherit" onclick="loadReports()">重新整理</button></legend>
-  <div id="reports"></div>
-</fieldset>
+<!-- 回報與評分 -->
+<section id="tab-feedback" hidden>
+  <div class="card"><h3>App 回報</h3><div id="reports"></div></div>
+  <div class="card"><h3>行程評分</h3><div id="ratingStats" class="muted"></div><div id="ratings"></div></div>
+  <div class="card"><h3>乘客回報（上下車）</h3><div id="obs"></div></div>
+</section>
 
-<fieldset>
-  <legend>地標評論 <button style="background:#8884;color:inherit" onclick="loadPlaceReviews()">重新整理</button></legend>
-  <p style="font-size:12px;opacity:.7">被檢舉次數高的排最前面；使用者在 App 端按「檢舉」會累加次數，不會自動隱藏。</p>
-  <div id="placeReviews"></div>
-</fieldset>
+<!-- 地標與評論 -->
+<section id="tab-content" hidden>
+  <input id="filter" placeholder="搜尋名稱、內容…（只在下面的清單中篩選）" />
+  <div class="card"><h3>使用者新增地標</h3><div id="landmarks"></div></div>
+  <div class="card"><h3>地標評論</h3><p class="muted">被檢舉次數高的排最前面；檢舉只累加次數，不會自動隱藏。</p><div id="placeReviews"></div></div>
+</section>
 
-<fieldset>
-  <legend>使用者新增地標（待審核） <button style="background:#8884;color:inherit" onclick="loadLandmarks()">重新整理</button></legend>
-  <p style="font-size:12px;opacity:.7">未核准的地標排最前面；核准後才會出現在 App「附近」頁面的地標清單。</p>
-  <div id="landmarks"></div>
-</fieldset>
+<!-- 系統 -->
+<section id="tab-system" hidden>
+  <div class="card"><h3>服務狀態</h3><div id="sysInfo" class="muted">讀取中…</div></div>
+  <div class="card"><h3>YouBike 資料狀態</h3><pre id="bikeStatus">（登入後顯示）</pre></div>
+  <div class="card"><h3>用 curl 發佈公告</h3><pre id="curl"></pre></div>
+</section>
 
-<fieldset>
-  <legend>用 curl 發佈</legend>
-  <pre id="curl"></pre>
-</fieldset>
+<div id="toast" role="status"></div>
 
 <script>
+"use strict";
 const $ = (id) => document.getElementById(id);
+
+// Everything that comes from users (names, comments, descriptions, photo URLs…) goes through esc()
+// before it is put into the page. This page holds the admin token; unescaped user text is a script-injection hole.
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const safeImg = (src) => (typeof src === "string" && /^(data:image\/(png|jpe?g|webp|gif);base64,|https:\/\/)/i.test(src)) ? esc(src) : "";
+const num = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
 const reasonLabel = { spam: "廣告/垃圾訊息", offensive: "不當言論", sexual: "色情內容", harassment: "騷擾/人身攻擊", other: "其他" };
+const reasons = (o) => Object.entries(o || {}).map(([k, v]) => `${esc(reasonLabel[k] || k)} ×${num(v)}`).join("、");
+
+let toastTimer;
+function toast(msg, isErr) {
+  const t = $("toast"); t.textContent = msg; t.className = "show" + (isErr ? " err" : "");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = ""), isErr ? 4500 : 2200);
+}
+
+const headers = () => ({ "Content-Type": "application/json", Authorization: "Bearer " + $("token").value });
+async function api(path, opts = {}) {
+  let res;
+  try { res = await fetch(path, { ...opts, headers: headers() }); }
+  catch { toast("連不上伺服器（可能剛在喚醒，稍等幾十秒再試）", true); return null; }
+  if (res.status === 401) { toast("權杖不正確或尚未輸入", true); return null; }
+  if (!res.ok) { toast("失敗：" + res.status, true); return null; }
+  return res.json().catch(() => ({}));
+}
+
+// ---- state
+let landmarks = [], reviews = [];
 $("token").value = localStorage.getItem("tg_admin") || "";
-$("token").oninput = () => localStorage.setItem("tg_admin", $("token").value);
+const saveToken = () => { localStorage.setItem("tg_admin", $("token").value); loadAll(); };
+$("tokenBtn").onclick = saveToken;
+$("token").onkeydown = (e) => { if (e.key === "Enter") saveToken(); };
 
-function headers() {
-  return { "Content-Type": "application/json", Authorization: "Bearer " + $("token").value };
+// ---- tabs
+function showTab(name) {
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
+  document.querySelectorAll("section[id^=tab-]").forEach((s) => (s.hidden = s.id !== "tab-" + name));
+  if (name === "system") loadSystem();
+  history.replaceState(null, "", "#" + name);
 }
-function updateCurl() {
-  $("curl").textContent =
-`curl -X POST ${location.origin}/v1/admin/announcements \\
-  -H "Authorization: Bearer $ADMIN_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d '{"category":"metro","severity":"warning","title":"...","body":"...","expiresInMinutes":180}'`;
-}
-updateCurl();
+$("tabs").onclick = (e) => { const b = e.target.closest("button[data-tab]"); if (b) showTab(b.dataset.tab); };
 
-async function publish() {
-  $("pubMsg").textContent = "發佈中…";
-  const payload = {
-    category: $("category").value,
-    severity: $("severity").value,
-    title: $("title").value,
-    body: $("body").value,
-  };
-  const ex = parseInt($("expires").value, 10);
-  if (ex) payload.expiresInMinutes = ex;
-  const res = await fetch("/v1/admin/announcements", { method: "POST", headers: headers(), body: JSON.stringify(payload) });
-  const j = await res.json();
-  if (res.ok) {
-    $("pubMsg").textContent = `已發佈 #${j.announcement.id}（推播 ${j.push.dryRun ? "DRY-RUN" : j.push.sent + " 台"}）`;
-    $("title").value = ""; $("body").value = "";
-    loadAnns();
-  } else $("pubMsg").textContent = "失敗：" + (j.error || res.status);
+// ---- 待處理
+function landmarkCard(l, withText = true) {
+  const tags = [
+    l.approved ? "" : '<span class="tag warn">待審核</span>',
+    l.isBusinessClaim ? (l.businessVerified ? '<span class="tag info">已驗證店家</span>' : '<span class="tag warn">自稱店家（未驗證）</span>') : "",
+    num(l.reported) > 0 ? `<span class="tag warn">被檢舉 ${num(l.reported)} 次（${reasons(l.reportReasons)}）</span>` : "",
+  ].join("");
+  return `<div class="item">
+    <b>${esc(l.name)}</b> <span class="tag gray">${esc(l.category)}</span>${tags}
+    ${withText && l.description ? `<br>${esc(l.description)}` : ""}
+    ${l.businessHours ? `<br><small>營業時間：${esc(l.businessHours)}</small>` : ""}${l.phone ? `<br><small>電話：${esc(l.phone)}</small>` : ""}
+    ${safeImg(l.photo) ? `<img class="thumb" src="${safeImg(l.photo)}" alt="">` : ""}
+    <br><small>${num(l.lat).toFixed(5)}, ${num(l.lon).toFixed(5)} · ${esc(l.createdAt)} · ${esc(l.appVersion || "?")}</small>
+    <div class="actions">
+      ${l.approved ? "" : `<button data-act="approve" data-id="${num(l.id)}">核准</button>`}
+      ${l.isBusinessClaim && !l.businessVerified ? `<button class="ghost" data-act="verify" data-id="${num(l.id)}">驗證為店家</button>` : ""}
+      <button class="danger" data-act="delLandmark" data-id="${num(l.id)}">刪除</button>
+    </div></div>`;
+}
+function reviewCard(r) {
+  return `<div class="item">
+    <b>${"★".repeat(Math.max(0, Math.min(5, num(r.stars))))}</b> ${esc(r.placeName)}
+    ${num(r.reported) > 0 ? `<span class="tag warn">被檢舉 ${num(r.reported)} 次（${reasons(r.reportReasons)}）</span>` : ""}
+    <br>${esc(r.comment) || '<span class="muted">（無文字）</span>'}
+    ${safeImg(r.photo) ? `<img class="thumb" src="${safeImg(r.photo)}" alt="">` : ""}
+    <br><small>${esc(r.createdAt)} · ${esc(r.appVersion || "?")}</small>
+    <div class="actions"><button class="danger" data-act="delReview" data-id="${num(r.id)}">刪除</button></div></div>`;
+}
+const needsAction = {
+  landmark: (l) => !l.approved || num(l.reported) > 0 || (l.isBusinessClaim && !l.businessVerified),
+  review: (r) => num(r.reported) > 0,
+};
+function renderTodo() {
+  const lm = landmarks.filter(needsAction.landmark), rv = reviews.filter(needsAction.review);
+  const total = lm.length + rv.length;
+  $("b-todo").textContent = total || ""; $("b-todo").dataset.n = total;
+  document.title = (total ? `(${total}) ` : "") + "TransitGo 管理";
+  $("todo").innerHTML = total === 0 ? '<div class="empty">🎉 目前沒有需要處理的項目</div>' :
+    (lm.length ? `<div class="card"><h3>地標（${lm.length}）</h3>${lm.map((l) => landmarkCard(l)).join("")}</div>` : "") +
+    (rv.length ? `<div class="card"><h3>被檢舉的評論（${rv.length}）</h3>${rv.map(reviewCard).join("")}</div>` : "");
 }
 
+// ---- 地標與評論（全部，可搜尋）
+function renderContent() {
+  const q = $("filter").value.trim().toLowerCase();
+  const hit = (...xs) => !q || xs.some((x) => String(x ?? "").toLowerCase().includes(q));
+  const lm = landmarks.filter((l) => hit(l.name, l.description, l.category, l.phone));
+  const rv = reviews.filter((r) => hit(r.placeName, r.comment));
+  $("landmarks").innerHTML = lm.map((l) => landmarkCard(l)).join("") || '<div class="empty">（無）</div>';
+  $("placeReviews").innerHTML = rv.map(reviewCard).join("") || '<div class="empty">（無）</div>';
+}
+$("filter").oninput = renderContent;
+
+// ---- 公告
 async function loadAnns() {
-  const res = await fetch("/v1/admin/announcements", { headers: headers() });
-  if (!res.ok) return ($("anns").textContent = "需要正確的權杖");
-  const { announcements } = await res.json();
-  $("anns").innerHTML = announcements.map((a) =>
-    `<div class="item">
-       <b class="${a.severity === "info" ? "info" : "warn"}">[${a.category}] ${a.title}</b>
-       ${a.active ? "" : "（已下架）"}<br>
-       <span style="opacity:.7">${a.body || ""}</span><br>
-       <small style="opacity:.6">${a.createdAt} · ${a.source}</small>
-       ${a.active ? `<button style="background:#8884;color:inherit;padding:3px 8px" onclick="delAnn(${a.id})">下架</button>` : ""}
-     </div>`).join("") || "（無）";
+  const j = await api("/v1/admin/announcements"); if (!j) return;
+  $("anns").innerHTML = j.announcements.map((a) => `<div class="item">
+      <b class="${a.severity === "info" ? "" : ""}">[${esc(a.category)}] ${esc(a.title)}</b>
+      <span class="tag ${a.severity === "info" ? "info" : "warn"}">${esc(a.severity)}</span>${a.active ? "" : '<span class="tag gray">已下架</span>'}
+      <br><span class="muted">${esc(a.body)}</span><br><small>${esc(a.createdAt)} · ${esc(a.source)}</small>
+      ${a.active ? `<div class="actions"><button class="ghost" data-act="delAnn" data-id="${num(a.id)}">下架</button></div>` : ""}
+    </div>`).join("") || '<div class="empty">（無）</div>';
 }
-async function delAnn(id) {
-  await fetch("/v1/admin/announcements/" + id, { method: "DELETE", headers: headers() });
-  loadAnns();
+$("publishBtn").onclick = async () => {
+  const title = $("title").value.trim();
+  if (!title) return toast("請輸入標題", true);
+  if (!confirm(`要發佈並推播給所有使用者嗎？\n\n【${$("category").selectedOptions[0].text}】${title}`)) return;
+  const payload = { category: $("category").value, severity: $("severity").value, title, body: $("body").value };
+  const ex = parseInt($("expires").value, 10); if (ex) payload.expiresInMinutes = ex;
+  $("publishBtn").disabled = true; $("pubMsg").textContent = "發佈中…";
+  const j = await api("/v1/admin/announcements", { method: "POST", body: JSON.stringify(payload) });
+  $("publishBtn").disabled = false;
+  if (!j) { $("pubMsg").textContent = ""; return; }
+  $("pubMsg").textContent = "";
+  toast(`已發佈 #${num(j.announcement.id)}（推播 ${j.push.dryRun ? "DRY-RUN，未實際發送" : num(j.push.sent) + " 台"}）`);
+  $("title").value = ""; $("body").value = ""; loadAnns();
+};
+
+// ---- 回報與評分
+async function loadFeedback() {
+  const [rp, rt, ob] = await Promise.all([api("/v1/admin/reports?limit=50"), api("/v1/admin/ratings"), api("/v1/admin/observations")]);
+  if (rp) $("reports").innerHTML = rp.reports.map((r) => `<div class="item"><b>${esc(r.type)}</b> — ${esc(r.message)}
+      <br><small>${esc(r.created_at)} · ${esc(r.os || "?")} · ${esc(r.app_version || "?")}</small>${r.context ? `<pre>${esc(r.context)}</pre>` : ""}</div>`).join("") || '<div class="empty">（無）</div>';
+  if (rt) {
+    const s = rt.stats, bars = [5, 4, 3, 2, 1].map((n) => `${"★".repeat(n)} ${num((s.byStar || {})[n])}`).join("　");
+    $("ratingStats").innerHTML = `平均 <b>${esc(s.avg ?? "—")}</b> ★（${num(s.count)} 筆）<br>${esc(bars)}`;
+    $("ratings").innerHTML = rt.ratings.map((r) => `<div class="item"><b>${"★".repeat(Math.max(0, Math.min(5, num(r.stars))))}</b> ${r.kind === "rail" ? "🚆" : "🚌"} ${esc(r.route || "")}
+      ${r.from_stop ? `（${esc(r.from_stop)} → ${esc(r.to_stop || "?")}）` : ""}<br><small>${esc(r.created_at)} · ${esc(r.system || "")} · ${esc(r.app_version || "?")}</small></div>`).join("") || '<div class="empty">（無）</div>';
+  }
+  if (ob) $("obs").innerHTML = ob.observations.map((o) => `<div class="item"><b>${o.kind === "alight" ? "下車" : "上車"}</b> ${esc(o.route || "")}
+      ${o.plate ? `車牌 ${esc(o.plate)}` : ""} ${o.stop_name ? `@ ${esc(o.stop_name)}` : ""}<br><small>${esc(o.created_at)} · ${esc(o.system || "")}</small></div>`).join("") || '<div class="empty">（無）</div>';
 }
-async function loadReports() {
-  const res = await fetch("/v1/admin/reports?limit=50", { headers: headers() });
-  if (!res.ok) return ($("reports").textContent = "需要正確的權杖");
-  const { reports } = await res.json();
-  $("reports").innerHTML = reports.map((r) =>
-    `<div class="item"><b>${r.type}</b> — ${r.message}
-       <br><small style="opacity:.6">${r.created_at} · ${r.os || "?"} · ${r.app_version || "?"}</small>
-       ${r.context ? `<pre>${r.context}</pre>` : ""}
-     </div>`).join("") || "（無）";
+
+// ---- 系統
+async function loadSystem() {
+  const h = await fetch("/v1/health").then((r) => r.json()).catch(() => null);
+  $("sysInfo").innerHTML = h ? `記憶體 <b>${num(h.memory?.rssMB)}</b> / ${num(h.memory?.limitMB)} MB（峰值 ${num(h.memory?.peakRssMB)}）<br>
+      路線圖：${h.graph?.loaded ? `已載入 ${num(h.graph.nodeCount).toLocaleString()} 節點／${num(h.graph.edgeCount).toLocaleString()} 邊` : "尚未載入（剛啟動時約需 1 分鐘）"}<br>
+      已運行 ${Math.round(num(h.uptimeSeconds) / 60)} 分鐘 · 版本 ${esc(String(h.commit || "?").slice(0, 7))}` : "讀不到服務狀態";
+  const b = await api("/v1/admin/bike-status");
+  if (b) $("bikeStatus").textContent = JSON.stringify(b, null, 2);
+  $("curl").textContent = `curl -X POST ${location.origin}/v1/admin/announcements \\\n  -H "Authorization: Bearer $ADMIN_TOKEN" \\\n  -H "Content-Type: application/json" \\\n  -d '{"category":"metro","severity":"warning","title":"...","body":"...","expiresInMinutes":180}'`;
 }
-async function loadRatings() {
-  const res = await fetch("/v1/admin/ratings", { headers: headers() });
-  if (!res.ok) return ($("ratings").textContent = "需要正確的權杖");
-  const { stats, ratings } = await res.json();
-  const bars = [5,4,3,2,1].map((s) =>
-    `${"★".repeat(s)} ${stats.byStar[s] || 0}`).join("　");
-  $("ratingStats").innerHTML =
-    `平均 <b>${stats.avg ?? "—"}</b> ★（${stats.count} 筆）<br><small style="opacity:.7">${bars}</small>`;
-  $("ratings").innerHTML = ratings.map((r) =>
-    `<div class="item"><b>${"★".repeat(r.stars)}</b> ${r.kind === "rail" ? "🚆" : "🚌"} ${r.route || ""}
-       ${r.from_stop ? `（${r.from_stop} → ${r.to_stop || "?"}）` : ""}
-       <br><small style="opacity:.6">${r.created_at} · ${r.system || ""} · ${r.app_version || "?"}</small>
-     </div>`).join("") || "（無）";
+async function checkHealth() {
+  const el = $("status");
+  try {
+    const h = await fetch("/v1/health").then((r) => r.json());
+    el.className = "pill ok"; el.textContent = `服務正常 · ${num(h.memory?.rssMB)} MB${h.graph?.loaded ? "" : " · 路線圖載入中"}`;
+  } catch { el.className = "pill bad"; el.textContent = "服務無回應"; }
 }
-async function loadObs() {
-  const res = await fetch("/v1/admin/observations", { headers: headers() });
-  if (!res.ok) return ($("obs").textContent = "需要正確的權杖");
-  const { observations } = await res.json();
-  $("obs").innerHTML = observations.map((o) =>
-    `<div class="item"><b>${o.kind === "alight" ? "下車" : "上車"}</b> ${o.route || ""}
-       ${o.plate ? `車牌 ${o.plate}` : ""} ${o.stop_name ? `@ ${o.stop_name}` : ""}
-       <br><small style="opacity:.6">${o.created_at} · ${o.system || ""}</small></div>`
-  ).join("") || "（無）";
+
+// ---- actions (delegated; ids are numbers, never interpolated into code)
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-act]"); if (!b) return;
+  const id = num(b.dataset.id), act = b.dataset.act;
+  const run = async (path, method, okMsg, reload) => { b.disabled = true; const j = await api(path, { method }); b.disabled = false; if (j) { toast(okMsg); reload(); } };
+  if (act === "approve") run(`/v1/admin/landmarks/${id}/approve`, "POST", "已核准", loadContent);
+  else if (act === "verify") { if (confirm("確定已經在 App 外自行核實這位使用者真的是店家嗎？")) run(`/v1/admin/landmarks/${id}/verify-business`, "POST", "已標示為已驗證店家", loadContent); }
+  else if (act === "delLandmark") { if (confirm("確定刪除這個地標？刪除後無法復原。")) run(`/v1/admin/landmarks/${id}`, "DELETE", "已刪除地標", loadContent); }
+  else if (act === "delReview") { if (confirm("確定刪除這則評論？刪除後無法復原。")) run(`/v1/admin/place-reviews/${id}`, "DELETE", "已刪除評論", loadContent); }
+  else if (act === "delAnn") { if (confirm("確定下架這則公告？")) run(`/v1/admin/announcements/${id}`, "DELETE", "已下架", loadAnns); }
+});
+
+async function loadContent() {
+  const [l, r] = await Promise.all([api("/v1/admin/landmarks"), api("/v1/admin/place-reviews")]);
+  if (l) landmarks = l.landmarks; if (r) reviews = r.reviews;
+  renderTodo(); renderContent();
 }
-async function loadPlaceReviews() {
-  const res = await fetch("/v1/admin/place-reviews", { headers: headers() });
-  if (!res.ok) return ($("placeReviews").textContent = "需要正確的權杖");
-  const { reviews } = await res.json();
-  $("placeReviews").innerHTML = reviews.map((r) =>
-    `<div class="item">
-       <b>${"★".repeat(r.stars)}</b> ${r.placeName}
-       ${r.reported > 0 ? `<span class="warn">被檢舉 ${r.reported} 次（${Object.entries(r.reportReasons).map(([k,v]) => `${reasonLabel[k]||k} x${v}`).join("、")}）</span>` : ""}
-       <br>${r.comment || "（無文字）"}
-       ${r.photo ? `<br><img src="${r.photo}" style="max-width:160px;border-radius:8px;margin-top:6px">` : ""}
-       <br><small style="opacity:.6">${r.createdAt} · ${r.appVersion || "?"}</small>
-       <button style="background:#d70015;padding:3px 8px" onclick="delPlaceReview(${r.id})">刪除</button>
-     </div>`).join("") || "（無）";
-}
-async function delPlaceReview(id) {
-  if (!confirm("確定刪除這則評論？")) return;
-  await fetch("/v1/admin/place-reviews/" + id, { method: "DELETE", headers: headers() });
-  loadPlaceReviews();
-}
-async function loadLandmarks() {
-  const res = await fetch("/v1/admin/landmarks", { headers: headers() });
-  if (!res.ok) return ($("landmarks").textContent = "需要正確的權杖");
-  const { landmarks } = await res.json();
-  $("landmarks").innerHTML = landmarks.map((l) =>
-    `<div class="item">
-       <b>${l.name}</b> <span style="opacity:.6">[${l.category}]</span>
-       ${l.approved ? "" : '<span class="warn">待審核</span>'}
-       ${l.isBusinessClaim ? (l.businessVerified ? '<span class="info">已驗證店家</span>' : '<span class="warn">自稱店家（未驗證）</span>') : ""}
-       ${l.reported > 0 ? `<span class="warn">被檢舉 ${l.reported} 次（${Object.entries(l.reportReasons).map(([k,v]) => `${reasonLabel[k]||k} x${v}`).join("、")}）</span>` : ""}
-       <br>${l.description || ""}
-       ${l.businessHours ? `<br>營業時間：${l.businessHours}` : ""}
-       ${l.phone ? `<br>電話：${l.phone}` : ""}
-       ${l.photo ? `<br><img src="${l.photo}" style="max-width:160px;border-radius:8px;margin-top:6px">` : ""}
-       <br><small style="opacity:.6">${l.lat.toFixed(5)}, ${l.lon.toFixed(5)} · ${l.createdAt} · ${l.appVersion || "?"}</small>
-       <br>
-       ${l.approved ? "" : `<button onclick="approveLandmark(${l.id})">核准</button>`}
-       ${l.isBusinessClaim && !l.businessVerified ? `<button onclick="verifyBusiness(${l.id})">驗證為店家</button>` : ""}
-       <button style="background:#d70015;padding:3px 8px" onclick="delLandmark(${l.id})">刪除</button>
-     </div>`).join("") || "（無）";
-}
-async function approveLandmark(id) {
-  await fetch("/v1/admin/landmarks/" + id + "/approve", { method: "POST", headers: headers() });
-  loadLandmarks();
-}
-async function verifyBusiness(id) {
-  if (!confirm("確定已經在 App 外自行核實這位使用者真的是店家嗎？")) return;
-  await fetch("/v1/admin/landmarks/" + id + "/verify-business", { method: "POST", headers: headers() });
-  loadLandmarks();
-}
-async function delLandmark(id) {
-  if (!confirm("確定刪除這個地標？")) return;
-  await fetch("/v1/admin/landmarks/" + id, { method: "DELETE", headers: headers() });
-  loadLandmarks();
-}
-loadAnns(); loadReports(); loadRatings(); loadObs(); loadPlaceReviews(); loadLandmarks();
+function loadAll() { checkHealth(); loadContent(); loadAnns(); loadFeedback(); }
+
+showTab(location.hash.slice(1) || "todo");
+loadAll();
+setInterval(() => { if (!document.hidden) { checkHealth(); loadContent(); } }, 60000);
 </script>
 </body>
 </html>
