@@ -406,6 +406,7 @@ struct TransferPlannerView: View {
     }
 
     private var effectiveOrigin: CLLocationCoordinate2D { model.originOverride?.coordinate ?? origin }
+    @State private var previewTarget: RoutePreviewTarget?
     @State private var editingSavedPlaceRole: SavedPlaceRole?
     @State private var placeDetailTarget: DestinationCandidate?
 
@@ -716,6 +717,7 @@ struct TransferPlannerView: View {
                     YouBikeLegPickerView(destination: dest, anchor: model.travelOrigin ?? effectiveOrigin)
                 }
             }
+            .sheet(item: $previewTarget) { RoutePreviewView(target: $0) }
             .fullScreenCover(item: $navTarget) { target in
                 InAppNavigationView(destination: target.coordinate, destinationName: target.name, transportType: target.transportType, avoidsHighways: target.avoidsHighways)
             }
@@ -844,10 +846,10 @@ struct TransferPlannerView: View {
             Section { HStack { Spacer(); ProgressView("估算開車／騎車／走路時間中…"); Spacer() } }
         } else if let t = model.travelTimes, !t.isEmpty {
             Section {
-                travelTimeRow("開車", minutes: t.driveMinutes, icon: "car.fill", color: .blue) {
+                travelTimeRow("開車", minutes: t.driveMinutes, icon: "car.fill", color: .blue, onPreview: { preview(mode: .automobile) }) {
                     navigate(mode: .automobile)
                 }
-                travelTimeRow("騎機車", minutes: t.scooterMinutes, icon: "figure.outdoor.cycle", color: .orange) {
+                travelTimeRow("騎機車", minutes: t.scooterMinutes, icon: "figure.outdoor.cycle", color: .orange, onPreview: { preview(mode: .automobile, avoidsHighways: true) }) {
                     // Scooters are legally banned from Taiwan's freeways — same
                     // .automobile transport type as 開車 (MapKit has no scooter mode),
                     // but this leg must avoid 國道 unlike an actual car trip.
@@ -856,10 +858,10 @@ struct TransferPlannerView: View {
                 travelTimeRow("YouBike", minutes: t.bikeMinutes, icon: "bicycle", color: .green) {
                     showBikePicker = true
                 }
-                travelTimeRow("腳踏車（自備）", minutes: t.ownBikeMinutes, icon: "bicycle.circle.fill", color: .mint) {
+                travelTimeRow("腳踏車（自備）", minutes: t.ownBikeMinutes, icon: "bicycle.circle.fill", color: .mint, onPreview: { preview(mode: .cycling) }) {
                     navigate(mode: .cycling)
                 }
-                travelTimeRow("走路", minutes: t.walkMinutes, icon: "figure.walk", color: .secondary) {
+                travelTimeRow("走路", minutes: t.walkMinutes, icon: "figure.walk", color: .secondary, onPreview: { preview(mode: .walking) }) {
                     navigate(mode: .walking)
                 }
             } header: {
@@ -870,19 +872,30 @@ struct TransferPlannerView: View {
         }
     }
 
+    private func preview(mode: MKDirectionsTransportType, avoidsHighways: Bool? = nil) {
+        guard let dest = model.travelDestination else { return }
+        previewTarget = RoutePreviewTarget(
+            originName: model.originOverride?.name ?? "目前位置", origin: effectiveOrigin,
+            originIsCurrentLocation: model.originOverride == nil,
+            destinationName: model.destination?.name ?? "目的地", destination: dest,
+            transportType: mode, avoidsHighways: avoidsHighways, departAt: model.multimodalDepartAt
+        )
+    }
+
     private func navigate(mode: MKDirectionsTransportType, avoidsHighways: Bool? = nil) {
         guard let dest = model.travelDestination else { return }
         let name = model.destination?.name ?? "目的地"
         navTarget = NavTarget(coordinate: dest, name: name, transportType: mode, avoidsHighways: avoidsHighways)
     }
 
-    private func travelTimeRow(_ label: String, minutes: Int?, icon: String, color: Color, onNavigate: @escaping () -> Void) -> some View {
+    private func travelTimeRow(_ label: String, minutes: Int?, icon: String, color: Color, onPreview: (() -> Void)? = nil, onNavigate: @escaping () -> Void) -> some View {
         HStack {
             Label(label, systemImage: icon).foregroundStyle(color)
             Spacer()
             if let m = minutes {
                 Text(m < 60 ? "\(m) 分鐘" : "\(m / 60) 小時 \(m % 60) 分")
                     .font(.subheadline.weight(.semibold)).monospacedDigit()
+                if let onPreview { Button("預覽") { onPreview() }.font(.caption).buttonStyle(.bordered).controlSize(.small) }
                 Button("導航") { onNavigate() }
                     .font(.caption).buttonStyle(.bordered).controlSize(.small)
             } else {
