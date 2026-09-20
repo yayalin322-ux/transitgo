@@ -689,7 +689,10 @@ struct TransferPlannerView: View {
             }
             .task {
                 // Every journey planned here is remembered as a recent search (capped, de-duplicated by place).
-                model.onPlan = { [modelContext] spec in try? TripStore(context: modelContext).recordSearch(spec) }
+                model.onPlan = { [modelContext] spec in
+                    try? TripStore(context: modelContext).recordSearch(spec)
+                    HabitLog.shared.record(spec)   // on-device only; see HabitLearning.swift
+                }
                 // Opened from a saved/recent journey: load it and plan it again NOW (a favorite never carries a route).
                 if let initialTrip, !startedInitialTrip {
                     startedInitialTrip = true
