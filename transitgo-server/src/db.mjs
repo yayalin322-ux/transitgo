@@ -162,6 +162,15 @@ if (usingPg) {
     );
     CREATE INDEX IF NOT EXISTS idx_user_landmark_reports_landmark ON user_landmark_reports (landmark_id);
 
+    CREATE TABLE IF NOT EXISTS shares (
+      token         TEXT PRIMARY KEY,
+      title         TEXT,
+      segments_json TEXT NOT NULL,
+      created_at_ms BIGINT NOT NULL,
+      expires_at_ms BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_shares_expires ON shares (expires_at_ms);
+
     CREATE TABLE IF NOT EXISTS speedcam_cache (
       id         TEXT PRIMARY KEY DEFAULT 'all',
       json       TEXT NOT NULL,
@@ -302,6 +311,15 @@ if (usingPg) {
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_user_landmark_reports_landmark ON user_landmark_reports (landmark_id);
+
+    CREATE TABLE IF NOT EXISTS shares (
+      token         TEXT PRIMARY KEY,
+      title         TEXT,
+      segments_json TEXT NOT NULL,
+      created_at_ms BIGINT NOT NULL,
+      expires_at_ms BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_shares_expires ON shares (expires_at_ms);
 
     CREATE TABLE IF NOT EXISTS speedcam_cache (
       id         TEXT PRIMARY KEY DEFAULT 'all',
@@ -789,4 +807,27 @@ function isoZ(value) {
   if (value == null) return value;
   if (value instanceof Date) return value.toISOString();
   return String(value).replace(" ", "T") + "Z";
+}
+
+
+// ---- Shared trip links (see shares.mjs) -------------------------------------------------------
+
+export async function createShare({ token, title, segments, nowMs, expiresAtMs }) {
+  // Expired links are useless and hold nothing we need: sweep them on every create.
+  await db.prepare(`DELETE FROM shares WHERE expires_at_ms <= :now`).run({ now: nowMs });
+  await db.prepare(`
+    INSERT INTO shares (token, title, segments_json, created_at_ms, expires_at_ms)
+    VALUES (:token, :title, :segments_json, :created, :expires)
+  `).run({ token, title: title ?? null, segments_json: JSON.stringify(segments), created: nowMs, expires: expiresAtMs });
+}
+
+/** The stored share, or null. Expiry is the caller's decision (shares.mjs isExpired). */
+export async function getShare(token) {
+  const r = await db.prepare(`SELECT token, title, segments_json, created_at_ms, expires_at_ms FROM shares WHERE token = :token`).get({ token });
+  if (!r) return null;
+  return { token: r.token, title: r.title, segments: JSON.parse(r.segments_json), created_at_ms: Number(r.created_at_ms), expires_at_ms: Number(r.expires_at_ms) };
+}
+
+export async function deleteShare(token) {
+  await db.prepare(`DELETE FROM shares WHERE token = :token`).run({ token });
 }
