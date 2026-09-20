@@ -191,6 +191,19 @@ struct BusService {
         try await arrivals(scope: .city(city), stopUIDs: stopUIDs)
     }
 
+    /// City stops plus InterCity stops of the same physical stop, merged into one list. Both
+    /// feeds are read; if either cannot be answered the call throws (no silent half-list).
+    func arrivals(city: BusCity, stopUIDs: [String], interCityUIDs: [String]) async throws -> [StopArrival] {
+        async let cityPart = arrivals(scope: .city(city), stopUIDs: stopUIDs)
+        async let interPart = arrivals(scope: .interCity, stopUIDs: interCityUIDs)
+        let (c, i) = try await (cityPart, interPart)
+        var tagged = i
+        for k in tagged.indices { tagged[k].isInterCity = true }
+        return (c + tagged).sorted {
+            $0.sortKey != $1.sortKey ? $0.sortKey < $1.sortKey : natCompare($0.routeName, $1.routeName)
+        }
+    }
+
     /// Same as above but scope-general — routes like intercity coach 5900 (新竹縣政府↔高鐵新竹站)
     /// live under `.interCity`, not any city, so anything scoped to a single `BusCity` alone
     /// will never see them at a stop that only intercity coaches serve.
