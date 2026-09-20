@@ -407,6 +407,62 @@ struct TransferPlannerView: View {
 
     private var effectiveOrigin: CLLocationCoordinate2D { model.originOverride?.coordinate ?? origin }
     @State private var previewTarget: RoutePreviewTarget?
+    @State private var shareItems: ShareItems?
+    @State private var sharingRouteId: String?
+    /// The route whose button was pressed: only that button presents the share sheet / error (every route has one).
+    @State private var shareAnchorId: String?
+    @State private var shareError: String?
+
+    private struct ShareItems: Identifiable { let id = UUID(); let items: [Any] }
+
+    private func anchored(_ route: MultimodalRoute, _ items: Binding<ShareItems?>) -> Binding<ShareItems?> {
+        Binding(get: { shareAnchorId == route.id ? items.wrappedValue : nil }, set: { if $0 == nil { items.wrappedValue = nil } })
+    }
+
+    private func anchoredError(_ route: MultimodalRoute) -> Binding<Bool> {
+        Binding(get: { shareAnchorId == route.id && shareError != nil }, set: { if !$0 { shareError = nil } })
+    }
+
+    @ViewBuilder
+    private func shareButton(_ route: MultimodalRoute) -> some View {
+        if ShareTripService.isShareable(route) {
+            Button { share(route) } label: {
+                if sharingRouteId == route.id {
+                    HStack { ProgressView(); Text("建立分享連結中…") }.frame(maxWidth: .infinity)
+                } else {
+                    Label("分享行程給親友", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.bordered)
+            .disabled(sharingRouteId != nil)
+            // Presented from the button itself: the page's own modifier chain is already at the limit of what
+            // the compiler can type-check.
+            .sheet(item: anchored(route, $shareItems)) { ShareSheet(items: $0.items) }
+            .alert("無法分享", isPresented: anchoredError(route)) {
+                Button("好") {}
+            } message: { Text(shareError ?? "") }
+        }
+    }
+
+    /// Makes the link on our backend, then opens the system share sheet.
+    private func share(_ route: MultimodalRoute) {
+        guard sharingRouteId == nil else { return }
+        sharingRouteId = route.id
+        shareAnchorId = route.id
+        let name = model.destination?.name ?? "目的地"
+        Task {
+            let result = await ShareTripService.create(route: route, title: "前往\(name)")
+            sharingRouteId = nil
+            switch result {
+            case .success(let url):
+                shareItems = ShareItems(items: ["我搭這趟前往\(name)，可以看班次狀態（6 小時內有效，不含我的位置）：", url])
+            case .failure(.nothingToFollow):
+                shareError = "這趟行程只有步行，沒有可以追蹤的車輛。"
+            case .failure(.backendUnavailable):
+                shareError = "現在連不上伺服器，稍後再試（伺服器休眠時第一次可能要等約 1 分鐘）。"
+            }
+        }
+    }
     @State private var editingSavedPlaceRole: SavedPlaceRole?
     @State private var placeDetailTarget: DestinationCandidate?
 
@@ -605,6 +661,7 @@ struct TransferPlannerView: View {
                             Label("開始導航", systemImage: "location.fill").frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
+                        shareButton(route)
                     } header: {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("多模式・\(route.label)")
