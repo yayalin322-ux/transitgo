@@ -227,6 +227,15 @@ struct InAppNavigationView: View {
     @State private var announcedStart = false
     @State private var currentStepIndex = 0
     @State private var announcedStepIndices: Set<Int> = []
+    /// The second, at-the-junction prompt ("此路口…") and the long-straight reminder, once per step.
+    @State private var announcedNowStepIndices: Set<Int> = []
+    @State private var announcedStraightSteps: Set<Int> = []
+    @AppStorage("navVoiceMode") private var voiceModeRaw = VoiceMode.standard.rawValue
+    @State private var showParkingChoice = false
+    @State private var parkingPromptDone = false
+    /// Shown only when the destination is in a different county/city than where you are now.
+    @State private var destRegionText: String?
+    @State private var destWeather: WeatherInfo?
     @State private var currentLegIndex = 0
     @State private var nearbyCams: [SpeedCam] = []
     @State private var announcedCamIDs: Set<String> = []
@@ -271,6 +280,7 @@ struct InAppNavigationView: View {
     /// Fixes worse than this are too noisy to trust for arrival/maneuver decisions.
     private static let maxTrustedAccuracy: CLLocationDistance = 35
 
+    private var voiceMode: VoiceMode { VoiceMode(rawValue: voiceModeRaw) ?? .standard }
     private var currentLeg: NavigationLeg { legs[currentLegIndex] }
     private var destination: CLLocationCoordinate2D { currentLeg.coordinate }
     private var destinationName: String { currentLeg.name }
@@ -522,6 +532,19 @@ struct InAppNavigationView: View {
                         .padding(12)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     }
+                    if let region = destRegionText {
+                        HStack(spacing: 6) {
+                            Image(systemName: "mappin.and.ellipse")
+                            Text("目的地：\(region)")
+                            if let w = destWeather {
+                                Image(systemName: w.symbolName)
+                                Text("\(Int(w.tempC.rounded()))°")
+                            }
+                        }
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(.regularMaterial, in: Capsule())
+                    }
                     if let err = errorText {
                         Text(err).font(.footnote).foregroundStyle(.white)
                             .padding(.horizontal, 12).padding(.vertical, 6)
@@ -542,6 +565,16 @@ struct InAppNavigationView: View {
                                 metric(speedText, label: "目前時速")
                             }
                             Spacer()
+                            Menu {
+                                Picker("語音", selection: $voiceModeRaw) {
+                                    ForEach(VoiceMode.allCases) { m in Label(m.label, systemImage: m.symbol).tag(m.rawValue) }
+                                }
+                            } label: {
+                                Image(systemName: voiceMode.symbol)
+                                    .frame(width: 36, height: 36)
+                                    .background(.gray.opacity(0.25), in: Circle())
+                                    .foregroundStyle(.primary)
+                            }
                             Button {
                                 followUser = true
                                 recenter()
@@ -609,6 +642,7 @@ struct InAppNavigationView: View {
             TripKeepAlive.shared.release()
         }
         .task { await computeRoute(from: tracker.location?.coordinate) }
+        .task { await loadDestinationInfo() }
         .onChange(of: tracker.updateTick) { _, _ in
             guard let newLoc = tracker.location else { return }
             updateProgress(newLoc)
@@ -626,6 +660,14 @@ struct InAppNavigationView: View {
         // is what actually makes the compass track live turning.
         .onChange(of: tracker.headingDegrees) { _, _ in
             if followUser { recenter() }
+        }
+        .confirmationDialog("要先導航到目的地附近的停車場嗎？", isPresented: $showParkingChoice, titleVisibility: .visible) {
+            ForEach(Array(nearbyParking.prefix(3).enumerated()), id: \.offset) { _, item in
+                Button("\(item.name ?? "停車場")・離目的地 \(parkingDistanceText(item))") { navigateToParking(item) }
+            }
+            Button("直接導航到目的地", role: .cancel) {}
+        } message: {
+            Text("停車場是依目的地附近的地圖資料列出，不含即時車位。")
         }
         .fullScreenCover(item: $parkingLeg) { leg in
             InAppNavigationView(destination: leg.coordinate, destinationName: leg.name, transportType: leg.transportType)
@@ -673,7 +715,12 @@ struct InAppNavigationView: View {
     /// inside a building or campus, where no road or path reaches; the route MapKit computed ends at the
     /// nearest place you can actually get to, so that end point is the truthful target (and the pin is
     /// drawn there — on the road). Only trusted when it lies close to the requested spot.
+    private var roadAnchor: RoadAnchor? { RoadAnchors.anchor(for: destination) }
+    /// What MKDirections is asked to reach: the curated road-side point when this place has one.
+    private var routingTarget: CLLocationCoordinate2D { roadAnchor?.anchor ?? destination }
+
     private var effectiveDestination: CLLocationCoordinate2D {
+        if let roadAnchor { return roadAnchor.anchor }
         guard let track else { return destination }
         let snapped = CLLocation(latitude: track.end.latitude, longitude: track.end.longitude)
         let asked = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
@@ -842,6 +889,24 @@ struct InAppNavigationView: View {
 
     /// Same in-app navigation as the primary trip — our own drawn route, live tracking,
     /// voice, reroute — rather than handing off to Apple Maps for this last stretch.
+    private func parkingDistanceText(_ item: MKMapItem) -> String {
+        let d = CLLocation(latitude: item.placemark.coordinate.latitude, longitude: item.placemark.coordinate.longitude)
+            .distance(from: CLLocation(latitude: effectiveDestination.latitude, longitude: effectiveDestination.longitude))
+        return d < 1000 ? "\(Int(d)) 公尺" : String(format: "%.1f 公里", d / 1000)
+    }
+
+    /// When the trip ends in another county/city, show where and what the weather is there.
+    private func loadDestinationInfo() async {
+        guard let final = legs.last?.coordinate else { return }
+        for _ in 0..<10 where tracker.location == nil { try? await Task.sleep(for: .seconds(1)) }
+        guard let here = tracker.location else { return }
+        let toPlace = try? await CLGeocoder().reverseGeocodeLocation(CLLocation(latitude: final.latitude, longitude: final.longitude)).first
+        let fromPlace = try? await CLGeocoder().reverseGeocodeLocation(here).first
+        guard let area = toPlace?.administrativeArea, let fromArea = fromPlace?.administrativeArea, area != fromArea else { return }
+        destRegionText = area + (toPlace?.subAdministrativeArea ?? toPlace?.locality ?? "")
+        destWeather = await WeatherService.current(lat: final.latitude, lon: final.longitude)
+    }
+
     private func navigateToParking(_ item: MKMapItem) {
         parkingLeg = NavigationLeg(
             coordinate: item.placemark.coordinate,
@@ -852,7 +917,11 @@ struct InAppNavigationView: View {
 
     // MARK: - Voice announcements
 
-    private func speak(_ text: String, _ priority: SpeechPriority = .normal) {
+    /// Everything the voice says goes through here: the chosen voice mode decides whether this kind of
+    /// message is spoken at all, and the screen underneath a parking leg stays quiet so two voices do
+    /// not talk over each other.
+    private func speak(_ text: String, _ kind: AnnouncementKind, _ priority: SpeechPriority = .normal) {
+        guard voiceMode.allows(kind), parkingLeg == nil else { return }
         speaker.speak(text, priority)
     }
 
@@ -886,7 +955,7 @@ struct InAppNavigationView: View {
                 // Some destinations sit in the middle of a road with no exact building to
                 // stand at — "抵達附近" is honest about that instead of implying you
                 // should be standing on the exact pin.
-                speak("您已抵達\(tripName)附近", .high)
+                speak("您已抵達\(tripName)附近", .arrival, .high)
                 if transportType == .automobile { Task { await loadNearbyParking() } }
             } else {
                 // Reaching an intermediate waypoint (e.g. a YouBike station) isn't trip
@@ -903,20 +972,20 @@ struct InAppNavigationView: View {
                 announcedMilestones = Set(Self.milestones.filter { Double($0) >= newLegDistance })
                 legTransitionHaptic.impactOccurred()
                 legTransitionHaptic.prepare()
-                speak(finishedLeg.waypointAnnouncement ?? "已抵達，繼續前往下一段")
+                speak(finishedLeg.waypointAnnouncement ?? "已抵達，繼續前往下一段", .waypoint)
                 Task { await computeRoute(from: loc.coordinate) }
             }
         } else if !arrived {
             for m in Self.milestones where distance <= Double(m) && !announcedMilestones.contains(m) {
                 announcedMilestones.insert(m)
-                speak(m >= 1000 ? "距離目的地還有一公里" : "距離目的地還有\(m)公尺", .low)
+                speak(m >= 1000 ? "距離目的地還有一公里" : "距離目的地還有\(m)公尺", .milestone, .low)
             }
             // Surface parking options a little before arrival, not only after — by the
             // time you're actually stopped, you'd rather already know where to go than
             // start searching. 50m still leaves room to react before pulling in.
             if isLastLeg, transportType == .automobile, distance <= 50, !earlyParkingTriggered {
                 earlyParkingTriggered = true
-                speak("即將抵達，附近有停車場可以選擇", .low)
+                speak("即將抵達，附近有停車場可以選擇", .parking, .low)
                 Task { await loadNearbyParking() }
             }
         }
@@ -1047,7 +1116,7 @@ struct InAppNavigationView: View {
         if !milestonesInitialized {
             milestonesInitialized = true
             let initialDistance = CLLocation(latitude: origin.latitude, longitude: origin.longitude)
-                .distance(from: CLLocation(latitude: destination.latitude, longitude: destination.longitude))
+                .distance(from: CLLocation(latitude: routingTarget.latitude, longitude: routingTarget.longitude))
             for m in Self.milestones where Double(m) >= initialDistance {
                 announcedMilestones.insert(m)
             }
@@ -1067,7 +1136,7 @@ struct InAppNavigationView: View {
                 announcedStart = true
                 startActivityIfNeeded()
             }
-            speak("請搭乘\(transitLabel)，抵達後會自動繼續導航")
+            speak("請搭乘\(transitLabel)，抵達後會自動繼續導航", .waypoint)
             updateActivity()
             Task { await lookupVehiclePlate() }
             return
@@ -1080,7 +1149,7 @@ struct InAppNavigationView: View {
         }
         let request = MKDirections.Request()
         request.source = MKMapItem(placemark: MKPlacemark(coordinate: effectiveOrigin))
-        request.destination = MKMapItem(placemark: MKPlacemark(coordinate: destination))
+        request.destination = MKMapItem(placemark: MKPlacemark(coordinate: routingTarget))
         request.transportType = transportType
         // MapKit's public API has no "avoid highways" flag — the only lever is asking for
         // alternates and picking one ourselves that doesn't use one.
@@ -1103,6 +1172,14 @@ struct InAppNavigationView: View {
         errorText = highwayWarning
         route = first
         installTrack(for: first)
+        // Before driving off: offer parking near the destination (once per trip, not on every reroute).
+        if isLastLeg, transportType == .automobile, !parkingPromptDone {
+            parkingPromptDone = true
+            Task {
+                await loadNearbyParking()
+                if !nearbyParking.isEmpty { showParkingChoice = true }
+            }
+        }
         Task { await loadCamerasAlongRoute(first) }
         let wasOffRoute = offRoute
         offRoute = false
@@ -1112,13 +1189,15 @@ struct InAppNavigationView: View {
         // beginning again, not wherever the old route's index happened to be.
         currentStepIndex = 0
         announcedStepIndices = []
+        announcedNowStepIndices = []
+        announcedStraightSteps = []
         if followUser { recenter() }
         if !announcedStart {
             announcedStart = true
-            speak("開始導航前往\(tripName)")
+            speak("開始導航前往\(tripName)", .start)
             startActivityIfNeeded()
         } else {
-            if wasOffRoute { speak("已重新規劃路線", .high) }
+            if wasOffRoute { speak("已重新規劃路線", .reroute, .high) }
             updateActivity()
         }
     }
@@ -1149,10 +1228,10 @@ struct InAppNavigationView: View {
     /// a wrong turn is noticed in seconds, and the reroute starts at once — within 6 s of the last
     /// one — instead of after three slow fixes and a 12 s wait.
     private func checkOffRoute(_ loc: CLLocation) {
-        guard route != nil, let progress, !isRouting else { return }
+        guard route != nil, let progress, !isRouting, parkingLeg == nil else { return }
         let mode: OffRouteDetector.Mode = transportType == .walking ? .walking : .vehicle
         let strayed = offRouteDetector.update(distanceFromRoute: progress.distanceFromRoute, accuracy: loc.horizontalAccuracy, mode: mode)
-        if strayed, !offRoute { speak("已偏離路線，重新規劃路線中", .high) }
+        if strayed, !offRoute { speak("已偏離路線，重新規劃路線中", .offRoute, .high) }
         offRoute = strayed
         if strayed, Date().timeIntervalSince(lastRerouteAt) > 6 {
             Task { await computeRoute(from: loc.coordinate, preferContinueForward: true) }
@@ -1195,6 +1274,7 @@ struct InAppNavigationView: View {
         // the current one was still ahead — the instructions "jumped" too early.
         let passThreshold: CLLocationDistance = transportType == .walking ? 6 : 12
 
+        let nowThreshold: CLLocationDistance = transportType == .walking ? 15 : 35
         if distanceToManeuver <= announceThreshold, !announcedStepIndices.contains(nextIndex), !nextStep.instructions.isEmpty {
             announcedStepIndices.insert(nextIndex)
             maneuverHaptic.impactOccurred()
@@ -1202,7 +1282,20 @@ struct InAppNavigationView: View {
             // "前方 X 公尺，[實際指示]" — a bare instruction with no distance reads like
             // it's happening right now; the distance is what makes it a heads-up.
             let roundedDistance = Int((distanceToManeuver / 10).rounded()) * 10
-            speak("前方\(max(roundedDistance, 10))公尺，\(nextStep.instructions)")
+            speak(VoiceScript.far(distance: roundedDistance, instruction: nextStep.instructions, withCue: voiceMode.allows(.laneCue)), .farManeuver)
+            // Already at the junction when the heads-up fires (a short step): one prompt is enough.
+            if distanceToManeuver <= nowThreshold + 10 { announcedNowStepIndices.insert(nextIndex) }
+        }
+        // Second prompt, right at the junction: "此路口右轉…". One call-out 150 m earlier is easy to miss,
+        // and with several lanes or an approaching bridge it is the one that matters.
+        if distanceToManeuver <= nowThreshold, !announcedNowStepIndices.contains(nextIndex), !nextStep.instructions.isEmpty {
+            announcedNowStepIndices.insert(nextIndex)
+            speak(VoiceScript.now(instruction: nextStep.instructions), .nowManeuver)
+        }
+        // A long stretch with nothing to do: say so once, so the voice going quiet does not read as "broken".
+        if !announcedStraightSteps.contains(nextIndex), let text = VoiceScript.straight(meters: distanceToManeuver) {
+            announcedStraightSteps.insert(nextIndex)
+            speak(text, .straightReminder, .low)
         }
         // Advancing past a maneuver is irreversible (the old step's instructions won't be
         // shown again), so — same reasoning as arrival — don't act on a single noisy fix
@@ -1257,7 +1350,7 @@ struct InAppNavigationView: View {
                         text += "，您已超速，目前時速\(currentKmh)公里，測速限速\(limit)公里"
                     }
                 }
-                speak(text, .high)
+                speak(text, .camera, .high)
             }
             if announcedCamIDs.contains(cam.id), d <= announceThreshold, d > passThreshold {
                 // Prefer the closest still-relevant camera for the on-screen banner.
