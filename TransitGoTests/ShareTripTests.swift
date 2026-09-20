@@ -39,3 +39,58 @@ final class ShareTripTests: XCTestCase {
 private extension Result {
     var failure: Failure? { if case .failure(let f) = self { return f } else { return nil } }
 }
+
+// MARK: - Sharing a ticket from the 車票 page
+
+final class ShareTicketTests: XCTestCase {
+    private func ticket(system: RailSystem = .tra, date: Date? = nil) -> RailTicket {
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "Asia/Taipei")!
+        let day = date ?? cal.date(from: DateComponents(year: 2026, month: 9, day: 21))!
+        return RailTicket(system: system, serviceDate: day, trainNo: "152", trainType: "自強",
+                          fromStationID: "1000", fromName: "臺北", toStationID: "1210", toName: "新竹",
+                          depTime: "08:00", arrTime: "09:10", carNo: "5", seatNo: "23A", note: "靠窗，王小明")
+    }
+
+    func testATrainTicketBecomesOneTrainLegTheBackendCanLookUp() throws {
+        let seg = try XCTUnwrap(ShareTripService.segment(for: ticket()))
+        XCTAssertEqual(seg.mode, "TRA")
+        XCTAssertEqual(seg.tripId, "TRA_152_2026-09-21")
+        XCTAssertEqual(seg.from, "TRA:1000")
+        XCTAssertEqual(seg.to, "TRA:1210")
+        XCTAssertEqual(seg.fromName, "臺北")
+        XCTAssertEqual(seg.toName, "新竹")
+        XCTAssertEqual(seg.line, "自強 152", "recipients see the train type and number")
+        XCTAssertEqual(seg.departureTime, "2026-09-21T00:00:00Z", "08:00 Taipei")
+        XCTAssertEqual(seg.arrivalTime, "2026-09-21T01:10:00Z")
+    }
+
+    func testTheRequestNeverContainsSeatCarNoteOrAnyLocation() throws {
+        let json = String(decoding: try XCTUnwrap(try ShareTripService.requestBody(ticket: ticket())), as: UTF8.self)
+        for secret in ["23A", "王小明", "靠窗", "carNo", "seatNo", "note", "5 車", "latitude", "longitude", "Lat", "Lng"] {
+            XCTAssertFalse(json.contains(secret), "share request must not contain \(secret)")
+        }
+        XCTAssertTrue(json.contains("\"ttlHours\":12"))
+        XCTAssertTrue(json.contains("臺北 → 新竹・自強 152"))
+    }
+
+    func testAHighSpeedRailTicketIsSharedAsScheduleOnly() throws {
+        let seg = try XCTUnwrap(ShareTripService.segment(for: ticket(system: .thsr)))
+        XCTAssertEqual(seg.mode, "HSR")
+        XCTAssertNil(seg.tripId, "there is no per-train live feed for 高鐵, so nothing to look up")
+    }
+
+    func testATicketWithAnUnreadableTimeCannotBeShared() async {
+        let bad = ticket()
+        bad.depTime = "??"
+        XCTAssertNil(ShareTripService.segment(for: bad))
+        let result = await ShareTripService.create(ticket: bad)
+        if case .failure(let f) = result { XCTAssertEqual(f, .nothingToFollow) } else { XCTFail("expected failure") }
+    }
+
+    func testTheTripDateIsTheTaipeiCalendarDayEvenNearMidnight() throws {
+        // 2026-09-21 00:30 Taipei is still 09-20 in UTC — the train id must use the Taipei day.
+        var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "Asia/Taipei")!
+        let t = ticket(date: cal.date(from: DateComponents(year: 2026, month: 9, day: 21, hour: 0, minute: 30))!)
+        XCTAssertEqual(try XCTUnwrap(ShareTripService.segment(for: t)).tripId, "TRA_152_2026-09-21")
+    }
+}
