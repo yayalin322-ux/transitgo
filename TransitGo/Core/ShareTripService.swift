@@ -22,6 +22,14 @@ enum ShareTripService {
         let departureTime: String
         let arrivalTime: String
 
+        init(mode: String, routeId: String?, line: String?, from: String?, to: String?, tripId: String?,
+             fromName: String?, toName: String?, departureTime: String, arrivalTime: String) {
+            self.mode = mode; self.routeId = routeId; routeShortName = nil; scopePath = nil
+            self.line = line; towards = nil; self.from = from; self.to = to; self.tripId = tripId
+            self.fromName = fromName; self.toName = toName
+            self.departureTime = departureTime; self.arrivalTime = arrivalTime
+        }
+
         init(_ s: MultimodalSegment) {
             mode = s.mode; routeId = s.routeId; routeShortName = s.routeShortName; scopePath = s.scopePath
             line = s.line; towards = s.towards; from = s.from; to = s.to; tripId = s.tripId
@@ -29,7 +37,7 @@ enum ShareTripService {
         }
     }
 
-    private struct Body: Encodable { let title: String; let ttlHours: Int; let segments: [SegmentBody] }
+    struct Body: Encodable { let title: String; let ttlHours: Int; let segments: [SegmentBody] }
     private struct Reply: Decodable { let ok: Bool; let url: String? }
 
     enum Failure: Error, Equatable {
@@ -49,7 +57,12 @@ enum ShareTripService {
 
     static func create(route: MultimodalRoute, title: String) async -> Result<URL, Failure> {
         guard isShareable(route) else { return .failure(.nothingToFollow) }
-        guard let base = BackendConfig.baseURL, let body = try? requestBody(route: route, title: title) else { return .failure(.backendUnavailable) }
+        guard let body = try? requestBody(route: route, title: title) else { return .failure(.backendUnavailable) }
+        return await post(body)
+    }
+
+    static func post(_ body: Data) async -> Result<URL, Failure> {
+        guard let base = BackendConfig.baseURL else { return .failure(.backendUnavailable) }
         // The free-tier backend sleeps when idle and needs up to a minute to wake: a short try, then a long one.
         for timeout in [8.0, 45.0] {
             var req = URLRequest(url: base.appendingPathComponent("v1/shares"), timeoutInterval: timeout)
@@ -65,6 +78,12 @@ enum ShareTripService {
         }
         return .failure(.backendUnavailable)
     }
+}
+
+/// Items for the system share sheet, presentable with `.sheet(item:)`.
+struct ShareSheetItems: Identifiable {
+    let id = UUID()
+    let items: [Any]
 }
 
 /// The system share sheet.
