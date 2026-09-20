@@ -25,10 +25,47 @@ struct SpeedCam: Decodable, Identifiable {
         case "speed":
             if let limit = speedLimit { return "前方有測速照相，速限\(limit)公里" }
             return "前方有測速照相"
-        case "intersection": return "前方有路口違規照相"
+        case "intersection":
+            // The county's 取締項目 says what this junction actually enforces (紅燈、行人、迴轉…).
+            if let items = EnforcementWording.spoken(note), !items.isEmpty { return "前方路口科技執法，取締\(items)" }
+            return "前方有路口違規照相"
         case "pedestrian": return "前方有行人優先照相，請禮讓行人"
-        default: return "前方有違規照相"
+        default:
+            if let items = EnforcementWording.spoken(note), !items.isEmpty { return "前方有違規照相，取締\(items)" }
+            return "前方有違規照相"
         }
+    }
+}
+
+/// Turns the official 取締項目 text ("闖紅燈、未依標誌標線號誌行駛、機車未依規定兩段式左轉") into a short spoken
+/// list. Speed enforcement is dropped (a speed camera already announces its limit) and at most three items are
+/// read so the call-out fits before the camera.
+enum EnforcementWording {
+    private static let table: [(match: String, say: String)] = [
+        ("闖紅燈", "闖紅燈"),
+        ("不禮讓行人", "不停讓行人"), ("未停讓行人", "不停讓行人"), ("不停讓行人", "不停讓行人"),
+        ("違規迴轉", "違規迴轉"),
+        ("兩段式左轉", "機車兩段式左轉"),
+        ("跨越雙白線", "跨越雙白線"),
+        ("未保持路口淨空", "路口未淨空"),
+        ("未依標誌標線號誌", "不依號誌標線行駛"), ("不遵守道路交通標誌", "不依號誌標線行駛"),
+        ("機車不在規定車道", "機車不在規定車道"),
+        ("違規停車", "違規停車"), ("臨時停車", "違規停車"), ("違規上客", "違規上客"), ("違規攬客", "違規攬客"),
+    ]
+
+    static func spoken(_ note: String?, limit: Int = 3) -> String? {
+        guard let note, !note.isEmpty else { return nil }
+        var out: [String] = []
+        for part in note.components(separatedBy: CharacterSet(charactersIn: "、，,；;")) {
+            // The county writes "違規（臨時）停車" — drop the brackets so the wording still matches.
+            let t = part.trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "（", with: "").replacingOccurrences(of: "）", with: "")
+                .replacingOccurrences(of: "(", with: "").replacingOccurrences(of: ")", with: "")
+            guard let hit = table.first(where: { t.contains($0.match) }) else { continue }
+            if !out.contains(hit.say) { out.append(hit.say) }
+            if out.count == limit { break }
+        }
+        return out.isEmpty ? nil : out.joined(separator: "、")
     }
 }
 
