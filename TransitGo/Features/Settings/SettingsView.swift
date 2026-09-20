@@ -4,11 +4,26 @@ struct SettingsView: View {
     @State private var settings = AppSettings.shared
     @State private var feedStatus: CrowdingProvider.FeedStatus?
     @State private var checking = false
+    @AppStorage(HabitLog.enabledKey) private var habitsEnabled = true
+    @State private var confirmClearHabits = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Toggle("學習我的習慣", isOn: $habitsEnabled)
+                    Button("清除學習資料", role: .destructive) { confirmClearHabits = true }
+                } header: {
+                    Text("個人化")
+                } footer: {
+                    Text("記下你查過哪些旅程與時段，在首頁「現在常去」建議。資料只存在這支手機上，不會上傳；關閉後不再記錄也不再建議。")
+                }
+                .confirmationDialog("清除所有學習資料？", isPresented: $confirmClearHabits, titleVisibility: .visible) {
+                    Button("清除", role: .destructive) { HabitLog.shared.clear() }
+                    Button("取消", role: .cancel) {}
+                }
+
                 Section {
                     Toggle("顯示示範資料", isOn: $settings.crowdingDemoMode)
                 } header: {

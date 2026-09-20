@@ -109,6 +109,11 @@ final class HomeViewModel {
     }
 }
 
+struct HabitSpecItem: Identifiable {
+    let spec: TripSpec
+    var id: String { spec.identity }
+}
+
 struct TripEditorTarget: Identifiable {
     let id = UUID()
     let existing: FavoriteTrip?
@@ -125,6 +130,8 @@ struct HomeView: View {
     @Environment(\.modelContext) private var modelContext
     /// A favorite trip that was tapped: opens the planner, which plans it again for right now.
     @State private var launchedTrip: FavoriteTrip?
+    @State private var habitSuggestions: [HabitSuggestion] = []
+    @State private var launchedHabit: HabitSpecItem?
     @State private var tripEditor: TripEditorTarget?
     @State private var needsLocationAlert = false
     @State private var tripCenter = TripNavigationCenter.shared
@@ -134,6 +141,16 @@ struct HomeView: View {
     private var region: LocalRegion? { resolver.region }
 
     /// Tapping a favorite trip: count the use, then open the planner, which plans it again now.
+    private func refreshHabits() {
+        let favorites = Set(TripStore(context: modelContext).favorites(sortedBy: .recentlyUsed).map { $0.spec.identity })
+        habitSuggestions = HabitLog.shared.suggestions(excluding: favorites)
+    }
+
+    private func openHabit(_ s: HabitSuggestion) {
+        if s.spec.origin.isCurrentLocation, location.location == nil { needsLocationAlert = true; return }
+        launchedHabit = HabitSpecItem(spec: s.spec)
+    }
+
     private func openFavorite(_ trip: FavoriteTrip) {
         if trip.spec.origin.isCurrentLocation, location.location == nil { needsLocationAlert = true; return }
         try? TripStore(context: modelContext).recordUse(trip)
@@ -156,6 +173,30 @@ struct HomeView: View {
                         ResumeTripRow(session: resumable,
                                       onResume: { tripCenter.resume(city: region?.busCity, metroOperator: region?.metroOperator) },
                                       onDiscard: { tripCenter.discardResumable() })
+                    }
+                }
+
+                if !habitSuggestions.isEmpty {
+                    Section {
+                        ForEach(habitSuggestions, id: \.spec.identity) { s in
+                            Button { openHabit(s) } label: {
+                                HStack(spacing: 10) {
+                                    Text(s.spec.destination.emoji)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("\(s.spec.origin.emoji) \(s.spec.origin.name) → \(s.spec.destination.emoji) \(s.spec.destination.name)")
+                                            .font(.subheadline).foregroundStyle(.primary).lineLimit(1)
+                                        Text(s.reason).font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    } header: {
+                        Text("現在常去")
+                    } footer: {
+                        Text("依你在這個時段常查的旅程建議，只存在這支手機上，可在設定關閉或清除。")
                     }
                 }
 
@@ -227,6 +268,14 @@ struct HomeView: View {
                     initialTrip: trip.spec
                 )
             }
+            .sheet(item: $launchedHabit) { item in
+                TransferPlannerView(
+                    city: region?.busCity ?? .taipei,
+                    origin: location.location?.coordinate ?? item.spec.origin.coordinate,
+                    metroOperator: region?.metroOperator,
+                    initialTrip: item.spec
+                )
+            }
             .sheet(item: $tripEditor) { target in
                 FavoriteTripEditor(existing: target.existing, initial: nil,
                                    context: TripEditorContext(city: region?.busCity, near: location.location?.coordinate))
@@ -237,7 +286,9 @@ struct HomeView: View {
             .alert("需要目前位置", isPresented: $needsLocationAlert) {
                 Button("好") {}
             } message: { Text("這個旅程從「目前位置」出發，請先開啟定位。") }
-            .onAppear { location.request() }
+            .onAppear { location.request(); refreshHabits() }
+            .onChange(of: launchedHabit?.id) { _, _ in refreshHabits() }
+            .onChange(of: launchedTrip?.id) { _, _ in refreshHabits() }
             .task(id: taskKey) {
                 guard let loc = location.location else { return }
                 await resolver.resolve(for: loc)
