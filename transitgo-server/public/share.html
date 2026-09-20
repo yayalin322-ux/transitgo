@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex,nofollow" />
+<title>行程分享 · TransitGo</title>
+<style>
+  :root { color-scheme: light dark; --line: #8884; --blue: #007aff; --red: #d70015; --green: #1a7f37; --amber: #b25e00; }
+  * { box-sizing: border-box; }
+  body { font: 16px/1.5 -apple-system, "PingFang TC", system-ui, sans-serif; max-width: 560px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 4px 0 2px; }
+  .sub { opacity: .65; font-size: 13px; }
+  .leg { border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin: 12px 0; }
+  .leg.walk { opacity: .7; padding: 8px 14px; }
+  .mode { font-size: 12px; padding: 2px 9px; border-radius: 99px; background: #8883; margin-right: 6px; }
+  .name { font-weight: 700; }
+  .route { display: flex; align-items: baseline; gap: 8px; margin-top: 6px; }
+  .times { opacity: .8; font-size: 14px; margin-top: 2px; }
+  .status { margin-top: 10px; padding: 8px 10px; border-radius: 10px; font-size: 15px; background: #8881; }
+  .status.ok { background: #1a7f3720; color: var(--green); }
+  .status.late { background: #b25e0022; color: var(--amber); }
+  .status.bad { background: #d7001522; color: var(--red); }
+  .note { font-size: 12px; opacity: .65; margin-top: 4px; }
+  .banner { border-radius: 12px; padding: 10px 12px; font-size: 13px; background: #007aff18; margin: 10px 0; }
+  .alert { font-size: 13px; color: var(--red); margin-top: 6px; }
+  #err { text-align: center; padding: 40px 10px; }
+  footer { font-size: 12px; opacity: .55; margin-top: 24px; text-align: center; }
+</style>
+</head>
+<body>
+<h1 id="title">行程分享</h1>
+<div class="sub" id="sub">讀取中…</div>
+<div class="banner">這裡顯示的是<b>班次狀態</b>（誤點、預估時間），<b>不是車輛的 GPS 位置</b>，也不含分享者本人的位置。</div>
+<div id="legs"></div>
+<div id="err" hidden></div>
+<footer>資料來源：交通部 TDX。連結到期後自動失效。</footer>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+// Everything below is text from a database or a public API: escape it before it goes into the page.
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const token = location.pathname.split("/").filter(Boolean).pop();
+const MODE = { BUS: ["🚌", "公車"], MRT: ["🚇", "捷運"], TRA: ["🚆", "台鐵"], HSR: ["🚄", "高鐵"], WALK: ["🚶", "步行"], BIKE: ["🚲", "YouBike"] };
+const clock = (iso) => iso ? new Date(iso).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Taipei" }) : "—";
+const reasonText = { not_supported: "這個交通工具沒有公開的即時資料來源，只能顯示班次時間", no_data: "目前查不到這班車的即時資料", unavailable: "即時資料暫時取不到", rate_limited: "即時資料查詢太頻繁，稍後會自動再試" };
+
+let plan = null;
+function shell(seg, i) {
+  const [icon, label] = MODE[seg.mode] || ["", seg.mode];
+  const walk = seg.mode === "WALK" || seg.mode === "BIKE";
+  const routeName = seg.line || seg.routeShortName || "";
+  return `<div class="leg ${walk ? "walk" : ""}" id="leg-${i}">
+    <div><span class="mode">${icon} ${esc(label)}</span>${walk ? esc(seg.fromName || "") + " → " + esc(seg.toName || "") : ""}</div>
+    ${walk ? "" : `<div class="route"><span class="name">${esc(routeName)}</span><span>${esc(seg.fromName || "?")} → ${esc(seg.toName || "?")}</span></div>
+    <div class="times">預定 ${clock(seg.departureTime)} 發車 → ${clock(seg.arrivalTime)} 抵達</div>
+    <div class="status" id="st-${i}">查詢即時狀態中…</div><div id="al-${i}"></div>`}
+  </div>`;
+}
+function render(live) {
+  plan.segments.forEach((seg, i) => {
+    const st = $("st-" + i); if (!st) return;
+    const leg = (live.legs || []).find((l) => l.index === i);
+    const alerts = $("al-" + i);
+    if (!leg) { st.className = "status"; st.textContent = "沒有即時資料來源，只能顯示班次時間"; return; }
+    alerts.innerHTML = (leg.alerts || []).slice(0, 2).map((a) => `<div class="alert">⚠️ ${esc(a.title)}</div>`).join("");
+    const s = leg.status;
+    if (!leg.available || !s) { st.className = "status"; st.textContent = reasonText[leg.reason] || "目前沒有即時資料"; return; }
+    const mins = Number.isFinite(s.delaySeconds) ? Math.round(s.delaySeconds / 60) : null;
+    const est = s.estimatedTime ? `，預估 ${clock(s.estimatedTime)} 發車` : "";
+    if (s.state === "cancelled") { st.className = "status bad"; st.textContent = "這班車已停駛"; }
+    else if (mins != null && mins > 0) { st.className = "status late"; st.textContent = `誤點 ${mins} 分鐘${est}`; }
+    else if (mins === 0 || s.state === "normal") { st.className = "status ok"; st.textContent = `準點${est}`; }
+    else { st.className = "status"; st.textContent = s.etaSeconds != null ? `約 ${Math.max(0, Math.round(s.etaSeconds / 60))} 分鐘後到站` : "有即時資料，但沒有誤點數字"; }
+    const upd = s.updatedAt ? ` · 資料時間 ${clock(s.updatedAt)}` : "";
+    st.insertAdjacentHTML("beforeend", `<div class="note">${esc(s.source || "")}${upd}</div>`);
+  });
+  $("sub").textContent = "更新於 " + clock(live.generatedAt || new Date().toISOString()) + "（每 30 秒自動更新）";
+}
+function gone(msg) { $("legs").innerHTML = ""; $("sub").textContent = ""; document.querySelector(".banner").hidden = true; $("err").hidden = false; $("err").textContent = msg; }
+
+async function loadPlan() {
+  const r = await fetch("/v1/shares/" + encodeURIComponent(token), { cache: "no-store" }).catch(() => null);
+  if (!r) return gone("連不上伺服器，請稍後再試（伺服器休眠時第一次要等約 1 分鐘）");
+  if (!r.ok) return gone("這個分享連結已過期或不存在");
+  plan = await r.json();
+  $("title").textContent = plan.title || "行程分享";
+  document.title = (plan.title || "行程分享") + " · TransitGo";
+  $("legs").innerHTML = plan.segments.map(shell).join("");
+  tick(true);
+}
+// The first load always fetches; later refreshes are skipped while the tab is in the background.
+async function tick(force) {
+  if (!plan || (document.hidden && !force)) return;
+  const r = await fetch("/v1/shares/" + encodeURIComponent(token) + "/live", { cache: "no-store" }).catch(() => null);
+  if (!r) return;
+  if (r.status === 404) return gone("這個分享連結已過期");
+  render(await r.json());
+}
+loadPlan();
+setInterval(() => tick(), 30000);
+document.addEventListener("visibilitychange", () => tick());
+</script>
+</body>
+</html>

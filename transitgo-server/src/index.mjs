@@ -33,7 +33,11 @@ import {
   getBikeCache,
   allBikeCaches,
   getSpeedcamCache,
+  createShare,
+  getShare,
+  deleteShare,
 } from "./db.mjs";
+import { sanitizeSegments, sanitizeTitle, ttlMs, newToken, isToken, isExpired } from "./shares.mjs";
 import { pushAnnouncement } from "./push.mjs";
 import { startAlertPoller } from "./alerts.mjs";
 import { startBikePoller, nearestFrom, bikePollStatus } from "./bikepoller.mjs";
@@ -498,6 +502,77 @@ app.post("/v1/realtime/route", async (req, res) => {
   } catch (e) {
     res.json({ ok: true, legs: [], eta: { etaSource: "scheduled", estimatedArrivalTime: null, shiftSeconds: null, basedOnLeg: null }, summary: { anyRealtime: false, state: null, delaySeconds: null, alerts: [], unavailableReasons: ["unavailable"] } });
   }
+});
+
+// ---- Shared trip links --------------------------------------------------------------------------
+// A link lets family and friends follow the public vehicles someone plans to ride. It stores no location
+// and no identity (see shares.mjs); the live status is the same realtime overlay the app uses, served
+// through the shared cache, so any number of viewers costs one upstream read per refresh window.
+const shareCreateBucket = new Map();
+const shareViewBucket = new Map();
+function limited(bucket, ip, perMinute) {
+  const now = Date.now();
+  const hist = (bucket.get(ip) || []).filter((t) => now - t < 60_000);
+  if (hist.length >= perMinute) return true;
+  hist.push(now);
+  bucket.set(ip, hist);
+  return false;
+}
+
+app.post("/v1/shares", async (req, res) => {
+  if (limited(shareCreateBucket, req.clientIp, 10)) return res.status(429).json({ ok: false, error: "rate limited" });
+  const segments = sanitizeSegments(req.body?.segments);
+  if (!segments) return res.status(400).json({ ok: false, error: "need 1-8 valid segments including at least one vehicle leg" });
+  const nowMs = Date.now();
+  const token = newToken();
+  const expiresAtMs = nowMs + ttlMs(req.body?.ttlHours);
+  try {
+    await createShare({ token, title: sanitizeTitle(req.body?.title), segments, nowMs, expiresAtMs });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: "could not create link" });
+  }
+  const origin = `${req.headers["x-forwarded-proto"]?.split(",")[0] || req.protocol}://${req.get("host")}`;
+  res.json({ ok: true, token, url: `${origin}/s/${token}`, expiresAt: new Date(expiresAtMs).toISOString() });
+});
+
+/** The stored trip (what was planned), for the share page. */
+app.get("/v1/shares/:token", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  if (!isToken(req.params.token) || limited(shareViewBucket, req.clientIp, 90)) return res.status(404).json({ ok: false, error: "not found" });
+  const row = await getShare(req.params.token);
+  if (isExpired(row)) return res.status(404).json({ ok: false, error: "expired or unknown" });
+  res.json({ ok: true, title: row.title, segments: row.segments, expiresAt: new Date(row.expires_at_ms).toISOString() });
+});
+
+/** Live status of the shared trip's vehicles. */
+app.get("/v1/shares/:token/live", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  if (!isToken(req.params.token) || limited(shareViewBucket, req.clientIp, 90)) return res.status(404).json({ ok: false, error: "not found" });
+  const row = await getShare(req.params.token);
+  if (isExpired(row)) return res.status(404).json({ ok: false, error: "expired or unknown" });
+  const first = row.segments[0], last = row.segments[row.segments.length - 1];
+  try {
+    res.json({ ok: true, ...(await realtime.routeOverlay({ segments: row.segments, departureTime: first.departureTime, arrivalTime: last.arrivalTime })) });
+  } catch {
+    res.json({ ok: true, legs: [], summary: { anyRealtime: false, state: null, delaySeconds: null, alerts: [], unavailableReasons: ["unavailable"] } });
+  }
+});
+
+/** The creator can revoke early. Knowing the token is the authority (128-bit, unguessable). */
+app.delete("/v1/shares/:token", async (req, res) => {
+  if (!isToken(req.params.token)) return res.status(404).json({ ok: false });
+  await deleteShare(req.params.token);
+  res.json({ ok: true });
+});
+
+app.get("/s/:token", (req, res) => {
+  res.set({
+    "Cache-Control": "no-store",
+    "X-Robots-Tag": "noindex, nofollow",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'",
+  });
+  res.sendFile(join(__dirname, "..", "public", "share.html"));
 });
 
 /** Next bus arrivals at a set of stops (the nearby list). ?scope=City/Taipei&stops=UID1,UID2 */
