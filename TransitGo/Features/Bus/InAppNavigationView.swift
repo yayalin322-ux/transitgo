@@ -819,7 +819,7 @@ struct InAppNavigationView: View {
     /// Best-effort detection since MapKit exposes no "this route uses a controlled-access
     /// highway" flag — Taiwan's freeway step instructions reliably name the road (e.g.
     /// "走 國道1號" / "Merge onto 國道3號"), which is what this actually checks for.
-    private static func usesHighway(_ route: MKRoute) -> Bool {
+    static func usesHighway(_ route: MKRoute) -> Bool {
         route.steps.contains {
             $0.instructions.contains("國道") || $0.instructions.contains("快速道路") || $0.instructions.contains("高速公路")
         }
@@ -1153,21 +1153,29 @@ struct InAppNavigationView: View {
         request.transportType = transportType
         // MapKit's public API has no "avoid highways" flag — the only lever is asking for
         // alternates and picking one ourselves that doesn't use one.
-        request.requestsAlternateRoutes = currentLeg.avoidsHighways
+        // Driving also asks for alternates: the fastest route often cuts through 巷／弄; RouteScoring prefers a
+        // main-road alternative when it costs little time.
+        request.requestsAlternateRoutes = currentLeg.avoidsHighways || transportType == .automobile
         guard let response = try? await MKDirections(request: request).calculate(), !response.routes.isEmpty else {
             errorText = "找不到路線"
             return
         }
         var first = response.routes[0]
+        var pool = response.routes
         var highwayWarning: String?
         if currentLeg.avoidsHighways {
-            if let highwayFree = response.routes.first(where: { !Self.usesHighway($0) }) {
-                first = highwayFree
+            let highwayFree = response.routes.filter { !Self.usesHighway($0) }
+            if !highwayFree.isEmpty {
+                pool = highwayFree
+                first = highwayFree[0]
             } else if Self.usesHighway(first) {
                 // Legally can't use the only route MapKit found (機車/腳踏車/行人 on a
                 // 國道) — say so plainly rather than silently sending them onto it.
                 highwayWarning = "找不到避開國道的路線，請注意目前路線可能不適用於您的交通方式"
             }
+        }
+        if transportType == .automobile, let best = RouteScoring.bestIndex(pool.map(RouteScoring.option(from:))) {
+            first = pool[best]
         }
         errorText = highwayWarning
         route = first
