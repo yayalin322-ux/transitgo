@@ -1,4 +1,5 @@
 import XCTest
+import MapKit
 import CoreLocation
 @testable import TransitGo
 
@@ -64,5 +65,28 @@ final class NavVoiceTests: XCTestCase {
     func testAPlaceElsewhereIsNotTouched() {
         XCTAssertNil(RoadAnchors.anchor(for: CLLocationCoordinate2D(latitude: 24.8393, longitude: 121.0093)))   // 竹北站
         XCTAssertNil(RoadAnchors.anchor(for: CLLocationCoordinate2D(latitude: 24.8189739, longitude: 121.0250)))   // 600+ m east of the school
+    }
+}
+
+final class ParkingPolicyTests: XCTestCase {
+    func testOffersOnlyWhenDrivingTheLastLegAndNotYetChosen() {
+        XCTAssertTrue(ParkingPolicy.mayOffer(isLastLeg: true, isDriving: true, isParkingLeg: false, parkingAlreadyChosen: false))
+        XCTAssertFalse(ParkingPolicy.mayOffer(isLastLeg: false, isDriving: true, isParkingLeg: false, parkingAlreadyChosen: false), "not the last leg")
+        XCTAssertFalse(ParkingPolicy.mayOffer(isLastLeg: true, isDriving: false, isParkingLeg: false, parkingAlreadyChosen: false), "walking/cycling")
+    }
+
+    func testTheDriveToTheParkingLotNeverOffersParkingAgain() {
+        // this is the loop the user hit: picking a lot opened a navigation that asked the same question
+        XCTAssertFalse(ParkingPolicy.mayOffer(isLastLeg: true, isDriving: true, isParkingLeg: true, parkingAlreadyChosen: false))
+    }
+
+    func testOnceALotWasChosenTheTripStopsAsking() {
+        XCTAssertFalse(ParkingPolicy.mayOffer(isLastLeg: true, isDriving: true, isParkingLeg: false, parkingAlreadyChosen: true))
+    }
+
+    func testTheParkingLegCarriesItsMarkerAndOrdinaryLegsDoNot() {
+        let c = CLLocationCoordinate2D(latitude: 24.8, longitude: 121.0)
+        XCTAssertTrue(NavigationLeg(coordinate: c, name: "停車場", transportType: .automobile, isParkingLeg: true).isParkingLeg)
+        XCTAssertFalse(NavigationLeg(coordinate: c, name: "目的地", transportType: .automobile).isParkingLeg)
     }
 }
