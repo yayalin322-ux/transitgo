@@ -61,7 +61,13 @@ export function startAlertPoller() {
     return;
   }
   const minutes = Math.max(1, parseInt(process.env.ALERT_POLL_MINUTES || "3", 10));
+  let running = false;
   const run = async () => {
+    if (running) return;
+    running = true;
+    try { await runOnce(); } finally { running = false; }
+  };
+  const runOnce = async () => {
     await checkSource({ source: "tra", category: "rail", label: "台鐵", fetcher: traAlerts });
     await checkSource({ source: "thsr", category: "rail", label: "高鐵", fetcher: thsrAlerts });
   };

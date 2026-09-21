@@ -10,6 +10,8 @@ export class TdxHttpError extends Error {
   }
 }
 
+import { createBudget } from "./tdxBudget.mjs";
+
 const TOKEN_URL =
   "https://tdx.transportdata.tw/auth/realms/TDXConnect/protocol/openid-connect/token";
 const BASE = "https://tdx.transportdata.tw/api/basic";
@@ -75,13 +77,24 @@ async function fetchWithToken(path, t) {
   return res.json();
 }
 
+// One shared quota (see tdxBudget.mjs): background reads wait and leave room; interactive reads never wait.
+export const tdxBudget = createBudget({
+  perMinute: parseInt(process.env.TDX_RATE_PER_MIN || "5", 10),
+  reservedForInteractive: parseInt(process.env.TDX_RESERVED_INTERACTIVE || "3", 10),
+});
+
+/** Background reads (pollers): waits its turn inside the quota, never takes the interactive reserve. */
 export async function get(path) {
+  const id = process.env.TDX_CLIENT_ID;
+  if (!(await tdxBudget.acquireBackground(id))) throw new TdxHttpError(`TDX ${path} 429 (waited too long for a free slot)`, 429);
   const t = await token();
   return fetchWithToken(path, t);
 }
 
-/** Same as get(), but authenticates with the routing engine's own TDX credentials (if configured). */
+/** Interactive reads (a person is waiting): a slot now, or an immediate 429 the caller can answer from cache. */
 export async function getRouting(path) {
+  const id = tdxRoutingConfigured() ? process.env.TDX_ROUTING_CLIENT_ID : process.env.TDX_CLIENT_ID;
+  if (!tdxBudget.tryAcquire(id)) throw new TdxHttpError(`TDX ${path} 429 (local budget)`, 429);
   const t = await routingToken();
   return fetchWithToken(path, t);
 }
