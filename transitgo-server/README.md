@@ -134,3 +134,19 @@ node scripts/migrate_to_firestore.mjs --apply               # the real copy (ref
 ```
 Then deploy `firestore.indexes.json` and `firestore.rules` (`firebase deploy --only firestore`) and set `DATA_BACKEND=firestore`.
 Rolling back is `DATA_BACKEND=sql`; anything written to Firestore after the switch is not copied back.
+
+## Running the backend on your own computer (no hosting bill)
+
+```
+cd transitgo-server && npm run local
+```
+`scripts/run_local.sh` starts the server with the settings from `transitgo-server/.env` (git-ignored; nothing secret is
+printed) and keeps the Mac awake while it runs. It uses the same Supabase database and storage as any other run, and
+loads the routing graph in about a minute (seconds when it is cached).
+
+- **Phone on the same Wi-Fi**: set `BACKEND_HOST = <computer-name>.local:8787` in `Config/Secrets.xcconfig`
+  (`scutil --get LocalHostName` gives the name; the script prints the exact value), rebuild and install. The app already
+  talks plain http to `.local` / `192.168.*` / `10.*` hosts and asks iOS once for local-network permission.
+- **Away from home**: a Cloudflare quick tunnel (`cloudflared tunnel --url http://localhost:8787`) prints a temporary https
+  address; put it in `BACKEND_HOST` (without `https://`) and rebuild. The address changes on every start.
+- The computer must be on, awake and running the script for the app to work. It is a development setup, not hosting.
