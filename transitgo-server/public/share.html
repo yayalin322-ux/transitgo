@@ -6,32 +6,52 @@
 <meta name="robots" content="noindex,nofollow" />
 <title>行程分享 · TransitGo</title>
 <style>
-  :root { color-scheme: light dark; --line: #8884; --blue: #007aff; --red: #d70015; --green: #1a7f37; --amber: #b25e00; }
+  :root { color-scheme: light dark; --line: #8884; --blue: #007aff; --red: #d70015; --green: #1a7f37; --amber: #b25e00; --muted: .62; }
   * { box-sizing: border-box; }
-  body { font: 16px/1.5 -apple-system, "PingFang TC", system-ui, sans-serif; max-width: 560px; margin: 0 auto; padding: 16px; }
+  body { font: 16px/1.5 -apple-system, "PingFang TC", system-ui, sans-serif; max-width: 560px; margin: 0 auto; padding: 14px 14px 40px; }
   h1 { font-size: 20px; margin: 4px 0 2px; }
-  .sub { opacity: .65; font-size: 13px; }
-  .leg { border: 1px solid var(--line); border-radius: 14px; padding: 14px; margin: 12px 0; }
-  .leg.walk { opacity: .7; padding: 8px 14px; }
+  .sub { font-size: 13px; opacity: var(--muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .sub button { font: inherit; font-size: 12px; padding: 2px 10px; border-radius: 99px; border: 1px solid var(--line); background: none; color: inherit; cursor: pointer; }
+  .banner { border-radius: 12px; padding: 9px 12px; font-size: 13px; background: #007aff18; margin: 10px 0; }
+  .banner.warn { background: #b25e0022; color: var(--amber); }
+  .banner.wake { background: #8882; }
+  .leg { border: 1px solid var(--line); border-radius: 16px; padding: 14px; margin: 12px 0; }
+  .leg.walk { opacity: .65; padding: 8px 14px; }
   .mode { font-size: 12px; padding: 2px 9px; border-radius: 99px; background: #8883; margin-right: 6px; }
+  .route { display: flex; align-items: baseline; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
   .name { font-weight: 700; }
-  .route { display: flex; align-items: baseline; gap: 8px; margin-top: 6px; }
-  .times { opacity: .8; font-size: 14px; margin-top: 2px; }
-  .status { margin-top: 10px; padding: 8px 10px; border-radius: 10px; font-size: 15px; background: #8881; }
-  .status.ok { background: #1a7f3720; color: var(--green); }
-  .status.late { background: #b25e0022; color: var(--amber); }
-  .status.bad { background: #d7001522; color: var(--red); }
-  .note { font-size: 12px; opacity: .65; margin-top: 4px; }
-  .banner { border-radius: 12px; padding: 10px 12px; font-size: 13px; background: #007aff18; margin: 10px 0; }
+  .phase { margin-top: 10px; font-size: 20px; font-weight: 700; line-height: 1.3; }
+  .phase.ok { color: var(--green); } .phase.late { color: var(--amber); } .phase.bad { color: var(--red); }
+  .count { margin-top: 4px; font-size: 15px; }
+  .count b { font-variant-numeric: tabular-nums; font-size: 18px; }
+  .pos { margin-top: 8px; padding: 8px 10px; border-radius: 10px; background: #8881; font-size: 14px; }
+  .badges { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .badge { font-size: 12px; padding: 2px 10px; border-radius: 99px; background: #8883; }
+  .badge.ok { background: #1a7f3720; color: var(--green); } .badge.late { background: #b25e0022; color: var(--amber); }
+  ol.stops { list-style: none; margin: 12px 0 0; padding: 0; position: relative; }
+  ol.stops li { position: relative; padding: 2px 0 2px 26px; font-size: 14px; display: flex; justify-content: space-between; gap: 8px; }
+  ol.stops li::before { content: ""; position: absolute; left: 7px; top: 0; bottom: 0; width: 2px; background: var(--line); }
+  ol.stops li::after { content: ""; position: absolute; left: 3px; top: 9px; width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+  ol.stops li.passed { opacity: .5; } ol.stops li.passed::after { background: var(--green); }
+  ol.stops li.next { font-weight: 700; } ol.stops li.next::after { background: var(--blue); box-shadow: 0 0 0 4px #007aff33; }
+  ol.stops li.edge { font-weight: 600; }
+  ol.stops li .t { opacity: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .note { font-size: 12px; opacity: var(--muted); margin-top: 6px; }
   .alert { font-size: 13px; color: var(--red); margin-top: 6px; }
+  .rate { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); text-align: center; }
+  .rate .stars button { font-size: 30px; background: none; border: 0; cursor: pointer; padding: 2px 4px; opacity: .35; color: inherit; }
+  .rate .stars button.on { opacity: 1; }
+  .rate p { margin: 4px 0; font-size: 14px; }
   #err { text-align: center; padding: 40px 10px; }
-  footer { font-size: 12px; opacity: .55; margin-top: 24px; text-align: center; }
+  footer { font-size: 12px; opacity: .5; margin-top: 24px; text-align: center; }
 </style>
 </head>
 <body>
 <h1 id="title">行程分享</h1>
-<div class="sub" id="sub">讀取中…</div>
-<div class="banner">這裡顯示的是<b>班次狀態</b>（誤點、預估時間），<b>不是車輛的 GPS 位置</b>，也不含分享者本人的位置。</div>
+<div class="sub"><span id="sub">讀取中…</span><button id="refresh" type="button" hidden>重新整理</button></div>
+<div id="wake" class="banner wake" hidden></div>
+<div id="stale" class="banner warn" hidden></div>
+<div class="banner" id="disclaimer">這裡顯示的是<b>班次狀態與列車最後回報的位置</b>（台鐵才有），<b>不是 GPS 即時定位</b>，也不含分享者本人的位置。</div>
 <div id="legs"></div>
 <div id="err" hidden></div>
 <footer>資料來源：交通部 TDX。連結到期後自動失效。</footer>
@@ -43,64 +63,213 @@ const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const token = location.pathname.split("/").filter(Boolean).pop();
 const MODE = { BUS: ["🚌", "公車"], MRT: ["🚇", "捷運"], TRA: ["🚆", "台鐵"], HSR: ["🚄", "高鐵"], WALK: ["🚶", "步行"], BIKE: ["🚲", "YouBike"] };
-const clock = (iso) => iso ? new Date(iso).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Taipei" }) : "—";
+const clock = (ms) => ms ? new Date(ms).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Taipei" }) : "—";
+const isVehicle = (s) => s.mode !== "WALK" && s.mode !== "BIKE";
 const reasonText = { not_supported: "這個交通工具沒有公開的即時資料來源，只能顯示班次時間", no_data: "目前查不到這班車的即時資料", unavailable: "即時資料暫時取不到", rate_limited: "即時資料查詢太頻繁，稍後會自動再試" };
 
-let plan = null;
-function shell(seg, i) {
+let plan = null, live = null, lastOkAt = 0, polling = false;
+
+/* ---------- robust fetching: a sleeping server, a challenge page or a dropped connection are retried, not fatal ---------- */
+async function tryFetch(url, opts) {
+  try {
+    const r = await fetch(url, { cache: "no-store", ...opts });
+    const text = await r.text();
+    let body = null; try { body = JSON.parse(text); } catch { /* an HTML page from the host while it wakes up */ }
+    return { status: r.status, body };
+  } catch { return { status: 0, body: null }; }
+}
+/** Retries with growing pauses until `deadlineMs` has passed; calls onWait(attempt) while it waits. 404 is final. */
+async function fetchWithRetry(url, { deadlineMs = 150000, onWait } = {}) {
+  const start = Date.now();
+  for (let attempt = 1; ; attempt++) {
+    const r = await tryFetch(url);
+    if (r.status === 200 && r.body) return r;
+    if (r.status === 404) return r;
+    if (Date.now() - start > deadlineMs) return r;
+    onWait?.(attempt, Date.now() - start);
+    await new Promise((res) => setTimeout(res, Math.min(8000, 1000 + attempt * 1000)));
+  }
+}
+function waking(on, attempt, elapsed) {
+  const el = $("wake");
+  el.hidden = !on;
+  if (on) el.textContent = `伺服器正在喚醒中…（第 ${attempt} 次嘗試，已等 ${Math.round(elapsed / 1000)} 秒；第一次通常要 30～60 秒，會自動重試，不用重新整理）`;
+}
+
+/* ---------- rendering ---------- */
+function legShell(seg, i) {
   const [icon, label] = MODE[seg.mode] || ["", seg.mode];
-  const walk = seg.mode === "WALK" || seg.mode === "BIKE";
-  const routeName = seg.line || seg.routeShortName || "";
-  return `<div class="leg ${walk ? "walk" : ""}" id="leg-${i}">
-    <div><span class="mode">${icon} ${esc(label)}</span>${walk ? esc(seg.fromName || "") + " → " + esc(seg.toName || "") : ""}</div>
-    ${walk ? "" : `<div class="route"><span class="name">${esc(routeName)}</span><span>${esc(seg.fromName || "?")} → ${esc(seg.toName || "?")}</span></div>
-    <div class="times">預定 ${clock(seg.departureTime)} 發車 → ${clock(seg.arrivalTime)} 抵達</div>
-    <div class="status" id="st-${i}">查詢即時狀態中…</div><div id="al-${i}"></div>`}
+  if (!isVehicle(seg)) {
+    return `<div class="leg walk" id="leg-${i}"><span class="mode">${icon} ${esc(label)}</span>${esc(seg.fromName || "")} → ${esc(seg.toName || "")}</div>`;
+  }
+  return `<div class="leg" id="leg-${i}">
+    <div><span class="mode">${icon} ${esc(label)}</span></div>
+    <div class="route"><span class="name">${esc(seg.line || seg.routeShortName || "")}</span><span>${esc(seg.fromName || "?")} → ${esc(seg.toName || "?")}</span></div>
+    <div id="body-${i}"><div class="note">查詢即時狀態中…</div></div>
   </div>`;
 }
-function render(live) {
-  plan.segments.forEach((seg, i) => {
-    const st = $("st-" + i); if (!st) return;
-    const leg = (live.legs || []).find((l) => l.index === i);
-    const alerts = $("al-" + i);
-    if (!leg) { st.className = "status"; st.textContent = "沒有即時資料來源，只能顯示班次時間"; return; }
-    alerts.innerHTML = (leg.alerts || []).slice(0, 2).map((a) => `<div class="alert">⚠️ ${esc(a.title)}</div>`).join("");
-    const s = leg.status;
-    if (!leg.available || !s) { st.className = "status"; st.textContent = reasonText[leg.reason] || "目前沒有即時資料"; return; }
-    const mins = Number.isFinite(s.delaySeconds) ? Math.round(s.delaySeconds / 60) : null;
-    const est = s.estimatedTime ? `，預估 ${clock(s.estimatedTime)} 發車` : "";
-    if (s.state === "cancelled") { st.className = "status bad"; st.textContent = "這班車已停駛"; }
-    else if (mins != null && mins > 0) { st.className = "status late"; st.textContent = `誤點 ${mins} 分鐘${est}`; }
-    else if (mins === 0 || s.state === "normal") { st.className = "status ok"; st.textContent = `準點${est}`; }
-    else { st.className = "status"; st.textContent = s.etaSeconds != null ? `約 ${Math.max(0, Math.round(s.etaSeconds / 60))} 分鐘後到站` : "有即時資料，但沒有誤點數字"; }
-    const upd = s.updatedAt ? ` · 資料時間 ${clock(s.updatedAt)}` : "";
-    st.insertAdjacentHTML("beforeend", `<div class="note">${esc(s.source || "")}${upd}</div>`);
-  });
-  $("sub").textContent = "更新於 " + clock(live.generatedAt || new Date().toISOString()) + "（每 30 秒自動更新）";
-}
-function gone(msg) { $("legs").innerHTML = ""; $("sub").textContent = ""; document.querySelector(".banner").hidden = true; $("err").hidden = false; $("err").textContent = msg; }
 
+/** What the family cares about, in order: where is it, how long until it leaves / arrives, how many stops. */
+function legModel(seg, train, ov) {
+  const sched = { dep: Date.parse(seg.departureTime), arr: Date.parse(seg.arrivalTime) };
+  const m = { phase: "", tone: "", pos: "", dep: sched.dep, arr: sched.arr, depEst: false, arrEst: false, delay: null, stops: [], stopsLeft: null, arrived: false, note: "", alerts: [] };
+  const now = Date.now();
+  if (train && train.available) {
+    if (train.depMs) { m.dep = train.depMs; m.depEst = train.depIsEstimate; }
+    if (train.arrMs) { m.arr = train.arrMs; m.arrEst = train.arrIsEstimate; }
+    m.delay = Number.isFinite(train.delayMinutes) ? train.delayMinutes : null;
+    m.stops = train.stops || [];
+    m.stopsLeft = train.stopsToTo;
+    const p = train.position;
+    if (p) {
+      const where = p.status === "departed" ? `已離開 ${p.stationName}` : p.status === "at_station" ? `停靠 ${p.stationName}` : p.status === "approaching" ? `進站中：${p.stationName}` : `在 ${p.stationName}`;
+      m.pos = `📍 ${where}` + (train.next ? ` · 下一站 ${train.next.name}${train.next.estMs ? `（約 ${clock(train.next.estMs)}）` : ""}` : "");
+    }
+    switch (train.phase) {
+      case "notStarted": m.phase = "尚未發車"; break;
+      case "beforeBoarding": m.phase = "列車行駛中，還沒到上車的站"; m.tone = ""; break;
+      case "running": m.phase = "行駛中"; break;
+      case "arrived": m.phase = `已到達 ${seg.toName || "目的地"}`; m.tone = "ok"; m.arrived = true; break;
+      case "ended": m.phase = "這班車已結束行程"; m.arrived = now >= sched.arr; break;
+      case "noLiveData": m.phase = "目前沒有這班車的位置資料"; m.note = "可能還沒發車，或這班車暫時不在即時資料裡；下面顯示的是班表時間。"; break;
+      default: m.phase = "狀態不明";
+    }
+    if (!train.liveAvailable && train.reasons?.live) m.note = (m.note ? m.note + " " : "") + (train.scheduleSource === "general" ? "這是未來日期的一般班表，沒有即時位置。" : (reasonText[train.reasons.live] || ""));
+    if (m.delay != null && m.delay > 0 && !m.arrived) { m.tone = "late"; }
+    else if (m.delay === 0 && train.position && !m.arrived) { m.tone = "ok"; }
+  } else if (train) {
+    m.phase = "目前查不到這班車的資料"; m.note = reasonText[train.reasons?.timetable] || reasonText[train.reasons?.live] || "";
+  } else if (ov) {
+    // bus / metro: the ordinary overlay
+    const s = ov.status;
+    m.alerts = (ov.alerts || []).slice(0, 2);
+    if (!ov.available || !s) { m.phase = seg.mode === "HSR" ? "高鐵：只有班次時間" : "目前沒有即時資料"; m.note = reasonText[ov.reason] || ""; }
+    else {
+      if (s.estimatedTime) { m.dep = Date.parse(s.estimatedTime); m.depEst = true; }
+      const mins = Number.isFinite(s.delaySeconds) ? Math.round(s.delaySeconds / 60) : null;
+      m.delay = mins;
+      m.phase = s.state === "cancelled" ? "這班車已停駛" : s.etaSeconds != null ? `約 ${Math.max(0, Math.round(s.etaSeconds / 60))} 分鐘後到站` : mins > 0 ? "行駛中（誤點）" : "有即時資料";
+      m.tone = s.state === "cancelled" ? "bad" : mins > 0 ? "late" : "ok";
+    }
+  } else {
+    m.phase = seg.mode === "HSR" ? "高鐵：只有班次時間" : "查詢即時狀態中…";
+    if (seg.mode === "HSR") m.note = reasonText.not_supported;
+  }
+  return m;
+}
+
+function legHtml(seg, i, m) {
+  const badges = [];
+  if (m.delay != null) badges.push(m.delay > 0 ? `<span class="badge late">誤點 ${m.delay} 分</span>` : `<span class="badge ok">準點</span>`);
+  if (m.stopsLeft != null && !m.arrived) badges.push(`<span class="badge">還有 ${m.stopsLeft} 站到 ${esc(seg.toName || "終點")}</span>`);
+  const stops = m.stops.length ? `<ol class="stops">${m.stops.map((s) => `<li class="${s.status}${s.isBoarding || s.isAlighting ? " edge" : ""}"><span>${esc(s.name)}${s.isBoarding ? "（上車）" : s.isAlighting ? "（下車）" : ""}${s.status === "next" ? " ←" : ""}</span><span class="t">${clock(s.estMs)}</span></li>`).join("")}</ol>` : "";
+  return `
+    <div class="phase ${m.tone}">${esc(m.phase)}</div>
+    ${m.pos ? `<div class="pos">${esc(m.pos)}</div>` : ""}
+    <div class="count" data-i="${i}"></div>
+    <div class="badges">${badges.join("")}</div>
+    ${stops}
+    ${m.note ? `<div class="note">${esc(m.note)}</div>` : ""}
+    ${m.alerts.map((a) => `<div class="alert">⚠️ ${esc(a.title)}</div>`).join("")}
+    <div class="note">預定 ${clock(Date.parse(seg.departureTime))} 發車 → ${clock(Date.parse(seg.arrivalTime))} 抵達${m.depEst || m.arrEst ? `；預估 ${clock(m.dep)} 發車 → ${clock(m.arr)} 抵達` : ""}</div>
+    ${m.arrived ? rateHtml(seg, i) : ""}`;
+}
+
+function rateHtml(seg, i) {
+  let done = null; try { done = localStorage.getItem(`rated:${token}:${i}`); } catch { /* private mode */ }
+  if (done) return `<div class="rate"><p>謝謝你的評分（${"★".repeat(Number(done) || 0)}）</p></div>`;
+  return `<div class="rate" data-rate="${i}"><p>這趟搭乘還好嗎？幫忙評個分（匿名，只算星星）</p><div class="stars">${[1, 2, 3, 4, 5].map((n) => `<button type="button" data-star="${n}" data-leg="${i}" aria-label="${n} 星">★</button>`).join("")}</div><p class="note" id="rate-msg-${i}"></p></div>`;
+}
+
+let models = [];
+function renderLegs() {
+  if (!plan) return;
+  models = plan.segments.map((seg, i) => {
+    if (!isVehicle(seg)) return null;
+    const train = (live?.trains || []).find((t) => t.index === i) || null;
+    const ov = (live?.legs || []).find((l) => l.index === i) || null;
+    return legModel(seg, train, ov);
+  });
+  plan.segments.forEach((seg, i) => {
+    const el = $("body-" + i); if (!el || !models[i]) return;
+    el.innerHTML = legHtml(seg, i, models[i]);
+  });
+  tickClock();
+}
+
+/* ---------- the per-second countdown: computed on this device, no request ---------- */
+function fmtSpan(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h ? `${h} 小時 ${m} 分` : m ? `${m} 分 ${String(sec).padStart(2, "0")} 秒` : `${sec} 秒`;
+}
+function tickClock() {
+  const now = Date.now();
+  document.querySelectorAll(".count").forEach((el) => {
+    const i = Number(el.dataset.i), m = models[i], seg = plan?.segments[i];
+    if (!m || !seg) return;
+    let html = "";
+    if (m.arrived) html = `已於 ${clock(m.arr)} 前後到達`;
+    else if (now < m.dep) html = `距離發車 <b>${fmtSpan(m.dep - now)}</b>${m.depEst ? "（預估）" : ""}`;
+    else if (now < m.arr) html = `約 <b>${fmtSpan(m.arr - now)}</b> 後到達 ${esc(seg.toName || "")}，預計 ${clock(m.arr)}${m.arrEst ? "（預估）" : ""}`;
+    else html = `已過預定到達時間（${clock(m.arr)}）`;
+    if (el.innerHTML !== html) el.innerHTML = html;
+  });
+  const age = lastOkAt ? Math.round((now - lastOkAt) / 1000) : null;
+  if (age != null) {
+    $("sub").textContent = `資料 ${age} 秒前更新（每 15 秒自動更新）`;
+    const stale = $("stale");
+    stale.hidden = age < 60;
+    if (age >= 60) stale.textContent = `已經 ${age} 秒沒有更新到最新資料（可能是連線或資料來源暫時有問題），下面是最後一次成功的內容，會自動重試。`;
+  }
+}
+
+/* ---------- loading ---------- */
+function gone(msg) {
+  $("legs").innerHTML = ""; $("sub").textContent = ""; $("disclaimer").hidden = true; $("wake").hidden = true; $("stale").hidden = true; $("refresh").hidden = true;
+  $("err").hidden = false; $("err").textContent = msg;
+}
 async function loadPlan() {
-  const r = await fetch("/v1/shares/" + encodeURIComponent(token), { cache: "no-store" }).catch(() => null);
-  if (!r) return gone("連不上伺服器，請稍後再試（伺服器休眠時第一次要等約 1 分鐘）");
-  if (!r.ok) return gone("這個分享連結已過期或不存在");
-  plan = await r.json();
+  const r = await fetchWithRetry("/v1/shares/" + encodeURIComponent(token), { onWait: (a, e) => waking(true, a, e) });
+  waking(false);
+  if (r.status === 404) return gone("這個分享連結已過期或不存在");
+  if (r.status !== 200 || !r.body) return gone("連不上伺服器。請稍後再重新整理這一頁（伺服器休眠或維護中）。");
+  plan = r.body;
   $("title").textContent = plan.title || "行程分享";
   document.title = (plan.title || "行程分享") + " · TransitGo";
-  $("legs").innerHTML = plan.segments.map(shell).join("");
-  tick(true);
+  $("legs").innerHTML = plan.segments.map(legShell).join("");
+  $("refresh").hidden = false;
+  await refreshLive(true);
+  setInterval(tickClock, 1000);
+  setInterval(() => refreshLive(false), 15000);
 }
-// The first load always fetches; later refreshes are skipped while the tab is in the background.
-async function tick(force) {
-  if (!plan || (document.hidden && !force)) return;
-  const r = await fetch("/v1/shares/" + encodeURIComponent(token) + "/live", { cache: "no-store" }).catch(() => null);
-  if (!r) return;
-  if (r.status === 404) return gone("這個分享連結已過期");
-  render(await r.json());
+async function refreshLive(force) {
+  if (!plan || polling || (document.hidden && !force)) return;
+  polling = true;
+  try {
+    const r = await tryFetch("/v1/shares/" + encodeURIComponent(token) + "/live");
+    if (r.status === 404) return gone("這個分享連結已過期");
+    if (r.status === 200 && r.body) { live = r.body; lastOkAt = Date.now(); renderLegs(); }
+    else if (!live) renderLegs();   // first attempt failed: show the schedule at least; the next tick retries
+  } finally { polling = false; }
 }
+$("refresh").addEventListener("click", () => refreshLive(true));
+document.addEventListener("visibilitychange", () => refreshLive(false));
+
+/* ---------- rating ---------- */
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-star]"); if (!b) return;
+  const leg = Number(b.dataset.leg), stars = Number(b.dataset.star);
+  const msg = $("rate-msg-" + leg);
+  document.querySelectorAll(`button[data-leg="${leg}"]`).forEach((x) => x.classList.toggle("on", Number(x.dataset.star) <= stars));
+  msg.textContent = "送出中…";
+  const r = await tryFetch(`/v1/shares/${encodeURIComponent(token)}/rating`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stars, legIndex: leg }) });
+  if (r.status === 200) { try { localStorage.setItem(`rated:${token}:${leg}`, String(stars)); } catch { /* private mode */ } renderLegs(); }
+  else if (r.status === 409) msg.textContent = r.body?.error === "already rated" ? "你已經評過分了，謝謝！" : "這班車還沒到達，到達後才能評分。";
+  else msg.textContent = "送出失敗，請稍後再試。";
+});
+
 loadPlan();
-setInterval(() => tick(), 30000);
-document.addEventListener("visibilitychange", () => tick());
 </script>
 </body>
 </html>

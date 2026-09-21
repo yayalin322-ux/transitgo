@@ -77,4 +77,21 @@ const overnight = parseTimetable({ TrainTimetables: [{ TrainInfo: { TrainNo: "X"
   { StopSequence: 2, StationID: "2", StationName: { Zh_tw: "乙" }, ArrivalTime: "00:10", DepartureTime: "00:10" }] }] }, "2026-09-21");
 check("a train past midnight: the second stop is 20 min after the first, on the next day", overnight.stops[1].arrMs - overnight.stops[0].depMs === 20 * 60_000);
 
+
+// ---- the journey list the share page draws
+{
+  const r0 = summarizeTrain({ timetable: tt, live, fromId: fromStop.stationId, toId: toStop.stationId, nowMs: now });
+  check("journey covers boarding → alighting inclusive (8 stops here)", r0.stops.length === 8 && r0.stops[0].isBoarding && r0.stops.at(-1).isAlighting);
+  check("stops the train has left are 'passed', the next one is 'next', the rest 'future'",
+    r0.stops.slice(0, 4).every((x) => x.status === "passed") && r0.stops[4].status === "next" && r0.stops.slice(5).every((x) => x.status === "future"));
+  check("exactly one 'next' stop", r0.stops.filter((x) => x.status === "next").length === 1);
+  check("the 'next' stop is the same one reported as r.next", r0.stops[4].name === r0.next.name);
+  const rNoLive = summarizeTrain({ timetable: tt, live: null, fromId: fromStop.stationId, toId: toStop.stationId, nowMs: first.depMs - 30 * 60_000 });
+  check("without a live row every stop is 'future' (schedule only, nothing claimed)", rNoLive.stops.every((x) => x.status === "future"));
+  const rApp = summarizeTrain({ timetable: tt, live: { ...live, stationId: toStop.stationId, status: "approaching" }, fromId: fromStop.stationId, toId: toStop.stationId, nowMs: now });
+  check("approaching the alighting station: it is the 'next' one", rApp.stops.at(-1).status === "next");
+  const rLate = summarizeTrain({ timetable: tt, live: { ...live, delayMinutes: 5 }, fromId: fromStop.stationId, toId: toStop.stationId, nowMs: now });
+  check("delay shifts each stop's estimate but not its scheduled time", rLate.stops[6].estMs - rLate.stops[6].schedMs === 5 * 60_000);
+}
+
 process.exit(failed ? 1 : 0);

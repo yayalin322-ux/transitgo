@@ -66,7 +66,7 @@ const est = (ms, delayMin) => (ms == null ? null : ms + (Number.isFinite(delayMi
  */
 export function summarizeTrain({ timetable, live, fromId = null, toId = null, nowMs }) {
   const out = {
-    phase: "unknown", position: null, next: null, stopsToFrom: null, stopsToTo: null,
+    phase: "unknown", position: null, next: null, stopsToFrom: null, stopsToTo: null, stops: [],
     delayMinutes: live?.delayMinutes ?? null, depMs: null, arrMs: null, depIsEstimate: false, arrIsEstimate: false, updatedAtMs: live?.updatedAtMs ?? null,
   };
   if (!timetable) {
@@ -82,6 +82,19 @@ export function summarizeTrain({ timetable, live, fromId = null, toId = null, no
   if (iFrom >= 0) { out.depMs = est(stops[iFrom].depMs, delay); out.depIsEstimate = delay != null; }
   if (iTo >= 0) { out.arrMs = est(stops[iTo].arrMs, delay); out.arrIsEstimate = delay != null; }
 
+  // The stops of the sharer's journey (boarding → alighting, or the whole run when unknown), each with its status. Filled
+  // in below once the train's position is known; without a live row every stop is simply "future" (schedule only).
+  const from = iFrom >= 0 ? iFrom : 0;
+  const to = iTo >= 0 ? iTo : stops.length - 1;
+  const journey = (reached) => stops.slice(from, to + 1).map((st, k) => {
+    const i = from + k;
+    return {
+      stationId: st.stationId, name: st.name, schedMs: st.arrMs, estMs: est(st.arrMs, delay),
+      status: reached == null ? "future" : i <= reached ? "passed" : i === reached + 1 ? "next" : "future",
+      isBoarding: i === iFrom, isAlighting: i === iTo,
+    };
+  });
+  out.stops = journey(null);
   const cur = live ? idx(live.stationId) : -1;
   if (live && cur >= 0) {
     const s = stops[cur];
@@ -95,6 +108,7 @@ export function summarizeTrain({ timetable, live, fromId = null, toId = null, no
     // Stops left before the sharer's stations: 0 = it is there or already past. The last station fully
     // reached is the current one unless the train is still only approaching it.
     const reached = live.status === "approaching" ? cur - 1 : cur;
+    out.stops = journey(reached);
     if (iFrom >= 0) out.stopsToFrom = Math.max(0, iFrom - reached);
     if (iTo >= 0) out.stopsToTo = Math.max(0, iTo - reached);
     const arrivedAtTo = iTo >= 0 && cur >= iTo && live.status !== "approaching";

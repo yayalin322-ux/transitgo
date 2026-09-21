@@ -3,7 +3,8 @@ import { RealtimeReason } from "./errors.mjs";
 import { RealtimeState } from "./model.mjs";
 import { busRoutePath, busStopsPath, busArrivalsAtStop, busAlertsFor, mapBusRow } from "./sources/bus.mjs";
 import { metroLiveBoardPath, metroAlertPath, mapMetroLiveBoard, mapMetroAlerts } from "./sources/metro.mjs";
-import { traStationBoardPath, traAlertPath, mapTraTrain, mapTraAlerts } from "./sources/tra.mjs";
+import { traStationBoardPath, traAlertPath, mapTraTrain, mapTraAlerts, traTrainLiveBoardPath, traTimetablePath } from "./sources/tra.mjs";
+import { parseTimetable, parseLiveRow, summarizeTrain } from "./trainProgress.mjs";
 import { thsrAlertPath, mapThsrAlerts } from "./sources/hsr.mjs";
 
 /**
@@ -19,6 +20,8 @@ export const REALTIME_TTL_MS = Object.freeze({
   metroLiveBoard: 20_000,
   metroAlert: 60_000,
   traBoard: 30_000,
+  traLiveBoard: 20_000,      // one read covers every running train
+  traTimetable: 6 * 3_600_000, // static for the day
   traAlert: 120_000,
   thsrAlert: 120_000,
 });
@@ -224,5 +227,32 @@ export function createRealtimeService({ tdxGet, db = null, cache = createRealtim
     return { available: any, reason: any ? null : RealtimeReason.NO_DATA, stops, cached: res.cached, fetchedAt: res.fetchedAt };
   }
 
-  return { routeOverlay, busStopArrivals, capabilities: () => REALTIME_CAPABILITIES, cache };
+  /**
+   * Where one 台鐵 train is, for the share page: the day's timetable + the live train board. Two reads at most, both
+   * cached (the board is one call for all trains), so any number of viewers costs the same. Never throws.
+   * The live position exists only for today's trains; another day gets the general timetable (schedule only).
+   */
+  async function trainStatus({ trainNo, dateStr, fromId = null, toId = null }) {
+    const nowMs = now();
+    const today = new Date(nowMs + 8 * 3_600_000).toISOString().slice(0, 10);   // Taipei calendar day
+    const isToday = dateStr === today;
+    const [tt, board] = await Promise.all([
+      read(`tra:timetable:${trainNo}:${isToday ? "today" : "general"}`, traTimetablePath(trainNo, isToday), ttl.traTimetable),
+      isToday ? read("tra:trainLiveBoard", traTrainLiveBoardPath(), ttl.traLiveBoard) : Promise.resolve({ ok: false, reason: RealtimeReason.NOT_SUPPORTED }),
+    ]);
+    const timetable = tt.ok ? parseTimetable(tt.value, dateStr) : null;
+    const live = board.ok ? parseLiveRow(board.value, trainNo) : null;
+    return {
+      available: !!timetable || !!live,
+      liveAvailable: board.ok,
+      scheduleSource: timetable ? (isToday ? "today" : "general") : null,
+      reasons: { timetable: tt.ok ? null : tt.reason, live: board.ok ? null : board.reason },
+      trainType: timetable?.trainType ?? null,
+      towards: timetable?.towards ?? null,
+      fetchedAt: Math.max(tt.fetchedAt ?? 0, board.fetchedAt ?? 0) || null,
+      ...summarizeTrain({ timetable, live, fromId, toId, nowMs }),
+    };
+  }
+
+  return { routeOverlay, busStopArrivals, trainStatus, capabilities: () => REALTIME_CAPABILITIES, cache };
 }

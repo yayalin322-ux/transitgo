@@ -37,7 +37,7 @@ import {
   getShare,
   deleteShare,
 } from "./appdata.mjs";
-import { sanitizeSegments, sanitizeTitle, ttlMs, newToken, isToken, isExpired } from "./shares.mjs";
+import { sanitizeSegments, sanitizeTitle, ttlMs, newToken, isToken, isExpired, isVehicle, parseTrainTrip, canRate, createRatingLedger } from "./shares.mjs";
 import { pushAnnouncement } from "./push.mjs";
 import { startAlertPoller } from "./alerts.mjs";
 import { startBikePoller, nearestFrom, bikePollStatus } from "./bikepoller.mjs";
@@ -544,18 +544,58 @@ app.get("/v1/shares/:token", async (req, res) => {
   res.json({ ok: true, title: row.title, segments: row.segments, expiresAt: new Date(row.expires_at_ms).toISOString() });
 });
 
-/** Live status of the shared trip's vehicles. */
+/** Live status of the shared trip's vehicles. 台鐵 legs get the train's real position (last station, next station,
+ * stops left, delay) from two cached reads; every other mode goes through the ordinary realtime overlay. */
 app.get("/v1/shares/:token/live", async (req, res) => {
   res.set("Cache-Control", "no-store");
   if (!isToken(req.params.token) || limited(shareViewBucket, req.clientIp, 90)) return res.status(404).json({ ok: false, error: "not found" });
   const row = await getShare(req.params.token);
   if (isExpired(row)) return res.status(404).json({ ok: false, error: "expired or unknown" });
-  const first = row.segments[0], last = row.segments[row.segments.length - 1];
-  try {
-    res.json({ ok: true, ...(await realtime.routeOverlay({ segments: row.segments, departureTime: first.departureTime, arrivalTime: last.arrivalTime })) });
-  } catch {
-    res.json({ ok: true, legs: [], summary: { anyRealtime: false, state: null, delaySeconds: null, alerts: [], unavailableReasons: ["unavailable"] } });
+  const segs = row.segments;
+  const first = segs[0], last = segs[segs.length - 1];
+  const stopId = (n) => String(n ?? "").slice(String(n ?? "").indexOf(":") + 1) || null;
+
+  // 台鐵 legs: the train's own status. Not sent to the overlay too — its station-board read would spend TDX quota on
+  // a delay figure the train board already gives.
+  const trains = (await Promise.all(segs.map(async (seg, index) => {
+    if (seg.mode !== "TRA") return null;
+    const trip = parseTrainTrip(seg.tripId);
+    if (!trip) return null;
+    try { return { index, ...(await realtime.trainStatus({ ...trip, fromId: stopId(seg.from), toId: stopId(seg.to) })) }; }
+    catch { return null; }
+  }))).filter(Boolean);
+  const handled = new Set(trains.map((t) => t.index));
+
+  // everything else: the overlay, with indexes mapped back to the shared trip's own
+  const rest = segs.map((seg, index) => ({ seg, index })).filter((x) => !handled.has(x.index));
+  let legs = [], summary = { anyRealtime: false, state: null, delaySeconds: null, alerts: [], unavailableReasons: [] };
+  if (rest.some((x) => isVehicle(x.seg))) {
+    try {
+      const o = await realtime.routeOverlay({ segments: rest.map((x) => x.seg), departureTime: first.departureTime, arrivalTime: last.arrivalTime });
+      legs = (o.legs ?? []).map((l) => ({ ...l, index: rest[l.index]?.index ?? l.index }));
+      summary = o.summary ?? summary;
+    } catch { summary.unavailableReasons = ["unavailable"]; }
   }
+  res.json({ ok: true, generatedAt: new Date().toISOString(), legs, trains, summary });
+});
+
+/** A viewer rates a leg once it has arrived. Stars only (no free text from an anonymous page). */
+const shareRatings = createRatingLedger();
+app.post("/v1/shares/:token/rating", async (req, res) => {
+  if (!isToken(req.params.token) || limited(shareViewBucket, req.clientIp, 30)) return res.status(404).json({ ok: false, error: "not found" });
+  const row = await getShare(req.params.token);
+  if (isExpired(row)) return res.status(404).json({ ok: false, error: "expired or unknown" });
+  const legIndex = Number.isInteger(req.body?.legIndex) ? req.body.legIndex : -1;
+  const stars = Number.isInteger(req.body?.stars) ? req.body.stars : 0;
+  if (stars < 1 || stars > 5) return res.status(400).json({ ok: false, error: "stars must be 1-5" });
+  if (!canRate(row.segments, legIndex, Date.now())) return res.status(409).json({ ok: false, error: "this ride has not arrived yet" });
+  if (!shareRatings.claim(req.params.token, legIndex, req.clientIp)) return res.status(409).json({ ok: false, error: "already rated" });
+  const seg = row.segments[legIndex];
+  await createRating({
+    stars, kind: seg.mode === "TRA" || seg.mode === "HSR" || seg.mode === "MRT" ? "rail" : "bus",
+    route: seg.line || seg.routeShortName || null, from: seg.fromName, to: seg.toName, system: `share-${seg.mode}`, appVersion: "web-share", device: "web-share",
+  });
+  res.json({ ok: true });
 });
 
 /** The creator can revoke early. Knowing the token is the authority (128-bit, unguessable). */
