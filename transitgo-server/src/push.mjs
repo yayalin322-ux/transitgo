@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { allDeviceTokens, removeDevice } from "./db.mjs";
+import { allDeviceTokens, removeDevice } from "./appdata.mjs";
 
 let provider = null;
 let dryRun = true;

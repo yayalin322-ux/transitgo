@@ -105,3 +105,32 @@ repo 根目錄的 `render.yaml` 已經設定好這個 blueprint：
 - **閒置 15 分鐘會休眠**，休眠時 `node-cron` 的排程（YouBike／台鐵高鐵輪詢）也會跟著停，直到下一個請求把它叫醒才恢復。想保持常駐，可以用 UptimeRobot 之類的免費服務每 10 分鐘 ping 一次 `/v1/health`。
 
 推播（APNs）一樣可以留空跑 DRY RUN；真的要推播的話，因為 Render 免費方案沒有永久磁碟放 `.p8`，把 `.p8` 檔案內容整個貼進 `APNS_KEY_CONTENT` 環境變數（不要用 `APNS_KEY_PATH`）。
+
+## App data on Firestore (optional)
+
+App data — devices, announcements, reports, ratings, observations, place reviews, landmarks, alert state, shared trip
+links — can live in Firestore instead of Postgres. The routing tables (`gtfs_*`) and the graph build are not app data and
+keep using Postgres.
+
+| env | meaning |
+|---|---|
+| `DATA_BACKEND=firestore` | use Firestore (unset or `sql` = Postgres/sqlite, the default) |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | the service-account key as a JSON string — a **secret**, set it in the host's environment, never in git |
+| `GOOGLE_APPLICATION_CREDENTIALS` | alternatively a path to the key file (local runs) |
+| `FIRESTORE_PROJECT_ID` | defaults to the project inside the key |
+| `FIRESTORE_PREFIX` | prefix for every collection name, e.g. `dev_`, to rehearse on the real project without touching real data |
+| `FIRESTORE_EMULATOR_HOST` | talk to the local emulator instead (needs Java for `firebase emulators:start`) |
+
+Design notes: row ids stay integers (a counter document per collection), timestamps are ISO strings, YouBike and
+speed-camera caches stay in process memory (they are megabytes and rewritten every couple of minutes),
+"approved landmarks near a point" is cached for a minute. `src/firestore/appdata.mjs` is tested against the SQL layer by
+`test/appdata_parity.test.mjs` (same scenario, outputs compared).
+
+### Moving the data
+```
+node scripts/migrate_to_firestore.mjs                       # dry run: prints counts, writes nothing
+node scripts/migrate_to_firestore.mjs --apply --prefix dev_ # rehearsal into dev_* collections
+node scripts/migrate_to_firestore.mjs --apply               # the real copy (refuses if a target collection is not empty)
+```
+Then deploy `firestore.indexes.json` and `firestore.rules` (`firebase deploy --only firestore`) and set `DATA_BACKEND=firestore`.
+Rolling back is `DATA_BACKEND=sql`; anything written to Firestore after the switch is not copied back.
