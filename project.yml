@@ -41,6 +41,9 @@ targets:
         BackendHost: $(BACKEND_HOST)
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        # Needed when BACKEND_HOST points at a computer on the same Wi-Fi (e.g. MacBook.local:8787): iOS asks once for
+        # permission to reach devices on the local network and shows this text.
+        NSLocalNetworkUsageDescription: 連到你自己電腦上的 TransitGo 後端（開發測試用），才能查詢路線與即時資料。
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         UISupportedInterfaceOrientations~ipad:
