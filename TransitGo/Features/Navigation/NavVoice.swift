@@ -98,3 +98,13 @@ enum RoadAnchors {
             .min { $0.1 < $1.1 }?.0
     }
 }
+
+
+/// When the screen may offer "navigate to a nearby parking lot first?". The offer used to fire in three places (before
+/// driving off, 50 m from the destination, on arrival) and again inside the navigation to the parking lot itself — which
+/// is also a drive and also a last leg — so choosing a lot started the same questions over, forever.
+enum ParkingPolicy {
+    static func mayOffer(isLastLeg: Bool, isDriving: Bool, isParkingLeg: Bool, parkingAlreadyChosen: Bool) -> Bool {
+        isLastLeg && isDriving && !isParkingLeg && !parkingAlreadyChosen
+    }
+}
