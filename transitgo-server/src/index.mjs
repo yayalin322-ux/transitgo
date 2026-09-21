@@ -36,7 +36,7 @@ import {
   createShare,
   getShare,
   deleteShare,
-} from "./db.mjs";
+} from "./appdata.mjs";
 import { sanitizeSegments, sanitizeTitle, ttlMs, newToken, isToken, isExpired } from "./shares.mjs";
 import { pushAnnouncement } from "./push.mjs";
 import { startAlertPoller } from "./alerts.mjs";

@@ -5,7 +5,7 @@ import {
   createAnnouncement,
   getAlertState,
   setAlertState,
-} from "./db.mjs";
+} from "./appdata.mjs";
 import { pushAnnouncement } from "./push.mjs";
 
 const sig = (items) =>
