@@ -24,11 +24,10 @@ final class ShareTripTests: XCTestCase {
         XCTAssertEqual(ride.1.departureTime, ride.0.departureTime)
     }
 
-    func testAWalkOnlyTripIsNotShareableAndFailsBeforeAnyNetworkCall() async throws {
+    func testAWalkOnlyTripIsNotShareableAndNothingIsPrepared() throws {
         let route = try Nav.route([Nav.Seg(mode: "WALK", from: Nav.home, to: Nav.dest, fromName: "家", toName: "學校", dep: 0, arr: 600, distance: 700)])
         XCTAssertFalse(ShareTripService.isShareable(route))
-        let result = await ShareTripService.create(route: route, title: "x")
-        XCTAssertEqual(result.failure, .nothingToFollow)
+        XCTAssertEqual(ShareTripService.prepare(route: route, title: "x").failureValue, .nothingToFollow)
     }
 
     func testATripWithAVehicleIsShareable() throws {
@@ -36,8 +35,8 @@ final class ShareTripTests: XCTestCase {
     }
 }
 
-private extension Result {
-    var failure: Failure? { if case .failure(let f) = self { return f } else { return nil } }
+extension Result {
+    var failureValue: Failure? { if case .failure(let f) = self { return f } else { return nil } }
 }
 
 // MARK: - Sharing a ticket from the 車票 page
@@ -79,12 +78,11 @@ final class ShareTicketTests: XCTestCase {
         XCTAssertNil(seg.tripId, "there is no per-train live feed for 高鐵, so nothing to look up")
     }
 
-    func testATicketWithAnUnreadableTimeCannotBeShared() async {
+    func testATicketWithAnUnreadableTimeCannotBeShared() {
         let bad = ticket()
         bad.depTime = "??"
         XCTAssertNil(ShareTripService.segment(for: bad))
-        let result = await ShareTripService.create(ticket: bad)
-        if case .failure(let f) = result { XCTAssertEqual(f, .nothingToFollow) } else { XCTFail("expected failure") }
+        XCTAssertEqual(ShareTripService.prepare(ticket: bad).failureValue, .nothingToFollow)
     }
 
     func testTheTripDateIsTheTaipeiCalendarDayEvenNearMidnight() throws {

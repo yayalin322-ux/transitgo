@@ -519,12 +519,12 @@ function limited(bucket, ip, perMinute) {
   return false;
 }
 
-app.post("/v1/shares", async (req, res) => {
+/** Shared by POST (server picks the token) and PUT (the app picked it, so it can hand out the link at once). */
+async function storeShare(req, res, token) {
   if (limited(shareCreateBucket, req.clientIp, 10)) return res.status(429).json({ ok: false, error: "rate limited" });
   const segments = sanitizeSegments(req.body?.segments);
   if (!segments) return res.status(400).json({ ok: false, error: "need 1-8 valid segments including at least one vehicle leg" });
   const nowMs = Date.now();
-  const token = newToken();
   const expiresAtMs = nowMs + ttlMs(req.body?.ttlHours);
   try {
     await createShare({ token, title: sanitizeTitle(req.body?.title), segments, nowMs, expiresAtMs });
@@ -533,6 +533,19 @@ app.post("/v1/shares", async (req, res) => {
   }
   const origin = `${req.headers["x-forwarded-proto"]?.split(",")[0] || req.protocol}://${req.get("host")}`;
   res.json({ ok: true, token, url: `${origin}/s/${token}`, expiresAt: new Date(expiresAtMs).toISOString() });
+}
+
+app.post("/v1/shares", (req, res) => storeShare(req, res, newToken()));
+
+/**
+ * The app makes up the token itself (128 random bits) so the share sheet can open the instant the button is pressed and
+ * the upload happens in the background. Idempotent: a retry after a dropped reply, for a token that already exists,
+ * answers ok instead of failing — only the app that made the token knows it.
+ */
+app.put("/v1/shares/:token", async (req, res) => {
+  if (!isToken(req.params.token)) return res.status(400).json({ ok: false, error: "token must be 22 url-safe characters" });
+  if (await getShare(req.params.token)) return res.json({ ok: true, existed: true });
+  return storeShare(req, res, req.params.token);
 });
 
 /** The stored trip (what was planned), for the share page. */

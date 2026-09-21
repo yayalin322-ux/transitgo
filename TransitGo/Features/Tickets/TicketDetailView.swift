@@ -8,9 +8,6 @@ struct TicketDetailView: View {
     @State private var checkingLive = false
     @State private var fare: RailFareInfo?
     @State private var now = Date()
-    @State private var sharing = false
-    @State private var shareItems: ShareSheetItems?
-    @State private var shareError: String?
 
     private let tick = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
@@ -20,19 +17,8 @@ struct TicketDetailView: View {
     }
 
     private func shareTicket() {
-        sharing = true
-        Task {
-            let result = await ShareTripService.create(ticket: ticket)
-            sharing = false
-            switch result {
-            case .success(let url):
-                shareItems = ShareSheetItems(items: ["我搭 \(ticket.system.displayName) \(ticket.trainLabel)，\(ticket.fromName) → \(ticket.toName)，可以看班次狀態（12 小時內有效，不含我的位置）：", url])
-            case .failure(.nothingToFollow):
-                shareError = "這張車票缺少可用的時間，無法建立分享。"
-            case .failure(.backendUnavailable):
-                shareError = "現在連不上伺服器，稍後再試（伺服器休眠時第一次可能要等約 1 分鐘）。"
-            }
-        }
+        InstantShare.run(ShareTripService.prepare(ticket: ticket),
+                         message: "我搭 \(ticket.system.displayName) \(ticket.trainLabel)，\(ticket.fromName) → \(ticket.toName)，可以看班次狀態（12 小時內有效，不含我的位置）：")
     }
 
     var body: some View {
@@ -47,17 +33,11 @@ struct TicketDetailView: View {
                 Button {
                     shareTicket()
                 } label: {
-                    if sharing { HStack { ProgressView(); Text("建立分享連結中…") } }
-                    else { Label("分享這班車給親友", systemImage: "square.and.arrow.up") }
+                    Label("分享這班車給親友", systemImage: "square.and.arrow.up")
                 }
-                .disabled(sharing)
             } footer: {
                 Text("親友用連結（網頁，不用安裝 App）就能看這班車的車次、起訖站與誤點狀態。不含座位、你的位置或任何個人資料；12 小時後失效。高鐵沒有即時資料來源，只會顯示班次時間。")
             }
-            .sheet(item: $shareItems) { ShareSheet(items: $0.items) }
-            .alert("無法分享", isPresented: Binding(get: { shareError != nil }, set: { if !$0 { shareError = nil } })) {
-                Button("好") {}
-            } message: { Text(shareError ?? "") }
 
             Section("發車提醒") {
                 Picker("提前提醒", selection: $ticket.reminderLeadMinutes) {
