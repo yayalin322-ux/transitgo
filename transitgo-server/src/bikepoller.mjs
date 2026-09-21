@@ -205,7 +205,13 @@ export function startBikePoller() {
   }
   const minutes = Math.max(1, parseInt(process.env.BIKE_POLL_MINUTES || "2", 10));
 
+  let running = false;
   const run = async () => {
+    if (running) return;   // a slow run (waiting for TDX quota) must not stack up behind the next tick
+    running = true;
+    try { await runOnce(); } finally { running = false; }
+  };
+  const runOnce = async () => {
     for (const city of cities) {
       const direct = DIRECT_FEEDS[city];
       try {
