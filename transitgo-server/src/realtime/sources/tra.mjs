@@ -2,6 +2,11 @@ import { RealtimeState, RealtimeSource, makeStatus, iso } from "../model.mjs";
 
 export const traStationBoardPath = (stationId) => `v3/Rail/TRA/StationLiveBoard/Station/${encodeURIComponent(stationId)}`;
 export const traAlertPath = () => "v3/Rail/TRA/Alert";
+/** Every running train's last station + delay, in ONE call (about 140 trains): the whole share page costs one read. */
+export const traTrainLiveBoardPath = () => "v3/Rail/TRA/TrainLiveBoard";
+/** One train's stop times. TDX has today's timetable and the general one; a future date's daily timetable is 404. */
+export const traTimetablePath = (trainNo, isToday) =>
+  isToday ? `v3/Rail/TRA/DailyTrainTimetable/Today/TrainNo/${encodeURIComponent(trainNo)}` : `v3/Rail/TRA/GeneralTrainTimetable/TrainNo/${encodeURIComponent(trainNo)}`;
 
 /** "HH:mm:ss" on a Taipei calendar date ("YYYY-MM-DD") -> epoch ms. */
 function taipeiTimeMs(dateStr, hhmmss) {

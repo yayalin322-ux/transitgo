@@ -55,3 +55,39 @@ export const isToken = (t) => typeof t === "string" && /^[A-Za-z0-9_-]{22}$/.tes
 
 /** True when there is no such share or its time has run out — a viewer never sees the stored trip then. */
 export function isExpired(row, nowMs = Date.now()) { return !row || Number(row.expires_at_ms) <= nowMs; }
+
+export const isVehicle = (seg) => seg && seg.mode !== "WALK" && seg.mode !== "BIKE";
+
+/** "TRA_152_2026-09-21" → { trainNo: "152", dateStr: "2026-09-21" } (the id the planner gives a boarded train). */
+export function parseTrainTrip(tripId) {
+  const m = /^TRA_([^_]+)_(\d{4}-\d{2}-\d{2})$/.exec(tripId ?? "");
+  return m ? { trainNo: m[1], dateStr: m[2] } : null;
+}
+
+/**
+ * May a viewer rate this leg yet? Only vehicle legs, and only once it has (about) arrived — a link opened before the
+ * trip must not collect ratings for a ride that has not happened. Scheduled arrival minus a grace period, because a
+ * train can be early and the page itself says "arrived" from the live position.
+ */
+export const RATING_GRACE_MS = 10 * 60_000;
+export function canRate(segments, legIndex, nowMs) {
+  const seg = Array.isArray(segments) ? segments[legIndex] : null;
+  if (!isVehicle(seg)) return false;
+  const arr = Date.parse(seg.arrivalTime);
+  return Number.isFinite(arr) && nowMs >= arr - RATING_GRACE_MS;
+}
+
+/** One rating per viewer (IP) per leg per link, remembered for a day. In memory: a restart only forgets who rated. */
+export function createRatingLedger({ ttlMs: ttl = 24 * 3_600_000 } = {}) {
+  const seen = new Map();
+  return {
+    /** true = first time (recorded); false = already rated. */
+    claim(token, legIndex, viewer, nowMs = Date.now()) {
+      for (const [k, at] of seen) if (nowMs - at > ttl) seen.delete(k);
+      const key = `${token}|${legIndex}|${viewer}`;
+      if (seen.has(key)) return false;
+      seen.set(key, nowMs);
+      return true;
+    },
+  };
+}

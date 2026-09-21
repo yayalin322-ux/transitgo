@@ -24,10 +24,16 @@ export function createRealtimeCache({ now = () => Date.now(), failureTtlMs = {} 
     ...failureTtlMs,
   };
   const entries = new Map();    // key -> { result, expiresAt }
+  const lastGood = new Map();   // key -> { result, at } — the most recent success, kept for stale-on-error
   const inflight = new Map();   // key -> Promise<result>
   const stats = { networkCalls: 0, cacheHits: 0, sharedInflight: 0 };
 
-  async function getOrLoad(key, loader, { ttlMs }) {
+  /**
+   * `staleOnErrorMs`: when a refresh FAILS and the last success for this key is at most that old, answer with it —
+   * marked `stale: true` and with its real `fetchedAt` — instead of an error. A person waiting on a share page is
+   * better served by "30 seconds ago" than by nothing, and the caller can see exactly how old it is.
+   */
+  async function getOrLoad(key, loader, { ttlMs, staleOnErrorMs = 0 }) {
     const hit = entries.get(key);
     if (hit && hit.expiresAt > now()) {
       stats.cacheHits++;
@@ -47,9 +53,15 @@ export function createRealtimeCache({ now = () => Date.now(), failureTtlMs = {} 
         const value = await loader();
         result = { ok: true, value, fetchedAt: now() };
         ttl = ttlMs;
+        lastGood.set(key, { value, at: now() });
       } catch (e) {
         const reason = e instanceof RealtimeError ? e.reason : classifyRealtimeError(e);
-        result = { ok: false, reason, fetchedAt: now() };
+        const good = lastGood.get(key);
+        if (staleOnErrorMs > 0 && good && now() - good.at <= staleOnErrorMs) {
+          result = { ok: true, value: good.value, fetchedAt: good.at, stale: true, staleReason: reason };
+        } else {
+          result = { ok: false, reason, fetchedAt: now() };
+        }
         ttl = failureTtl[reason] ?? 10_000;
       }
       entries.set(key, { result, expiresAt: now() + ttl });
@@ -67,6 +79,7 @@ export function createRealtimeCache({ now = () => Date.now(), failureTtlMs = {} 
     sweep() {
       const t = now();
       for (const [k, v] of entries) if (v.expiresAt <= t) entries.delete(k);
+      for (const [k, v] of lastGood) if (t - v.at > 3_600_000) lastGood.delete(k);
     },
     size: () => entries.size,
   };
