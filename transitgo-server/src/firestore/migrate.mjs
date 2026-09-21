@@ -38,25 +38,40 @@ export function toDocument(row) {
   return doc;
 }
 
-export async function migrate({ readRows, adapter, apply = false, log = () => {}, tables = TABLES }) {
+/**
+ * apply: first copy — refuses when a target collection is not empty.
+ * sync : run it again any time (e.g. right before switching the app over): every source row is written over its
+ *        document (same key → idempotent), and documents whose row no longer exists in the source are removed, so the
+ *        target ends up an exact copy. Data written to the source between two syncs is picked up by the next one.
+ */
+export async function migrate({ readRows, adapter, apply = false, sync = false, log = () => {}, tables = TABLES }) {
+  if (apply && sync) throw new Error("choose either apply or sync, not both");
+  const write = apply || sync;
   const report = [];
   for (const t of tables) {
     const rows = await readRows(t.table);
     const already = await adapter.aggregate(t.table, []);
-    const entry = { table: t.table, source: rows.length, targetBefore: already.count, written: 0 };
+    const entry = { table: t.table, source: rows.length, targetBefore: already.count, written: 0, pruned: 0 };
     if (apply && already.count > 0) throw new Error(`refusing to write: collection "${t.table}" already holds ${already.count} documents`);
-    if (apply) {
+    if (write) {
       let maxId = 0;
+      const keep = new Set();
       for (const r of rows) {
         const key = t.key(r);
         if (key == null) continue;
+        keep.add(String(key));
         await adapter.set(t.table, key, toDocument(r));
         entry.written++;
         if (t.counter) maxId = Math.max(maxId, Number(r.id) || 0);
       }
+      if (sync) {
+        for (const d of await adapter.list(t.table)) {
+          if (!keep.has(String(d._id))) { await adapter.remove(t.table, d._id); entry.pruned++; }
+        }
+      }
       if (t.counter && maxId > 0) await adapter.ensureCounterAtLeast(t.table, maxId);
       entry.targetAfter = (await adapter.aggregate(t.table, [])).count;
-      entry.ok = entry.targetAfter === entry.source;
+      entry.ok = entry.targetAfter === keep.size;
     }
     log(entry);
     report.push(entry);

@@ -73,6 +73,32 @@ check("the next landmark gets a fresh id (3), never 1 or 2", isDeepStrictEqual(i
 await docs.createAnnouncement({ category: "rail", title: "新公告" });
 check("the next announcement continues the sequence (3)", (await docs.listAnnouncements()).some((a) => a.id === 3));
 
+// ---- sync: the exact-copy mode used right before switching over
+{
+  const target = createMemoryAdapter();
+  await migrate({ readRows, adapter: target, apply: true });
+  // the source moves on: a new rating, an edited landmark, a deleted place review
+  await sql.createRating({ stars: 1, kind: "bus", route: "999", system: "TPE" });
+  await sql.approveUserLandmark(2);
+  await sql.deletePlaceReview(2);
+  const before = { ratings: (await target.aggregate("ratings", [])).count, reviews: (await target.aggregate("place_reviews", [])).count };
+  let refusedAgain = false;
+  try { await migrate({ readRows, adapter: target, apply: true }); } catch { refusedAgain = true; }
+  check("apply still refuses a non-empty target", refusedAgain);
+  const rep = await migrate({ readRows, adapter: target, sync: true });
+  check("sync succeeds where apply refused, and every table ends as an exact copy", rep.every((r) => r.ok), JSON.stringify(rep.filter((r) => !r.ok)));
+  check("sync picks up the new row", (await target.aggregate("ratings", [])).count === before.ratings + 1);
+  check("sync prunes the row that was deleted at the source", (await target.aggregate("place_reviews", [])).count === before.reviews - 1 && rep.find((r) => r.table === "place_reviews").pruned === 1);
+  check("sync carries the edit (landmark 2 is now approved)", (await target.get("user_landmarks", 2)).approved === 1);
+  const again = await migrate({ readRows, adapter: target, sync: true });
+  check("running sync twice changes nothing (idempotent): nothing pruned, counts equal", again.every((r) => r.pruned === 0 && r.ok));
+  const back = createAppData(target);
+  check("a landmark created after sync gets a fresh id above every imported one", (await (async () => { await back.createUserLandmark({ name: "後", category: "other", lat: 1, lon: 1, device: "z" }); return (await back.listAllUserLandmarks(20)).map((x) => x.id).sort().at(-1); })()) === 3);
+  let both = false;
+  try { await migrate({ readRows, adapter: target, apply: true, sync: true }); } catch { both = true; }
+  check("apply and sync together are rejected", both);
+}
+
 // ---- document conversion
 const doc = toDocument({ id: 1, created_at: new Date("2026-09-21T01:02:03Z"), last_seen: "2026-09-21 01:02:03", expires_at: null, big: 12n, gone: undefined, name: "甲" });
 check("timestamps become ISO strings, bigint a number, undefined is dropped",
