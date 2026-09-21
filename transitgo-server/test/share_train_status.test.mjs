@@ -63,6 +63,30 @@ const fromId = stops[cur - 3], toId = stops[cur + 4];
   check("a train that is not on the board still returns the timetable's schedule (not running yet)", unknown.available && unknown.position === null);
 }
 
+
+// ---- stale-on-error: a failed refresh keeps the last good position for a few minutes, clearly labelled
+{
+  let t = NOW, failing = false;
+  const svc = createRealtimeService({
+    tdxGet: async (path) => {
+      if (path.includes("TrainLiveBoard")) { if (failing) { const e = new Error("429"); e.status = 429; throw e; } return fx.liveBoard; }
+      return fx.timetable;
+    },
+    cache: createRealtimeCache({ now: () => t }), now: () => t,
+  });
+  const ok = await svc.trainStatus({ trainNo: "2233", dateStr: "2026-09-21", fromId, toId });
+  check("fresh read: live, not stale", ok.liveAvailable && !ok.liveStale && ok.position?.stationName === "田中");
+  failing = true; t += 40_000;   // past the 20 s TTL, TDX now says 429
+  const stale = await svc.trainStatus({ trainNo: "2233", dateStr: "2026-09-21", fromId, toId });
+  check("refresh fails: the last position is still shown, marked stale and 40 s old", stale.liveAvailable && stale.liveStale && stale.liveAgeSeconds === 40 && stale.position?.stationName === "田中" && stale.phase === "running");
+  t += 4 * 60_000;
+  const gone = await svc.trainStatus({ trainNo: "2233", dateStr: "2026-09-21", fromId, toId });
+  check("still failing 4+ minutes later: it stops claiming a position (too old to trust)", !gone.liveAvailable && gone.position === null && gone.reasons.live === "rate_limited");
+  failing = false; t += 60_000;
+  const back = await svc.trainStatus({ trainNo: "2233", dateStr: "2026-09-21", fromId, toId });
+  check("TDX recovers: live again, no longer stale", back.liveAvailable && !back.liveStale);
+}
+
 // ---- share helpers
 check("parseTrainTrip reads the planner's trip id", JSON.stringify(parseTrainTrip("TRA_152_2026-09-21")) === '{"trainNo":"152","dateStr":"2026-09-21"}' && parseTrainTrip("HSR_1") === null && parseTrainTrip(null) === null);
 check("only vehicle legs are vehicles", isVehicle({ mode: "TRA" }) && !isVehicle({ mode: "WALK" }) && !isVehicle({ mode: "BIKE" }) && !isVehicle(null));

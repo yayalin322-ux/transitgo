@@ -61,7 +61,7 @@ const RANK = { cancelled: 9, delayed: 8, notOperating: 7, lastServicePassed: 6, 
 
 export function createRealtimeService({ tdxGet, db = null, cache = createRealtimeCache(), now = () => Date.now(), timeoutMs = 4000, ttl = REALTIME_TTL_MS } = {}) {
   /** One cached, de-duplicated, time-limited TDX read. Always resolves: { ok, value } or { ok:false, reason }. */
-  const read = (key, path, ttlMs) => cache.getOrLoad(key, () => withTimeout(tdxGet(path), timeoutMs), { ttlMs });
+  const read = (key, path, ttlMs, opts = {}) => cache.getOrLoad(key, () => withTimeout(tdxGet(path), timeoutMs), { ttlMs, ...opts });
 
   const stopIdOf = (nodeId) => String(nodeId ?? "").slice(String(nodeId ?? "").indexOf(":") + 1);
   const feedOf = (nodeId) => String(nodeId ?? "").split(":")[0];
@@ -238,13 +238,16 @@ export function createRealtimeService({ tdxGet, db = null, cache = createRealtim
     const isToday = dateStr === today;
     const [tt, board] = await Promise.all([
       read(`tra:timetable:${trainNo}:${isToday ? "today" : "general"}`, traTimetablePath(trainNo, isToday), ttl.traTimetable),
-      isToday ? read("tra:trainLiveBoard", traTrainLiveBoardPath(), ttl.traLiveBoard) : Promise.resolve({ ok: false, reason: RealtimeReason.NOT_SUPPORTED }),
+      isToday ? read("tra:trainLiveBoard", traTrainLiveBoardPath(), ttl.traLiveBoard, { staleOnErrorMs: 3 * 60_000 }) : Promise.resolve({ ok: false, reason: RealtimeReason.NOT_SUPPORTED }),
     ]);
     const timetable = tt.ok ? parseTimetable(tt.value, dateStr) : null;
     const live = board.ok ? parseLiveRow(board.value, trainNo) : null;
     return {
       available: !!timetable || !!live,
       liveAvailable: board.ok,
+      /** true = the position is the last successful read (a refresh just failed); liveAgeSeconds says how old it is. */
+      liveStale: !!board.stale,
+      liveAgeSeconds: board.ok && board.fetchedAt ? Math.max(0, Math.round((nowMs - board.fetchedAt) / 1000)) : null,
       scheduleSource: timetable ? (isToday ? "today" : "general") : null,
       reasons: { timetable: tt.ok ? null : tt.reason, live: board.ok ? null : board.reason },
       trainType: timetable?.trainType ?? null,

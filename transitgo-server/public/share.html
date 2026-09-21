@@ -134,6 +134,7 @@ function legModel(seg, train, ov) {
       case "noLiveData": m.phase = "目前沒有這班車的位置資料"; m.note = "可能還沒發車，或這班車暫時不在即時資料裡；下面顯示的是班表時間。"; break;
       default: m.phase = "狀態不明";
     }
+    if (train.liveStale && train.liveAgeSeconds != null) m.note = `位置是 ${train.liveAgeSeconds} 秒前的資料（最新一次更新暫時失敗，會自動重試）。` + (m.note ? " " + m.note : "");
     if (!train.liveAvailable && train.reasons?.live) m.note = (m.note ? m.note + " " : "") + (train.scheduleSource === "general" ? "這是未來日期的一般班表，沒有即時位置。" : (reasonText[train.reasons.live] || ""));
     if (m.delay != null && m.delay > 0 && !m.arrived) { m.tone = "late"; }
     else if (m.delay === 0 && train.position && !m.arrived) { m.tone = "ok"; }
