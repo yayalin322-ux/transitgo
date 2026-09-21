@@ -1,5 +1,5 @@
 import cron from "node-cron";
-import { setSpeedcamCache } from "./db.mjs";
+import { setSpeedcamCache } from "./appdata.mjs";
 
 /**
  * Fixed traffic-camera locations (speed enforcement, intersection violations, etc.) from

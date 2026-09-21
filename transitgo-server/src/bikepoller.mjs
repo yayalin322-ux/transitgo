@@ -1,6 +1,6 @@
 import cron from "node-cron";
 import { tdxConfigured, bikeCity } from "./tdx.mjs";
-import { setBikeCache } from "./db.mjs";
+import { setBikeCache } from "./appdata.mjs";
 
 /**
  * Some cities publish their own YouBike snapshot directly — no auth, no rate limit at all

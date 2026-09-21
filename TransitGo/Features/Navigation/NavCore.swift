@@ -264,3 +264,70 @@ struct SpeechGate {
     }
     mutating func finished() { speaking = nil }
 }
+
+// MARK: - Info panel stability
+
+/// What the bottom panel shows, kept calm. The raw numbers change every GPS fix (about once a second): distance by 15 m
+/// each time, the countdown by a second, speed by a km/h — so the panel flickered. Now distance is rounded to a
+/// sensible step, the countdown is in minutes (seconds only in the last minute and a half), speed is smoothed, and
+/// nothing on screen changes more often than every couple of seconds — unless something real happened (a big jump,
+/// a reroute), which shows at once.
+struct NavPanel {
+    struct Snapshot: Equatable {
+        var distanceMeters: Int
+        var etaSeconds: Int
+        var speedKmh: Int?
+    }
+
+    static let minInterval: TimeInterval = 2.0
+    private(set) var shown: Snapshot?
+    private var changedAt: Date?
+    private var speedEMA: Double?
+
+    /// Distance shown to the driver: 10 m steps up close, 50 m steps to 1 km, 100 m steps beyond.
+    static func roundedDistance(_ meters: Double) -> Int {
+        let m = max(0, meters)
+        if m < 200 { return Int((m / 10).rounded()) * 10 }
+        if m < 1000 { return Int((m / 50).rounded()) * 50 }
+        return Int((m / 100).rounded()) * 100
+    }
+
+    /// Countdown in whole minutes (rounded up: "1 分" until you are there); in the last 90 s, 5-second steps.
+    static func roundedETA(_ seconds: Double) -> Int {
+        let s = max(0, seconds)
+        if s < 90 { return Int((s / 5).rounded(.up)) * 5 }
+        return Int((s / 60).rounded(.up)) * 60
+    }
+
+    static func distanceText(_ meters: Int) -> String { meters < 1000 ? "\(meters) 公尺" : String(format: "%.1f 公里", Double(meters) / 1000) }
+
+    static func etaText(_ seconds: Int) -> String {
+        if seconds < 90 { return seconds <= 0 ? "即將抵達" : "\(seconds) 秒" }
+        let mins = seconds / 60
+        return mins < 60 ? "\(mins) 分" : "\(mins / 60) 小時 \(mins % 60) 分"
+    }
+
+    /// Feed the raw values; returns what to display. `force` shows the new values immediately (reroute, new leg).
+    @discardableResult
+    mutating func update(distance: Double?, etaSeconds: Double?, speed: Double?, now: Date, force: Bool = false) -> Snapshot? {
+        guard let distance else { return shown }
+        if let speed, speed >= 0 { speedEMA = speedEMA.map { $0 * 0.7 + speed * 0.3 } ?? speed } else { speedEMA = nil }
+        let candidate = Snapshot(
+            distanceMeters: Self.roundedDistance(distance),
+            etaSeconds: etaSeconds.map(Self.roundedETA) ?? shown?.etaSeconds ?? 0,
+            speedKmh: speedEMA.map { Int(($0 * 3.6).rounded()) }
+        )
+        guard let current = shown, let at = changedAt else { shown = candidate; changedAt = now; return candidate }
+        if candidate == current { return current }
+
+        // A real change shows at once: a big jump in distance (reroute, new leg, a wrong turn), or arriving.
+        let jump = abs(candidate.distanceMeters - current.distanceMeters)
+        let big = force || jump > max(100, current.distanceMeters / 4) || candidate.distanceMeters <= 30
+        if big || now.timeIntervalSince(at) >= Self.minInterval {
+            shown = candidate; changedAt = now
+        }
+        return shown
+    }
+
+    mutating func reset() { shown = nil; changedAt = nil; speedEMA = nil }
+}

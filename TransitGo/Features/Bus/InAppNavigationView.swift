@@ -160,8 +160,10 @@ struct NavigationLeg: Identifiable {
     /// plate shown (never guessed).
     var transitRouteName: String?
     var transitScopePath: String?
+    /// This leg IS the drive to a parking lot the user picked: it must never offer parking again.
+    var isParkingLeg: Bool = false
 
-    init(coordinate: CLLocationCoordinate2D, name: String, transportType: MKDirectionsTransportType, waypointAnnouncement: String? = nil, avoidsHighways: Bool? = nil, transitLabel: String? = nil, transitRouteName: String? = nil, transitScopePath: String? = nil) {
+    init(coordinate: CLLocationCoordinate2D, name: String, transportType: MKDirectionsTransportType, waypointAnnouncement: String? = nil, avoidsHighways: Bool? = nil, transitLabel: String? = nil, transitRouteName: String? = nil, transitScopePath: String? = nil, isParkingLeg: Bool = false) {
         self.coordinate = coordinate
         self.name = name
         self.transportType = transportType
@@ -170,6 +172,7 @@ struct NavigationLeg: Identifiable {
         self.transitLabel = transitLabel
         self.transitRouteName = transitRouteName
         self.transitScopePath = transitScopePath
+        self.isParkingLeg = isParkingLeg
     }
 }
 
@@ -233,6 +236,10 @@ struct InAppNavigationView: View {
     @AppStorage("navVoiceMode") private var voiceModeRaw = VoiceMode.standard.rawValue
     @State private var showParkingChoice = false
     @State private var parkingPromptDone = false
+    /// Set once the user has picked a lot: from then on this trip never asks about parking again.
+    @State private var parkingChosen = false
+    /// What the bottom panel shows: rounded and rate-limited (see NavPanel) so it does not flicker every GPS fix.
+    @State private var panel = NavPanel()
     /// Shown only when the destination is in a different county/city than where you are now.
     @State private var destRegionText: String?
     @State private var destWeather: WeatherInfo?
@@ -280,6 +287,10 @@ struct InAppNavigationView: View {
     /// Fixes worse than this are too noisy to trust for arrival/maneuver decisions.
     private static let maxTrustedAccuracy: CLLocationDistance = 35
 
+    private var offersParking: Bool {
+        ParkingPolicy.mayOffer(isLastLeg: isLastLeg, isDriving: transportType == .automobile,
+                               isParkingLeg: currentLeg.isParkingLeg, parkingAlreadyChosen: parkingChosen)
+    }
     private var voiceMode: VoiceMode { VoiceMode(rawValue: voiceModeRaw) ?? .standard }
     private var currentLeg: NavigationLeg { legs[currentLegIndex] }
     private var destination: CLLocationCoordinate2D { currentLeg.coordinate }
@@ -420,6 +431,17 @@ struct InAppNavigationView: View {
                     .foregroundStyle(.white)
                     .padding(14)
                     .background(.indigo, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .padding(.horizontal)
+                }
+                if offRoute || (isRouting && route != nil) {
+                    HStack(spacing: 10) {
+                        ProgressView().tint(.white)
+                        Text(offRoute ? "偏離路線，重新規劃中…" : "更新路線中…").font(.headline)
+                        Spacer(minLength: 0)
+                    }
+                    .foregroundStyle(.white)
+                    .padding(14)
+                    .background(.orange, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                     .padding(.horizontal)
                 }
                 if let instruction = upcomingInstruction {
@@ -646,6 +668,7 @@ struct InAppNavigationView: View {
         .onChange(of: tracker.updateTick) { _, _ in
             guard let newLoc = tracker.location else { return }
             updateProgress(newLoc)
+            panel.update(distance: remainingMeters, etaSeconds: etaSeconds, speed: newLoc.speed, now: Date())
             if followUser { recenter() }
             checkOffRoute(newLoc)
             handleLocationUpdate(newLoc)
@@ -670,7 +693,7 @@ struct InAppNavigationView: View {
             Text("停車場是依目的地附近的地圖資料列出，不含即時車位。")
         }
         .fullScreenCover(item: $parkingLeg) { leg in
-            InAppNavigationView(destination: leg.coordinate, destinationName: leg.name, transportType: leg.transportType)
+            InAppNavigationView(legs: [leg], tripName: leg.name)
         }
         .sheet(isPresented: $showRating) {
             TripRatingSheet(tripName: tripName, modeLabel: modeLabel) {
@@ -746,19 +769,13 @@ struct InAppNavigationView: View {
     }
 
     private var distanceText: String {
-        guard let d = remainingMeters else { return "—" }
-        return d < 1000 ? "\(Int(d)) 公尺" : String(format: "%.1f 公里", d / 1000)
+        panel.shown.map { NavPanel.distanceText($0.distanceMeters) } ?? "—"
     }
 
-    /// Counts down as you actually progress (recomputed from the live position on every fix), and shows
-    /// seconds for the last few minutes so the movement is visible.
+    /// Whole minutes, rounded up; seconds only in the last minute and a half (see NavPanel). The estimate itself is
+    /// recomputed from the live position on every fix, the panel just refuses to flicker.
     private var etaText: String {
-        guard let secs = etaSeconds else { return "—" }
-        let s = Int(secs.rounded())
-        if s < 60 { return "\(max(s, 0)) 秒" }
-        if s < 300 { return "\(s / 60) 分 \(String(format: "%02d", s % 60)) 秒" }
-        let mins = Int((secs / 60).rounded(.up))
-        return mins < 60 ? "\(mins) 分" : "\(mins / 60) 小時 \(mins % 60) 分"
+        panel.shown.map { NavPanel.etaText($0.etaSeconds) } ?? "—"
     }
 
     private var etaSeconds: Double? {
@@ -778,14 +795,16 @@ struct InAppNavigationView: View {
     private var etaMinutes: Int? { etaSeconds.map { Int(($0 / 60).rounded(.up)) } }
 
     private var speedText: String {
-        guard let s = tracker.location?.speed, s >= 0 else { return "—" }
-        return "\(Int((s * 3.6).rounded())) km/h"   // m/s → km/h
+        guard let kmh = panel.shown?.speedKmh else { return "—" }
+        return "\(kmh) km/h"
     }
 
     /// The instruction for the *next* maneuver ahead — announced by voice as you approach
     /// it (see `checkManeuvers`) and shown here as the on-screen turn banner, same idea.
     private var upcomingInstruction: String? {
-        guard let route else { return nil }
+        // Off route (or waiting for the new route) the old route's next turn is wrong: showing it is what made the
+        // top panel look frozen after a wrong turn. It is replaced by the "rerouting" banner instead.
+        guard let route, !offRoute, !isRouting else { return nil }
         let steps = route.steps
         let nextIndex = currentStepIndex + 1
         guard nextIndex < steps.count else { return nil }
@@ -908,10 +927,13 @@ struct InAppNavigationView: View {
     }
 
     private func navigateToParking(_ item: MKMapItem) {
+        parkingChosen = true
+        showParkingChoice = false
         parkingLeg = NavigationLeg(
             coordinate: item.placemark.coordinate,
             name: item.name ?? "停車場",
-            transportType: .automobile
+            transportType: .automobile,
+            isParkingLeg: true
         )
     }
 
@@ -956,7 +978,7 @@ struct InAppNavigationView: View {
                 // stand at — "抵達附近" is honest about that instead of implying you
                 // should be standing on the exact pin.
                 speak("您已抵達\(tripName)附近", .arrival, .high)
-                if transportType == .automobile { Task { await loadNearbyParking() } }
+                if offersParking { Task { await loadNearbyParking() } }
             } else {
                 // Reaching an intermediate waypoint (e.g. a YouBike station) isn't trip
                 // completion — announce it and roll straight into the next leg's route and
@@ -983,7 +1005,7 @@ struct InAppNavigationView: View {
             // Surface parking options a little before arrival, not only after — by the
             // time you're actually stopped, you'd rather already know where to go than
             // start searching. 50m still leaves room to react before pulling in.
-            if isLastLeg, transportType == .automobile, distance <= 50, !earlyParkingTriggered {
+            if offersParking, distance <= 50, !earlyParkingTriggered {
                 earlyParkingTriggered = true
                 speak("即將抵達，附近有停車場可以選擇", .parking, .low)
                 Task { await loadNearbyParking() }
@@ -1180,8 +1202,9 @@ struct InAppNavigationView: View {
         errorText = highwayWarning
         route = first
         installTrack(for: first)
+        panel.reset()
         // Before driving off: offer parking near the destination (once per trip, not on every reroute).
-        if isLastLeg, transportType == .automobile, !parkingPromptDone {
+        if offersParking, !parkingPromptDone {
             parkingPromptDone = true
             Task {
                 await loadNearbyParking()
@@ -1242,6 +1265,7 @@ struct InAppNavigationView: View {
         if strayed, !offRoute { speak("已偏離路線，重新規劃路線中", .offRoute, .high) }
         offRoute = strayed
         if strayed, Date().timeIntervalSince(lastRerouteAt) > 6 {
+            lastRerouteAt = .now   // counts the attempt, so a failing request is not repeated on every GPS fix
             Task { await computeRoute(from: loc.coordinate, preferContinueForward: true) }
         }
     }

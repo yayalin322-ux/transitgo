@@ -7,13 +7,14 @@
   "scripts": {
     "start": "node src/index.mjs",
     "dev": "node --watch src/index.mjs",
-    "test": "node test/gtfs_import.test.mjs && node test/tdx_normalize.test.mjs && node test/graph_builder.test.mjs && node test/graph_persist.test.mjs && node test/graph_load_streaming.test.mjs && node test/bus_nearby.test.mjs && node test/shares.test.mjs && node test/rebuild_lock.test.mjs && node test/memory_sampler.test.mjs && node test/storage_upload.test.mjs && node test/storage_download.test.mjs && node test/storage_checksum.test.mjs && node test/storage_boot_recovery.test.mjs && node test/storage_failure.test.mjs && node test/virtual_od.test.mjs && node test/astar.test.mjs && node test/fare.test.mjs && node test/headway_routing.test.mjs && node test/route_ranking.test.mjs && node test/api.test.mjs && node test/scenarios.test.mjs && node test/metro_ingest.test.mjs && node test/astar_ride.test.mjs && node test/metro_realtime.test.mjs && node test/mrt_ingest.test.mjs && node test/mrt_routing.test.mjs && node test/realtime_cache.test.mjs && node test/realtime_mapping.test.mjs && node test/realtime_service.test.mjs && node test/realtime_failure.test.mjs && node test/realtime_route_integration.test.mjs && node test/bike_realtime.test.mjs && node test/bike_graph.test.mjs && node test/bike_routing.test.mjs"
+    "test": "node test/gtfs_import.test.mjs && node test/tdx_normalize.test.mjs && node test/graph_builder.test.mjs && node test/graph_persist.test.mjs && node test/graph_load_streaming.test.mjs && node test/bus_nearby.test.mjs && node test/shares.test.mjs && node test/appdata_parity.test.mjs && node test/firestore_migrate.test.mjs && node test/rebuild_lock.test.mjs && node test/memory_sampler.test.mjs && node test/storage_upload.test.mjs && node test/storage_download.test.mjs && node test/storage_checksum.test.mjs && node test/storage_boot_recovery.test.mjs && node test/storage_failure.test.mjs && node test/virtual_od.test.mjs && node test/astar.test.mjs && node test/fare.test.mjs && node test/headway_routing.test.mjs && node test/route_ranking.test.mjs && node test/api.test.mjs && node test/scenarios.test.mjs && node test/metro_ingest.test.mjs && node test/astar_ride.test.mjs && node test/metro_realtime.test.mjs && node test/mrt_ingest.test.mjs && node test/mrt_routing.test.mjs && node test/realtime_cache.test.mjs && node test/realtime_mapping.test.mjs && node test/realtime_service.test.mjs && node test/realtime_failure.test.mjs && node test/realtime_route_integration.test.mjs && node test/bike_realtime.test.mjs && node test/bike_graph.test.mjs && node test/bike_routing.test.mjs"
   },
   "engines": {
     "node": ">=22.5"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1134.0",
+    "@google-cloud/firestore": "^9.2.0",
     "adm-zip": "^0.5.18",
     "apns2": "^11.7.0",
     "express": "^4.21.2",
