@@ -78,21 +78,24 @@ async function tryFetch(url, opts) {
     return { status: r.status, body };
   } catch { return { status: 0, body: null }; }
 }
-/** Retries with growing pauses until `deadlineMs` has passed; calls onWait(attempt) while it waits. 404 is final. */
-async function fetchWithRetry(url, { deadlineMs = 150000, onWait } = {}) {
+/** Retries with growing pauses until `deadlineMs` has passed; calls onWait(attempt) while it waits.
+ *  404 is final — except in the first `notFoundGraceMs`: the app hands out a link before its details have finished
+ *  uploading, so a brand-new link can be "not found" for a few seconds. */
+async function fetchWithRetry(url, { deadlineMs = 150000, notFoundGraceMs = 25000, onWait } = {}) {
   const start = Date.now();
   for (let attempt = 1; ; attempt++) {
     const r = await tryFetch(url);
     if (r.status === 200 && r.body) return r;
-    if (r.status === 404) return r;
+    if (r.status === 404 && Date.now() - start > notFoundGraceMs) return r;
     if (Date.now() - start > deadlineMs) return r;
-    onWait?.(attempt, Date.now() - start);
+    onWait?.(attempt, Date.now() - start, r.status === 404);
     await new Promise((res) => setTimeout(res, Math.min(8000, 1000 + attempt * 1000)));
   }
 }
-function waking(on, attempt, elapsed) {
+function waking(on, attempt, elapsed, notFound) {
   const el = $("wake");
   el.hidden = !on;
+  if (on && notFound) { el.textContent = "連結內容還在建立中…（分享的人剛送出，通常幾秒內就好，會自動重試）"; return; }
   if (on) el.textContent = `伺服器正在喚醒中…（第 ${attempt} 次嘗試，已等 ${Math.round(elapsed / 1000)} 秒；第一次通常要 30～60 秒，會自動重試，不用重新整理）`;
 }
 
@@ -231,7 +234,7 @@ function gone(msg) {
   $("err").hidden = false; $("err").textContent = msg;
 }
 async function loadPlan() {
-  const r = await fetchWithRetry("/v1/shares/" + encodeURIComponent(token), { onWait: (a, e) => waking(true, a, e) });
+  const r = await fetchWithRetry("/v1/shares/" + encodeURIComponent(token), { onWait: (a, e, nf) => waking(true, a, e, nf) });
   waking(false);
   if (r.status === 404) return gone("這個分享連結已過期或不存在");
   if (r.status !== 200 || !r.body) return gone("連不上伺服器。請稍後再重新整理這一頁（伺服器休眠或維護中）。");

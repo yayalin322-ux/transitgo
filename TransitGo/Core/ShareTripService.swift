@@ -55,40 +55,80 @@ enum ShareTripService {
         try JSONEncoder().encode(Body(title: title, ttlHours: ttlHours, segments: route.segments.map(SegmentBody.init)))
     }
 
-    static func create(route: MultimodalRoute, title: String) async -> Result<URL, Failure> {
-        guard isShareable(route) else { return .failure(.nothingToFollow) }
-        guard let body = try? requestBody(route: route, title: title) else { return .failure(.backendUnavailable) }
-        return await post(body)
+    /// A link that exists the moment the button is pressed. The token is made HERE (128 random bits — the same shape the server
+    /// accepts) so the share sheet can open immediately; `body` is uploaded in the background with `ShareUploader`.
+    struct Prepared: Equatable {
+        let token: String
+        let url: URL
+        let body: Data
     }
 
-    static func post(_ body: Data) async -> Result<URL, Failure> {
-        guard let base = BackendConfig.baseURL else { return .failure(.backendUnavailable) }
-        // The free-tier backend sleeps when idle and needs up to a minute to wake: a short try, then a long one.
-        for timeout in [8.0, 45.0] {
-            var req = URLRequest(url: base.appendingPathComponent("v1/shares"), timeoutInterval: timeout)
-            req.httpMethod = "POST"
+    static func prepare(route: MultimodalRoute, title: String) -> Result<Prepared, Failure> {
+        guard isShareable(route) else { return .failure(.nothingToFollow) }
+        guard let body = try? requestBody(route: route, title: title) else { return .failure(.nothingToFollow) }
+        return prepare(body: body)
+    }
+
+    static func prepare(body: Data) -> Result<Prepared, Failure> {
+        let token = ShareLink.makeToken()
+        guard let url = ShareLink.url(token: token) else { return .failure(.backendUnavailable) }
+        return .success(Prepared(token: token, url: url, body: body))
+    }
+}
+
+/// Link addresses. Pure, so the token shape is tested against the server's rule.
+enum ShareLink {
+    /// 22 URL-safe characters (`^[A-Za-z0-9_-]{22}$` on the server) from the system's secure random source.
+    static func makeToken() -> String {
+        var bytes = [UInt8](repeating: 0, count: 16)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        if status != errSecSuccess { for i in bytes.indices { bytes[i] = UInt8.random(in: 0...255) } }   // never happens; still never a fixed token
+        return Data(bytes).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    static func url(token: String, base: URL? = BackendConfig.baseURL) -> URL? {
+        base?.appendingPathComponent("s").appendingPathComponent(token)
+    }
+
+    static func isValid(_ token: String) -> Bool {
+        token.count == 22 && token.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
+    }
+}
+
+/// Uploads a prepared link's content in the background. The backend can be asleep (free hosting wakes in up to a minute) or
+/// busy, so a failed attempt is retried on a schedule instead of being reported at once; a request the server will never
+/// accept (400) is not retried. The PUT is idempotent on the server, so a retry after a lost reply is harmless.
+enum ShareUploader {
+    enum Outcome: Equatable { case uploaded, failed }
+
+    /// Seconds to wait before each attempt — about 90 s in all, longer than a cold start.
+    static let schedule: [TimeInterval] = [0, 2, 4, 8, 15, 25, 35]
+
+    /// Performs one PUT and returns its HTTP status (nil = network error/timeout). Injected so tests need no network.
+    typealias Transport = (URLRequest) async -> Int?
+
+    static func upload(_ prepared: ShareTripService.Prepared, base: URL? = BackendConfig.baseURL,
+                       transport: Transport = defaultTransport, sleep: (TimeInterval) async -> Void = { try? await Task.sleep(for: .seconds($0)) }) async -> Outcome {
+        guard let base else { return .failed }
+        for (i, wait) in schedule.enumerated() {
+            if wait > 0 { await sleep(wait) }
+            var req = URLRequest(url: base.appendingPathComponent("v1/shares/\(prepared.token)"), timeoutInterval: i == 0 ? 10 : 30)
+            req.httpMethod = "PUT"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = body
-            if let (data, resp) = try? await URLSession.shared.data(for: req),
-               (resp as? HTTPURLResponse)?.statusCode == 200,
-               let reply = try? JSONDecoder().decode(Reply.self, from: data), reply.ok,
-               let s = reply.url, let url = URL(string: s) {
-                return .success(url)
+            req.httpBody = prepared.body
+            switch await transport(req) {
+            case 200?: return .uploaded
+            case let code? where (400...499).contains(code) && code != 429 && code != 408: return .failed   // the server refused it for good
+            default: continue                                                                             // 429, 5xx, timeout, offline
             }
         }
-        return .failure(.backendUnavailable)
+        return .failed
     }
-}
 
-/// Items for the system share sheet, presentable with `.sheet(item:)`.
-struct ShareSheetItems: Identifiable {
-    let id = UUID()
-    let items: [Any]
-}
-
-/// The system share sheet.
-struct ShareSheet: UIViewControllerRepresentable {
-    let items: [Any]
-    func makeUIViewController(context: Context) -> UIActivityViewController { UIActivityViewController(activityItems: items, applicationActivities: nil) }
-    func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
+    static let defaultTransport: Transport = { req in
+        guard let (_, resp) = try? await URLSession.shared.data(for: req) else { return nil }
+        return (resp as? HTTPURLResponse)?.statusCode
+    }
 }

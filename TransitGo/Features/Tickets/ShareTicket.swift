@@ -34,8 +34,8 @@ extension ShareTripService {
         return try JSONEncoder().encode(Body(title: "\(ticket.fromName) → \(ticket.toName)・\(ticket.trainLabel)", ttlHours: ttlHours, segments: [seg]))
     }
 
-    static func create(ticket: RailTicket) async -> Result<URL, Failure> {
+    static func prepare(ticket: RailTicket) -> Result<Prepared, Failure> {
         guard let body = (try? requestBody(ticket: ticket)) ?? nil else { return .failure(.nothingToFollow) }
-        return await post(body)
+        return prepare(body: body)
     }
 }
