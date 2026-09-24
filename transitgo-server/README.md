@@ -170,7 +170,8 @@ The quick tunnel above works but its address changes every time, so it's a poor 
 to set once. Two different problems, two different Tailscale features — pick the one(s) you need:
 
 - **Your own phone running the TransitGo app**, from any network → plain **Tailscale**: a private, stable hostname
-  (e.g. `macbook-neo-2.<your tailnet>.ts.net`) that only *your own signed-in devices* can reach.
+  (e.g. `<your-mac-name>.<your tailnet>.ts.net`, shown in the Tailscale app / `tailscale status`) that only *your own
+  signed-in devices* can reach.
 - **Anyone you send a share link to, with no app installed on their side** → **Tailscale Funnel**: the same Mac, but
   the address is genuinely public — anyone with the link opens it in a plain browser, like the old Render URL. Plain
   Tailscale alone does **not** cover this case; a share-link recipient is not a device on your tailnet.
@@ -186,12 +187,26 @@ Both are free for personal use, need no domain to buy and no port forwarding.
    is on — the Mac still needs to be on, awake, and running the server (the background service above).
 
 **2. Share links anyone can open, no install (public, via Funnel):**
-1. Requires step 1 above (Tailscale installed and signed in on the Mac) first.
-2. One-time, in Terminal on the Mac: `tailscale funnel 8787` (or set it up in the Tailscale admin console). Tailscale
-   remembers this setting and re-applies it on its own after a reboot — it is a one-time setup, not something to run
-   every time.
-3. Tailscale shows the public URL (`https://macbook-neo-2.<your tailnet>.ts.net`) — that's what a share link now
-   points people to instead of `<computer-name>.local:8787`.
-4. **This makes port 8787 genuinely public** — the same exposure the backend had on Render, just served from the Mac
+1. Requires step 1 above (Tailscale installed and signed in on the Mac) first, and the backend already running on
+   :8787 (`npm run local` or the background service) — Funnel just proxies to it; if nothing is listening on 8787 the
+   public URL answers 502.
+2. Your tailnet needs Funnel turned on once (a link in the Tailscale admin console; `tailscale funnel <port>` prints
+   it the first time if it isn't on yet).
+3. One-time, in Terminal on the Mac: **`tailscale funnel --bg 8787`** — the `--bg` matters. Without it, `tailscale
+   funnel 8787` runs in the foreground and stops proxying the moment you close that Terminal tab or press Ctrl+C;
+   `--bg` hands it to the daemon so it keeps running without a Terminal open. Confirmed by testing: it also survives
+   quitting and relaunching the Tailscale app, and should equally survive a reboot (that part is not yet tested
+   against an actual restart of the Mac).
+4. `tailscale funnel status` shows the public URL (`https://<your-mac-name>.<your tailnet>.ts.net`) — that's what a
+   share link now points people to instead of `<computer-name>.local:8787`.
+5. **This makes port 8787 genuinely public** — the same exposure the backend had on Render, just served from the Mac
    instead. The admin routes are still gated by `ADMIN_TOKEN`, so this is no less safe than before, but it does mean
    the backend is reachable by anyone on the internet, not only people you sent a link to, for as long as Funnel is on.
+
+If a previous Tailscale install (App Store version vs. this Homebrew-cask version) leaves two competing VPN
+configurations behind, the client gets stuck at "Connecting" and the CLI fails with `Tailscale.CLIError error 1`. Fix:
+remove *all* Tailscale entries under System Settings → Network → VPN, then follow [Tailscale's uninstall
+guide](https://tailscale.com/docs/features/client/uninstall?tab=macos+%28standalone%29) for a full cleanup (it
+involves `sudo rm -rf` on several `~/Library/Containers/io.tailscale.*` paths — macOS only fully drops the old system
+extension on a reboot), reboot, then reinstall (`brew reinstall --cask tailscale` if `brew install` insists it's
+already installed) and sign in fresh.
