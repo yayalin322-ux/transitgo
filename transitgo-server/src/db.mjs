@@ -426,7 +426,7 @@ export async function listAnnouncements({ since, includeInactive = false } = {})
     SELECT * FROM announcements
     WHERE (:includeInactive = 1 OR active = 1)
       AND (expires_at IS NULL OR expires_at > ${usingPg ? "now()" : "datetime('now')"})
-      AND (:since IS NULL OR created_at > :since)
+      AND (CAST(:since AS TEXT) IS NULL OR created_at > :since)
     ORDER BY created_at DESC
     LIMIT 200
   `).all({ since: since ?? null, includeInactive: includeInactive ? 1 : 0 });
@@ -498,7 +498,7 @@ export async function listRatings(limit = 100) {
 export async function routeRatingStats(kind, route, system) {
   const row = await db.prepare(`
     SELECT COUNT(*) n, AVG(stars) avg FROM ratings
-    WHERE kind = ? AND route = ? AND (? IS NULL OR system = ?)
+    WHERE kind = ? AND route = ? AND (CAST(? AS TEXT) IS NULL OR system = ?)
   `).get(kind, route, system ?? null, system ?? null);
   return { count: Number(row.n), avg: row.avg ? Number(Number(row.avg).toFixed(1)) : null };
 }

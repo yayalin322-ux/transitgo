@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import express from "express";
+import { guardAsyncRoutes, errorResponder } from "./asyncGuard.mjs";
 import {
   upsertDevice,
   createAnnouncement,
@@ -68,7 +69,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || "8787", 10);
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 
-const app = express();
+const app = guardAsyncRoutes(express());
 // Raised from 64kb — place-review/landmark submissions can carry a base64-encoded photo.
 app.use(express.json({ limit: "2mb" }));
 app.use((req, _res, next) => {
@@ -128,7 +129,7 @@ app.post("/v1/devices", async (req, res) => {
 
 // ---- announcements (public read) ----
 app.get("/v1/announcements", async (req, res) => {
-  const since = typeof req.query.since === "string" ? req.query.since : null;
+  const since = typeof req.query.since === "string" && Number.isFinite(Date.parse(req.query.since)) ? req.query.since : null;   // a malformed timestamp would only make Postgres error
   res.json({ announcements: await listAnnouncements({ since }) });
 });
 
@@ -911,6 +912,11 @@ app.post("/v1/admin/routing/ingest/metro-operator", requireAdmin, async (req, re
     res.status(502).json({ ok: false, error: e.message });
   }
 });
+
+app.use(errorResponder());
+
+// A stray rejection from a background poller must not take the whole server down; log it and carry on.
+process.on("unhandledRejection", (e) => console.error("[transitgo-server] unhandled rejection:", e?.message ?? e));
 
 app.listen(PORT, () => {
   console.log(`[transitgo-server] listening on :${PORT}`);
