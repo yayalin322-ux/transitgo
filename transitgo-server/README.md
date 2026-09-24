@@ -167,13 +167,31 @@ comes back on its own after a crash or a restart of the Mac (once you log in).
 ### Reaching it from off your home Wi-Fi, with a stable address (Tailscale)
 
 The quick tunnel above works but its address changes every time, so it's a poor fit for `BACKEND_HOST`, which you'd want
-to set once. [Tailscale](https://tailscale.com) gives the Mac a private, stable hostname (e.g. `macbook-neo-2.<your
-tailnet>.ts.net`) that the phone can reach from **any** network — home Wi-Fi, cellular, someone else's Wi-Fi — with no
-port forwarding and no domain to buy. Free for personal use.
+to set once. Two different problems, two different Tailscale features — pick the one(s) you need:
 
+- **Your own phone running the TransitGo app**, from any network → plain **Tailscale**: a private, stable hostname
+  (e.g. `macbook-neo-2.<your tailnet>.ts.net`) that only *your own signed-in devices* can reach.
+- **Anyone you send a share link to, with no app installed on their side** → **Tailscale Funnel**: the same Mac, but
+  the address is genuinely public — anyone with the link opens it in a plain browser, like the old Render URL. Plain
+  Tailscale alone does **not** cover this case; a share-link recipient is not a device on your tailnet.
+
+Both are free for personal use, need no domain to buy and no port forwarding.
+
+**1. Your own phone (private, via Tailscale):**
 1. Install the Tailscale app on the Mac and on the iPhone, sign in to the same account on both (this is a normal
    account sign-in — do it yourself in each app, not something to script).
 2. Tailscale runs as a background service on macOS on its own (no Terminal needed) once you sign in.
 3. Set `BACKEND_HOST` to the Mac's Tailscale hostname (shown in the Tailscale app) instead of `<computer-name>.local`.
 4. As long as Tailscale is signed in on both devices, the backend is reachable regardless of which network the phone
    is on — the Mac still needs to be on, awake, and running the server (the background service above).
+
+**2. Share links anyone can open, no install (public, via Funnel):**
+1. Requires step 1 above (Tailscale installed and signed in on the Mac) first.
+2. One-time, in Terminal on the Mac: `tailscale funnel 8787` (or set it up in the Tailscale admin console). Tailscale
+   remembers this setting and re-applies it on its own after a reboot — it is a one-time setup, not something to run
+   every time.
+3. Tailscale shows the public URL (`https://macbook-neo-2.<your tailnet>.ts.net`) — that's what a share link now
+   points people to instead of `<computer-name>.local:8787`.
+4. **This makes port 8787 genuinely public** — the same exposure the backend had on Render, just served from the Mac
+   instead. The admin routes are still gated by `ADMIN_TOKEN`, so this is no less safe than before, but it does mean
+   the backend is reachable by anyone on the internet, not only people you sent a link to, for as long as Funnel is on.
