@@ -148,5 +148,32 @@ loads the routing graph in about a minute (seconds when it is cached).
   (`scutil --get LocalHostName` gives the name; the script prints the exact value), rebuild and install. The app already
   talks plain http to `.local` / `192.168.*` / `10.*` hosts and asks iOS once for local-network permission.
 - **Away from home**: a Cloudflare quick tunnel (`cloudflared tunnel --url http://localhost:8787`) prints a temporary https
-  address; put it in `BACKEND_HOST` (without `https://`) and rebuild. The address changes on every start.
-- The computer must be on, awake and running the script for the app to work. It is a development setup, not hosting.
+  address; put it in `BACKEND_HOST` (without `https://`) and rebuild. The address changes on every start, so it is a
+  one-off, not something to hardcode. For a permanent "works on any network" address, use Tailscale instead (below).
+- The computer must be on and awake for the app to work — either running the script (see below for not needing a
+  Terminal window for that part) or running as the background service below. It is a development setup, not hosting.
+
+### Running without a Terminal window open
+
+```
+npm run service:install     # installs a launchd background service; starts at login, restarts itself if it crashes
+npm run service:uninstall   # removes it (go back to `npm run local` if you want the plain foreground version)
+npm run service:logs        # tail its output
+```
+This runs the exact same `node --env-file=.env src/index.mjs` as `npm run local`, just supervised by macOS (`launchd`)
+instead of a shell you have to keep open. The Mac still has to be on and awake; it no longer needs a Terminal tab, and it
+comes back on its own after a crash or a restart of the Mac (once you log in).
+
+### Reaching it from off your home Wi-Fi, with a stable address (Tailscale)
+
+The quick tunnel above works but its address changes every time, so it's a poor fit for `BACKEND_HOST`, which you'd want
+to set once. [Tailscale](https://tailscale.com) gives the Mac a private, stable hostname (e.g. `macbook-neo-2.<your
+tailnet>.ts.net`) that the phone can reach from **any** network — home Wi-Fi, cellular, someone else's Wi-Fi — with no
+port forwarding and no domain to buy. Free for personal use.
+
+1. Install the Tailscale app on the Mac and on the iPhone, sign in to the same account on both (this is a normal
+   account sign-in — do it yourself in each app, not something to script).
+2. Tailscale runs as a background service on macOS on its own (no Terminal needed) once you sign in.
+3. Set `BACKEND_HOST` to the Mac's Tailscale hostname (shown in the Tailscale app) instead of `<computer-name>.local`.
+4. As long as Tailscale is signed in on both devices, the backend is reachable regardless of which network the phone
+   is on — the Mac still needs to be on, awake, and running the server (the background service above).
