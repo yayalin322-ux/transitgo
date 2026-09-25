@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
         AnnouncementService.installDiagnostics()
+        FeedbackBackgroundRefresh.register()
         Task { @MainActor in
             let granted = (try? await UNUserNotificationCenter.current()
                 .requestAuthorization(options: [.alert, .sound, .badge])) ?? false
@@ -49,5 +50,6 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         didReceive response: UNNotificationResponse
     ) async {
         await AnnouncementService.shared.refresh()
+        _ = await FeedbackInbox.shared.refresh()
     }
 }
