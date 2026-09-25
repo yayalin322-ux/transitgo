@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// Where the public support / legal pages live (static site, see /site in the repo) and how a feedback message is
 /// packaged for the backend's /v1/reports.
@@ -78,7 +79,7 @@ struct FeedbackDraft: Equatable {
 }
 
 enum SiteFeedbackError: Error, Equatable {
-    case notConfigured, invalidEmail, tooManyRequests, wrongCode, network
+    case notConfigured, invalidEmail, tooManyRequests, wrongCode, conversationClosed, network
 }
 
 enum SiteFeedbackService {
@@ -98,6 +99,7 @@ enum SiteFeedbackService {
         let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["message"] as? String ?? ""
         if message.contains("too_many_requests") { return .tooManyRequests }
         if message.contains("invalid_email") { return .invalidEmail }
+        if message.contains("conversation_closed") { return .conversationClosed }
         return .network
     }
 
@@ -155,13 +157,49 @@ enum SiteFeedbackService {
         return FeedbackThread.decode(data)
     }
 
-    static func sendFollowUp(token: String, body: String) async throws {
-        let (data, status) = try await call("add_app_feedback_message", body: ["p_token": token, "p_body": body])
+    /// A message in the conversation, optionally with photos (paths from `uploadPhoto`).
+    static func sendFollowUp(token: String, body: String, attachments: [String] = []) async throws {
+        var params: [String: Any] = ["p_token": token, "p_body": body]
+        if !attachments.isEmpty { params["p_attachments"] = attachments }
+        let (data, status) = try await call("add_app_feedback_message", body: params)
         guard (200..<300).contains(status) else { throw error(fromRPCBody: data, status: status) }
         guard (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) as? Bool) == true else { throw SiteFeedbackError.network }
     }
 
-    private static func call(_ function: String, body: [String: String]) async throws -> (Data, Int) {
+    /// End the conversation (the person may reopen it later).
+    static func close(token: String) async throws {
+        try await boolCall("close_app_feedback", token: token)
+    }
+
+    /// Reopen a conversation the person ended themselves. A conversation WE ended cannot be reopened (the site says false).
+    static func reopen(token: String) async throws {
+        try await boolCall("reopen_app_feedback", token: token)
+    }
+
+    private static func boolCall(_ function: String, token: String) async throws {
+        let (data, status) = try await call(function, body: ["p_token": token])
+        guard (200..<300).contains(status) else { throw error(fromRPCBody: data, status: status) }
+        guard (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) as? Bool) == true else { throw SiteFeedbackError.conversationClosed }
+    }
+
+    /// Uploads one photo into this ticket's folder on the site's storage and returns its path for `sendFollowUp`.
+    static func uploadPhoto(token: String, jpeg: Data) async throws -> String {
+        guard let base = baseURL, let key else { throw SiteFeedbackError.notConfigured }
+        let path = FeedbackPhoto.path(token: token)
+        var req = URLRequest(url: base.appendingPathComponent("storage/v1/object/\(FeedbackPhoto.bucket)/\(path)"), timeoutInterval: 60)
+        req.httpMethod = "POST"
+        req.setValue(key, forHTTPHeaderField: "apikey")
+        req.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+        do {
+            let (_, resp) = try await URLSession.shared.upload(for: req, from: jpeg)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 400 || code == 401 || code == 403 { throw SiteFeedbackError.conversationClosed }   // the site only accepts photos into an OPEN ticket
+            guard (200..<300).contains(code) else { throw SiteFeedbackError.network }
+            return path
+        } catch let e as SiteFeedbackError { throw e } catch { throw SiteFeedbackError.network }
+    }
+
+    private static func call(_ function: String, body: [String: Any]) async throws -> (Data, Int) {
         guard let base = baseURL, let key else { throw SiteFeedbackError.notConfigured }
         var req = URLRequest(url: base.appendingPathComponent("rest/v1/rpc/\(function)"), timeoutInterval: 20)
         req.httpMethod = "POST"
@@ -172,5 +210,32 @@ enum SiteFeedbackService {
             let (data, resp) = try await URLSession.shared.data(for: req)
             return (data, (resp as? HTTPURLResponse)?.statusCode ?? 0)
         } catch { throw SiteFeedbackError.network }
+    }
+}
+
+/// Photos in a feedback conversation: where they are stored and how a picture is prepared for upload.
+enum FeedbackPhoto {
+    static let bucket = "app-feedback-files"
+    static let maxPerMessage = 3
+    static let maxBytes = 4_000_000            // the site's bucket accepts 5 MB; stay well under
+
+    /// `<token>/<random>.jpg` — the site only accepts uploads under the ticket's own token, and the path is unguessable.
+    static func path(token: String) -> String { "\(token)/\(UUID().uuidString.lowercased()).jpg" }
+
+    /// JPEG, longest side ≤ `maxDimension`, compressed until it fits `maxBytes`; nil if it cannot be made small enough
+    /// (a truncated image is never sent).
+    static func jpeg(from image: UIImage, maxDimension: CGFloat = 1600, maxBytes: Int = FeedbackPhoto.maxBytes) -> Data? {
+        let longest = max(image.size.width, image.size.height)
+        var scaled = image
+        if longest > maxDimension {
+            let factor = maxDimension / longest
+            let size = CGSize(width: image.size.width * factor, height: image.size.height * factor)
+            let format = UIGraphicsImageRendererFormat.default(); format.scale = 1
+            scaled = UIGraphicsImageRenderer(size: size, format: format).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
+        }
+        for quality in stride(from: 0.8, through: 0.3, by: -0.1) {
+            if let data = scaled.jpegData(compressionQuality: quality), data.count <= maxBytes { return data }
+        }
+        return nil
     }
 }

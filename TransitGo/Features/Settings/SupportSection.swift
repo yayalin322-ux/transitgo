@@ -1,5 +1,6 @@
 import SwiftUI
 import SafariServices
+import PhotosUI
 
 /// A web page shown inside the app (Safari's engine in a sheet with a Done button) instead of switching to the Safari app.
 struct SafariView: UIViewControllerRepresentable {
@@ -87,6 +88,8 @@ struct FeedbackView: View {
     @State private var sending = false
     @State private var caseNumber: String?
     @State private var hasReplyChannel = false
+    @State private var photos: [UIImage] = []
+    @State private var photoNote: String?
     @State private var failure: String?
     @Environment(\.dismiss) private var dismiss
 
@@ -108,6 +111,13 @@ struct FeedbackView: View {
                 Text("內容")
             } footer: {
                 Text("\(draft.message.count)/\(FeedbackDraft.maxMessage)　請描述發生了什麼、在哪條路線或哪個畫面。")
+            }
+            Section {
+                PhotoStrip(images: $photos)
+            } header: {
+                Text("照片（選填）")
+            } footer: {
+                Text("例如畫面截圖。照片只有你和我們看得到。")
             }
             Section {
                 TextField("你的 Email（我們會用它回覆你）", text: $draft.email)
@@ -156,7 +166,7 @@ struct FeedbackView: View {
         .alert("謝謝你的回饋", isPresented: Binding(get: { caseNumber != nil }, set: { if !$0 { caseNumber = nil } })) {
             Button("好") { dismiss() }
         } message: {
-            Text("案件編號 \(caseNumber ?? "")。我們會寄到 \(draft.trimmedEmail) 回覆你" + (hasReplyChannel ? "，回覆也會出現在「我的回饋」。" : "。"))
+            Text("案件編號 \(caseNumber ?? "")。我們會寄到 \(draft.trimmedEmail) 回覆你" + (hasReplyChannel ? "，回覆也會出現在「我的回饋」。" : "。") + (photoNote.map { "\n\($0)" } ?? ""))
         }
     }
 
@@ -195,6 +205,16 @@ struct FeedbackView: View {
             let receipt = try await SiteFeedbackService.submit(draft)
             FeedbackInbox.shared.register(receipt, kind: draft.kind)
             hasReplyChannel = receipt.token != nil
+            // Photos go into the conversation right after the ticket exists (they are filed under its private folder).
+            if let token = receipt.token, !photos.isEmpty {
+                let ticket = FeedbackTicket(caseNumber: receipt.caseNumber, token: token, kind: draft.kind.rawValue, createdAt: Date())
+                let count = photos.count
+                do {
+                    try await FeedbackInbox.shared.sendFollowUp(ticket, body: "（附上 \(count) 張照片）", photos: PhotoStrip.jpegs(photos))
+                } catch { photoNote = "回饋已送出，但照片沒有傳成功，可以到「我的回饋」再傳一次。" }
+            } else if !photos.isEmpty {
+                photoNote = "目前無法傳照片，文字回饋已送出。"
+            }
             caseNumber = receipt.caseNumber
         } catch let e as SiteFeedbackError {
             switch e {
@@ -251,50 +271,102 @@ struct FeedbackThreadView: View {
     @State private var thread: FeedbackThread?
     @State private var loading = true
     @State private var reply = ""
+    @State private var photos: [UIImage] = []
     @State private var sending = false
     @State private var error: String?
+    @State private var confirmClose = false
+
+    private var canWrite: Bool { thread != nil && !(thread?.isClosed ?? true) }
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(spacing: 10) {
                     if let thread {
-                        ForEach(thread.messages) { m in
-                            HStack {
-                                if !m.isReply { Spacer(minLength: 40) }
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(m.isReply ? "我們" : "你").font(.caption2.bold()).foregroundStyle(.secondary)
-                                    Text(m.body).textSelection(.enabled)
-                                    if let d = m.createdAt { Text(d.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(.tertiary) }
-                                }
-                                .padding(10)
-                                .background(m.isReply ? Color.blue.opacity(0.12) : Color.gray.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
-                                if m.isReply { Spacer(minLength: 40) }
-                            }
-                        }
+                        ForEach(thread.messages) { m in bubble(m) }
+                        if thread.isClosed { closedBanner(thread) }
                     } else if !loading {
                         ContentUnavailableView("暫時讀不到這則回饋", systemImage: "wifi.exclamationmark", description: Text("請確認網路後稍後再試；我們的回覆也會寄到你的 Email。"))
                     }
                 }
                 .padding()
             }
-            if thread != nil {
+            if canWrite {
                 Divider()
-                HStack(alignment: .bottom, spacing: 8) {
-                    TextField("追問或補充…", text: $reply, axis: .vertical).lineLimit(1...4).textFieldStyle(.roundedBorder)
-                    Button { Task { await send() } } label: {
-                        if sending { ProgressView() } else { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                VStack(alignment: .leading, spacing: 8) {
+                    PhotoStrip(images: $photos, label: "加入照片")
+                    HStack(alignment: .bottom, spacing: 8) {
+                        TextField("追問或補充…", text: $reply, axis: .vertical).lineLimit(1...4).textFieldStyle(.roundedBorder)
+                        Button { Task { await send() } } label: {
+                            if sending { ProgressView() } else { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                        }
+                        .disabled(!canSend || sending)
                     }
-                    .disabled(reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
+                    if let error { Text(error).font(.footnote).foregroundStyle(.red) }
                 }
                 .padding(10)
-                if let error { Text(error).font(.footnote).foregroundStyle(.red).padding(.bottom, 6) }
             }
         }
         .navigationTitle(ticket.caseNumber)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if canWrite { Button("結束對話", role: .destructive) { confirmClose = true } }
+            }
+        }
+        .confirmationDialog("要結束這個對話嗎？", isPresented: $confirmClose, titleVisibility: .visible) {
+            Button("結束對話", role: .destructive) { Task { await close() } }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("結束後就不能再傳訊息；之後你還可以重新開啟。")
+        }
         .overlay { if loading { ProgressView() } }
         .task { await load() }
+        .task {
+            // While this screen is open, pick up our replies within a few seconds.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(8))
+                if let fresh = await inbox.open(ticket) { thread = fresh }
+            }
+        }
+    }
+
+    private var canSend: Bool { !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !photos.isEmpty }
+
+    private func bubble(_ m: FeedbackThread.Message) -> some View {
+        HStack {
+            if !m.isReply { Spacer(minLength: 40) }
+            VStack(alignment: .leading, spacing: 6) {
+                Text(m.isReply ? "我們" : "你").font(.caption2.bold()).foregroundStyle(.secondary)
+                if !m.body.isEmpty { Text(m.body).textSelection(.enabled) }
+                ForEach(m.attachments, id: \.self) { url in
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let image): image.resizable().scaledToFit()
+                        case .failure: Label("照片載入失敗", systemImage: "photo.badge.exclamationmark").font(.caption).foregroundStyle(.secondary)
+                        default: ProgressView()
+                        }
+                    }
+                    .frame(maxHeight: 220).clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                if let d = m.createdAt { Text(d.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(.tertiary) }
+            }
+            .padding(10)
+            .background(m.isReply ? Color.blue.opacity(0.12) : Color.gray.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+            if m.isReply { Spacer(minLength: 40) }
+        }
+    }
+
+    private func closedBanner(_ t: FeedbackThread) -> some View {
+        VStack(spacing: 8) {
+            Text(t.canReopen ? "你已結束這個對話。" : "這個對話已由我們結束。如果有新的問題，請重新送出意見回饋。")
+                .font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            if t.canReopen {
+                Button("重新開啟") { Task { await reopen() } }.buttonStyle(.bordered)
+            }
+        }
+        .frame(maxWidth: .infinity).padding(12)
+        .background(Color.gray.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func load() async {
@@ -307,9 +379,65 @@ struct FeedbackThreadView: View {
         error = nil
         defer { sending = false }
         do {
-            try await inbox.sendFollowUp(ticket, body: reply.trimmingCharacters(in: .whitespacesAndNewlines))
+            try await inbox.sendFollowUp(ticket, body: reply.trimmingCharacters(in: .whitespacesAndNewlines), photos: PhotoStrip.jpegs(photos))
             reply = ""
+            photos = []
+            await load()
+        } catch SiteFeedbackError.conversationClosed {
+            error = "這個對話已經結束，不能再傳訊息。"
             await load()
         } catch { self.error = "送出失敗，請稍後再試。" }
     }
+
+    private func close() async {
+        do { try await inbox.close(ticket) } catch { self.error = "結束失敗，請稍後再試。" }
+        await load()
+    }
+
+    private func reopen() async {
+        do { try await inbox.reopen(ticket) } catch { self.error = "無法重新開啟。" }
+        await load()
+    }
+}
+
+/// Up to 3 photos chosen from the library, shown as removable thumbnails. `jpegs` are ready to upload.
+struct PhotoStrip: View {
+    @Binding var images: [UIImage]
+    @State private var picked: [PhotosPickerItem] = []
+    var label = "加入照片"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            PhotosPicker(selection: $picked, maxSelectionCount: FeedbackPhoto.maxPerMessage, matching: .images) {
+                Label(images.isEmpty ? label : "重新選擇照片（最多 \(FeedbackPhoto.maxPerMessage) 張）", systemImage: "photo.on.rectangle")
+            }
+            if !images.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(images.enumerated()), id: \.offset) { index, image in
+                            Image(uiImage: image).resizable().scaledToFill().frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 8))
+                                .overlay(alignment: .topTrailing) {
+                                    Button { images.remove(at: index) } label: {
+                                        Image(systemName: "xmark.circle.fill").foregroundStyle(.white, .black.opacity(0.6))
+                                    }
+                                    .buttonStyle(.plain).offset(x: 6, y: -6)
+                                }
+                        }
+                    }
+                    .padding(.top, 6).padding(.trailing, 6)
+                }
+            }
+        }
+        .onChange(of: picked) { _, items in
+            Task {
+                var loaded: [UIImage] = []
+                for item in items.prefix(FeedbackPhoto.maxPerMessage) {
+                    if let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) { loaded.append(image) }
+                }
+                images = loaded
+            }
+        }
+    }
+
+    static func jpegs(_ images: [UIImage]) -> [Data] { images.compactMap { FeedbackPhoto.jpeg(from: $0) } }
 }

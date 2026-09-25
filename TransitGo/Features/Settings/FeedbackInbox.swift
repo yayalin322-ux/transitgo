@@ -54,9 +54,15 @@ final class FeedbackInbox {
         return thread
     }
 
-    func sendFollowUp(_ ticket: FeedbackTicket, body: String) async throws {
-        try await SiteFeedbackService.sendFollowUp(token: ticket.token, body: body)
+    /// A message, optionally with photos: each photo is uploaded first, then the message names them.
+    func sendFollowUp(_ ticket: FeedbackTicket, body: String, photos: [Data] = []) async throws {
+        var paths: [String] = []
+        for jpeg in photos { paths.append(try await SiteFeedbackService.uploadPhoto(token: ticket.token, jpeg: jpeg)) }
+        try await SiteFeedbackService.sendFollowUp(token: ticket.token, body: body, attachments: paths)
     }
+
+    func close(_ ticket: FeedbackTicket) async throws { try await SiteFeedbackService.close(token: ticket.token) }
+    func reopen(_ ticket: FeedbackTicket) async throws { try await SiteFeedbackService.reopen(token: ticket.token) }
 
     static func notify(caseNumber: String) async {
         let content = UNMutableNotificationContent()

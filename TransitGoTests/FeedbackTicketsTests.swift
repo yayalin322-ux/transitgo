@@ -40,7 +40,7 @@ final class FeedbackTicketsTests: XCTestCase {
         XCTAssertEqual(FeedbackThread.statusText("new"), "已收到")
         XCTAssertEqual(FeedbackThread.statusText("in_progress"), "處理中")
         XCTAssertEqual(FeedbackThread.statusText("waiting"), "等你回覆")
-        XCTAssertEqual(FeedbackThread.statusText("resolved"), "已解決")
+        XCTAssertEqual(FeedbackThread.statusText("resolved"), "已結束")
         XCTAssertEqual(FeedbackThread.statusText("???"), "已收到")
     }
 
@@ -104,5 +104,68 @@ final class FeedbackTicketsTests: XCTestCase {
         let store = FeedbackTicketStore(vault: InMemoryVault())
         XCTAssertEqual(store.apply(thread(replies: 3), to: "nope"), 0)
         XCTAssertTrue(store.load().isEmpty)
+    }
+
+    // MARK: chat: photos and ending the conversation
+
+    func testThreadCarriesPhotosAndWhoEndedIt() throws {
+        let json = #"""
+        {"case_number":"A1","kind":"bug","status":"resolved","closed_by":"user","created_at":"2026-09-26T03:00:00+00:00",
+         "messages":[{"direction":"inbound","body":"截圖","created_at":"2026-09-26T03:01:00+00:00",
+                      "attachments":["https://x.supabase.co/storage/v1/object/public/app-feedback-files/T/a.jpg","https://x.supabase.co/storage/v1/object/public/app-feedback-files/T/b.jpg"]},
+                     {"direction":"outbound","body":"收到","created_at":"2026-09-26T03:02:00+00:00","attachments":[]}]}
+        """#
+        let t = try XCTUnwrap(FeedbackThread.decode(Data(json.utf8)))
+        XCTAssertEqual(t.messages[0].attachments.count, 2)
+        XCTAssertEqual(t.messages[0].attachments.first?.lastPathComponent, "a.jpg")
+        XCTAssertTrue(t.messages[1].attachments.isEmpty)
+        XCTAssertTrue(t.isClosed)
+        XCTAssertTrue(t.canReopen)               // the person ended it → the person may reopen
+        XCTAssertFalse(t.endedByUs)
+    }
+
+    func testAConversationWeEndedCannotBeReopenedByThePerson() throws {
+        let t = try XCTUnwrap(FeedbackThread.decode(Data(#"{"case_number":"A1","kind":"bug","status":"resolved","closed_by":"owner","messages":[]}"#.utf8)))
+        XCTAssertTrue(t.isClosed)
+        XCTAssertFalse(t.canReopen)
+        XCTAssertTrue(t.endedByUs)
+    }
+
+    func testAnOpenConversationAndOldServerAnswersStillDecode() throws {
+        let open = try XCTUnwrap(FeedbackThread.decode(Data(#"{"case_number":"A1","kind":"idea","status":"waiting","messages":[{"direction":"inbound","body":"hi","created_at":"2026-09-26T03:00:00+00:00"}]}"#.utf8)))
+        XCTAssertFalse(open.isClosed)
+        XCTAssertFalse(open.canReopen)
+        XCTAssertTrue(open.messages[0].attachments.isEmpty)     // no "attachments" key at all (server v1)
+        XCTAssertNil(open.closedBy)
+    }
+
+    func testClosedConversationErrorIsRecognised() {
+        XCTAssertEqual(SiteFeedbackService.error(fromRPCBody: Data(#"{"code":"P0001","message":"conversation_closed"}"#.utf8), status: 400), .conversationClosed)
+    }
+
+    func testPhotoPathsLiveUnderTheTicketsOwnTokenAndAreUnique() {
+        let a = FeedbackPhoto.path(token: "TOKEN"), b = FeedbackPhoto.path(token: "TOKEN")
+        XCTAssertTrue(a.hasPrefix("TOKEN/") && a.hasSuffix(".jpg"))
+        XCTAssertNotEqual(a, b)
+        XCTAssertFalse(a.contains(".."))
+        XCTAssertLessThanOrEqual(a.count, 200)                  // the site refuses longer paths
+        XCTAssertEqual(FeedbackPhoto.maxPerMessage, 3)
+    }
+
+    func testAPhotoIsShrunkToFitTheUploadLimit() throws {
+        // A big noisy picture: 4000×3000 px.
+        let size = CGSize(width: 4000, height: 3000)
+        let format = UIGraphicsImageRendererFormat.default(); format.scale = 1
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+            for i in 0..<400 {
+                UIColor(hue: CGFloat(i % 50) / 50, saturation: 0.8, brightness: 0.9, alpha: 1).setFill()
+                ctx.fill(CGRect(x: (i * 97) % 3800, y: (i * 53) % 2800, width: 200, height: 200))
+            }
+        }
+        let data = try XCTUnwrap(FeedbackPhoto.jpeg(from: image))
+        XCTAssertLessThanOrEqual(data.count, FeedbackPhoto.maxBytes)
+        let out = try XCTUnwrap(UIImage(data: data))
+        XCTAssertLessThanOrEqual(max(out.size.width, out.size.height), 1600)            // longest side capped
+        XCTAssertNil(FeedbackPhoto.jpeg(from: image, maxDimension: 1600, maxBytes: 100))  // cannot fit → nil, never a broken file
     }
 }

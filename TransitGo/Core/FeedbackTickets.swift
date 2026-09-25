@@ -7,26 +7,35 @@ struct FeedbackThread: Decodable, Equatable {
         let direction: String          // "inbound" = you, "outbound" = our reply
         let body: String
         let createdAt: Date?
-        var id: String { "\(direction)|\(createdAt?.timeIntervalSince1970 ?? 0)|\(body.hashValue)" }
+        /// Photos attached to this message (public, unguessable URLs on the site's storage).
+        let attachments: [URL]
+        var id: String { "\(direction)|\(createdAt?.timeIntervalSince1970 ?? 0)|\(body.hashValue)|\(attachments.count)" }
         var isReply: Bool { direction == "outbound" }
 
-        enum CodingKeys: String, CodingKey { case direction, body, createdAt = "created_at" }
+        enum CodingKeys: String, CodingKey { case direction, body, createdAt = "created_at", attachments }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             direction = try c.decode(String.self, forKey: .direction)
             body = try c.decode(String.self, forKey: .body)
             createdAt = FeedbackThread.date(try c.decodeIfPresent(String.self, forKey: .createdAt))
+            attachments = ((try? c.decodeIfPresent([String].self, forKey: .attachments)) ?? nil)?.compactMap(URL.init(string:)) ?? []
         }
     }
 
     let caseNumber: String
     let kind: String
     let status: String                 // new | in_progress | waiting | resolved
+    let closedBy: String?              // "owner" | "user" | nil
     let messages: [Message]
 
-    enum CodingKeys: String, CodingKey { case caseNumber = "case_number", kind, status, messages }
+    enum CodingKeys: String, CodingKey { case caseNumber = "case_number", kind, status, closedBy = "closed_by", messages }
 
     var replyCount: Int { messages.filter(\.isReply).count }
+
+    /// The conversation has been ended. Nobody can add to it — except that the person may reopen one THEY ended.
+    var isClosed: Bool { status == "resolved" }
+    var canReopen: Bool { isClosed && closedBy == "user" }
+    var endedByUs: Bool { isClosed && closedBy != "user" }
 
     /// Words for the status the way a person would say it.
     var statusText: String { Self.statusText(status) }
@@ -35,7 +44,7 @@ struct FeedbackThread: Decodable, Equatable {
         case "new": "已收到"
         case "in_progress": "處理中"
         case "waiting": "等你回覆"
-        case "resolved": "已解決"
+        case "resolved": "已結束"
         default: "已收到"
         }
     }
