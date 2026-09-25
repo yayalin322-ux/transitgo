@@ -40,6 +40,8 @@ targets:
           - location
         BackendHost: $(BACKEND_HOST)
         ShareBaseHost: $(SHARE_BASE_HOST)
+        SiteSupabaseHost: $(SITE_SUPABASE_HOST)
+        SiteSupabaseKey: $(SITE_SUPABASE_KEY)
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         # Needed when BACKEND_HOST points at a computer on the same Wi-Fi (e.g. MacBook.local:8787): iOS asks once for
