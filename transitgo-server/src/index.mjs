@@ -40,6 +40,8 @@ import {
 } from "./appdata.mjs";
 import { sanitizeSegments, sanitizeTitle, ttlMs, newToken, isToken, isExpired, isVehicle, parseTrainTrip, canRate, createRatingLedger } from "./shares.mjs";
 import { pushAnnouncement } from "./push.mjs";
+import { clampReport } from "./reports.mjs";
+import { buildStatus, allowedOrigin } from "./status.mjs";
 import { startAlertPoller } from "./alerts.mjs";
 import { startBikePoller, nearestFrom, bikePollStatus } from "./bikepoller.mjs";
 import { startSpeedcamPoller, nearestCams } from "./speedcampoller.mjs";
@@ -106,6 +108,14 @@ app.get("/v1/health", (_req, res) => {
   });
 });
 
+// Public, minimal status for the website (yayalin.com/app). Readable from a browser only on our own origins.
+app.get("/v1/status", (req, res) => {
+  const origin = allowedOrigin(req.headers.origin);
+  if (origin) res.set({ "Access-Control-Allow-Origin": origin, Vary: "Origin" });
+  res.set("Cache-Control", "no-store");
+  res.json(buildStatus({ uptimeSeconds: process.uptime(), routingLoaded: routingGraph !== null }));
+});
+
 // Which storage backend is actually active — never echoes the connection string itself,
 // just whether DATABASE_URL was seen and a real query against it succeeds.
 app.get("/v1/health/db", async (_req, res) => {
@@ -142,9 +152,9 @@ app.post("/v1/reports", async (req, res) => {
   hist.push(now);
   reportBucket.set(req.clientIp, hist);
 
-  const { type, message, context, appVersion, os, device } = req.body || {};
-  if (!type) return res.status(400).json({ error: "type required" });
-  await createReport({ type, message, context, appVersion, os, device, ip: req.clientIp });
+  const report = clampReport(req.body || {});
+  if (!report) return res.status(400).json({ error: "type required" });
+  await createReport({ ...report, ip: req.clientIp });
   res.json({ ok: true });
 });
 

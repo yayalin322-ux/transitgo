@@ -57,6 +57,8 @@ struct SettingsView: View {
                     Text("來源：臺北市公車動態資訊中心\ntcgbusfs.blob.core.windows.net/blobbus/BusSeatEvent.gz")
                         .font(.caption2)
                 }
+
+                SupportSection()
             }
             .navigationTitle("設定")
             .navigationBarTitleDisplayMode(.inline)
