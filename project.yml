@@ -38,6 +38,9 @@ targets:
         UIBackgroundModes:
           - remote-notification
           - location
+          - fetch
+        BGTaskSchedulerPermittedIdentifiers:
+          - tw.yayalin.TransitGo.feedback-refresh
         BackendHost: $(BACKEND_HOST)
         ShareBaseHost: $(SHARE_BASE_HOST)
         SiteSupabaseHost: $(SITE_SUPABASE_HOST)

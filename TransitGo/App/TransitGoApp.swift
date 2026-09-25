@@ -32,6 +32,9 @@ struct TransitGoApp: App {
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active {
                         Task { await AnnouncementService.shared.refresh() }
+                        Task { _ = await FeedbackInbox.shared.refresh() }     // any reply since last time → red dot
+                    } else if phase == .background {
+                        FeedbackBackgroundRefresh.scheduleIfNeeded()
                     }
                 }
         }

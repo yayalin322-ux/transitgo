@@ -22,12 +22,23 @@ struct InAppPage: Identifiable {
 /// request).
 struct SupportSection: View {
     @State private var copied = false
+    @State private var inbox = FeedbackInbox.shared
     @State private var page: InAppPage?
     private var osText: String { "iOS " + ProcessInfo.processInfo.operatingSystemVersionString }
 
     var body: some View {
         Section {
             NavigationLink { FeedbackView() } label: { Label("意見回饋", systemImage: "bubble.left.and.text.bubble.right") }
+            NavigationLink { MyFeedbackView() } label: {
+                HStack {
+                    Label("我的回饋", systemImage: "tray.full")
+                    Spacer()
+                    if inbox.unreadCount > 0 {
+                        Text("\(inbox.unreadCount)").font(.caption.bold()).foregroundStyle(.white)
+                            .padding(.horizontal, 7).padding(.vertical, 2).background(.red, in: Capsule())
+                    }
+                }
+            }
             pageButton("客服與常見問題", "questionmark.circle", SupportLinks.support)
             pageButton("隱私權政策", "hand.raised", SupportLinks.privacy)
             pageButton("服務條款", "doc.text", SupportLinks.terms)
@@ -74,6 +85,7 @@ struct FeedbackView: View {
     @State private var requesting = false
     @State private var sending = false
     @State private var caseNumber: String?
+    @State private var hasReplyChannel = false
     @State private var failure: String?
     @Environment(\.dismiss) private var dismiss
 
@@ -143,7 +155,7 @@ struct FeedbackView: View {
         .alert("謝謝你的回饋", isPresented: Binding(get: { caseNumber != nil }, set: { if !$0 { caseNumber = nil } })) {
             Button("好") { dismiss() }
         } message: {
-            Text("案件編號 \(caseNumber ?? "")。我們會用 \(draft.trimmedEmail) 回覆你。")
+            Text("案件編號 \(caseNumber ?? "")。我們會寄到 \(draft.trimmedEmail) 回覆你" + (hasReplyChannel ? "，回覆也會出現在「我的回饋」。" : "。"))
         }
     }
 
@@ -179,7 +191,10 @@ struct FeedbackView: View {
         failure = nil
         defer { sending = false }
         do {
-            caseNumber = try await SiteFeedbackService.submit(draft)
+            let receipt = try await SiteFeedbackService.submit(draft)
+            FeedbackInbox.shared.register(receipt, kind: draft.kind)
+            hasReplyChannel = receipt.token != nil
+            caseNumber = receipt.caseNumber
         } catch let e as SiteFeedbackError {
             switch e {
             case .wrongCode: failure = "驗證碼不對、已用過或已過期，請重新寄送驗證碼。"
@@ -187,5 +202,113 @@ struct FeedbackView: View {
             default: failure = "送出失敗，請稍後再試，或直接寄信到 \(SupportLinks.email)。"
             }
         } catch { failure = "送出失敗，請稍後再試。" }
+    }
+}
+
+
+/// The tickets this phone filed, with a red dot when we replied.
+struct MyFeedbackView: View {
+    @State private var inbox = FeedbackInbox.shared
+    @State private var refreshing = false
+
+    var body: some View {
+        List {
+            if inbox.tickets.isEmpty {
+                ContentUnavailableView("還沒有回饋", systemImage: "tray",
+                                       description: Text("送出意見回饋後，我們的回覆會出現在這裡，也會寄到你的 Email。"))
+            }
+            ForEach(inbox.tickets) { ticket in
+                NavigationLink { FeedbackThreadView(ticket: ticket) } label: {
+                    HStack(spacing: 10) {
+                        Circle().fill(ticket.hasUnread ? Color.red : .clear).frame(width: 9, height: 9)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(ticket.caseNumber).font(.subheadline.weight(.semibold))
+                            Text("\(FeedbackKind(rawValue: ticket.kind)?.label ?? "回饋")・\(FeedbackThread.statusText(ticket.status))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text(ticket.createdAt.formatted(date: .abbreviated, time: .omitted)).font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+        .navigationTitle("我的回饋")
+        .navigationBarTitleDisplayMode(.inline)
+        .overlay { if refreshing { ProgressView() } }
+        .refreshable { _ = await inbox.refresh() }
+        .task {
+            refreshing = inbox.tickets.isEmpty ? false : true
+            _ = await inbox.refresh()
+            refreshing = false
+        }
+    }
+}
+
+struct FeedbackThreadView: View {
+    let ticket: FeedbackTicket
+    @State private var inbox = FeedbackInbox.shared
+    @State private var thread: FeedbackThread?
+    @State private var loading = true
+    @State private var reply = ""
+    @State private var sending = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(spacing: 10) {
+                    if let thread {
+                        ForEach(thread.messages) { m in
+                            HStack {
+                                if !m.isReply { Spacer(minLength: 40) }
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(m.isReply ? "我們" : "你").font(.caption2.bold()).foregroundStyle(.secondary)
+                                    Text(m.body).textSelection(.enabled)
+                                    if let d = m.createdAt { Text(d.formatted(date: .abbreviated, time: .shortened)).font(.caption2).foregroundStyle(.tertiary) }
+                                }
+                                .padding(10)
+                                .background(m.isReply ? Color.blue.opacity(0.12) : Color.gray.opacity(0.15), in: RoundedRectangle(cornerRadius: 12))
+                                if m.isReply { Spacer(minLength: 40) }
+                            }
+                        }
+                    } else if !loading {
+                        ContentUnavailableView("暫時讀不到這則回饋", systemImage: "wifi.exclamationmark", description: Text("請確認網路後稍後再試；我們的回覆也會寄到你的 Email。"))
+                    }
+                }
+                .padding()
+            }
+            if thread != nil {
+                Divider()
+                HStack(alignment: .bottom, spacing: 8) {
+                    TextField("追問或補充…", text: $reply, axis: .vertical).lineLimit(1...4).textFieldStyle(.roundedBorder)
+                    Button { Task { await send() } } label: {
+                        if sending { ProgressView() } else { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                    }
+                    .disabled(reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending)
+                }
+                .padding(10)
+                if let error { Text(error).font(.footnote).foregroundStyle(.red).padding(.bottom, 6) }
+            }
+        }
+        .navigationTitle(ticket.caseNumber)
+        .navigationBarTitleDisplayMode(.inline)
+        .overlay { if loading { ProgressView() } }
+        .task { await load() }
+    }
+
+    private func load() async {
+        thread = await inbox.open(ticket)
+        loading = false
+    }
+
+    private func send() async {
+        sending = true
+        error = nil
+        defer { sending = false }
+        do {
+            try await inbox.sendFollowUp(ticket, body: reply.trimmingCharacters(in: .whitespacesAndNewlines))
+            reply = ""
+            await load()
+        } catch { self.error = "送出失敗，請稍後再試。" }
     }
 }

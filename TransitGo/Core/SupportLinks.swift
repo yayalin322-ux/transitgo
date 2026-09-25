@@ -67,6 +67,12 @@ struct FeedbackDraft: Equatable {
         ["p_name": "TransitGo App", "p_email": trimmedEmail, "p_message": inboxMessage(appVersion: appVersion, os: os), "p_code": trimmedCode]
     }
 
+    /// Body of the site's `submit_app_feedback` RPC (the ticket system: case number, priority, replies).
+    func appFeedbackBody(appVersion: String, os: String) -> [String: String] {
+        ["p_kind": kind.rawValue, "p_message": trimmedMessage, "p_email": trimmedEmail, "p_code": trimmedCode,
+         "p_app_version": appVersion, "p_os": os]
+    }
+
     /// Body of the site's `request_email_code` RPC (purpose "contact" — the same one the website's contact form uses).
     func codeRequestBody() -> [String: String] { ["p_email": trimmedEmail, "p_purpose": "contact"] }
 }
@@ -95,11 +101,30 @@ enum SiteFeedbackService {
         return .network
     }
 
-    /// `submit_contact` answers with the case number, or `null` when the code was wrong / used / expired.
-    static func caseNumber(fromSubmitBody data: Data) -> String? {
+    /// What a successful submit hands back: the case number, and (ticket system only) the token that lets this phone read
+    /// the replies. The old `submit_contact` answered with just the case number as a JSON string.
+    struct Receipt: Equatable { let caseNumber: String; let token: String? }
+
+    /// `submit_app_feedback` answers {"case_number":…,"token":…}; a wrong / used / expired code is `null`.
+    static func receipt(fromSubmitBody data: Data) -> Receipt? {
         guard let value = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) else { return nil }
-        if let s = value as? String, !s.isEmpty { return s }
+        if let s = value as? String, !s.isEmpty { return Receipt(caseNumber: s, token: nil) }
+        if let o = value as? [String: Any], let n = o["case_number"] as? String, !n.isEmpty {
+            let t = o["token"] as? String
+            return Receipt(caseNumber: n, token: (t?.isEmpty == false) ? t : nil)
+        }
         return nil
+    }
+
+    /// Kept for the old string answer.
+    static func caseNumber(fromSubmitBody data: Data) -> String? { receipt(fromSubmitBody: data)?.caseNumber }
+
+    /// PostgREST says a function is not there yet (the ticket SQL has not been run on the site's database): HTTP 404 with
+    /// code PGRST202 / "Could not find the function".
+    static func isMissingFunction(body: Data, status: Int) -> Bool {
+        guard status == 404 || status == 400 else { return false }
+        let text = String(data: body, encoding: .utf8) ?? ""
+        return text.contains("PGRST202") || text.contains("Could not find the function")
     }
 
     static func requestCode(_ draft: FeedbackDraft) async throws {
@@ -107,13 +132,33 @@ enum SiteFeedbackService {
         guard (200..<300).contains(status) else { throw error(fromRPCBody: data, status: status) }
     }
 
-    /// Returns the case number.
-    static func submit(_ draft: FeedbackDraft) async throws -> String {
+    /// Files the feedback as a ticket (so replies can come back to this phone). Until the site's ticket SQL is installed it
+    /// falls back to the contact-form pipeline: the feedback still arrives, just without in-app replies.
+    static func submit(_ draft: FeedbackDraft) async throws -> Receipt {
         let os = "iOS " + ProcessInfo.processInfo.operatingSystemVersionString
-        let (data, status) = try await call("submit_contact", body: draft.submitBody(appVersion: BackendConfig.appVersion, os: os))
+        let (data, status) = try await call("submit_app_feedback", body: draft.appFeedbackBody(appVersion: BackendConfig.appVersion, os: os))
+        if isMissingFunction(body: data, status: status) {
+            let (legacy, legacyStatus) = try await call("submit_contact", body: draft.submitBody(appVersion: BackendConfig.appVersion, os: os))
+            guard (200..<300).contains(legacyStatus) else { throw error(fromRPCBody: legacy, status: legacyStatus) }
+            guard let receipt = receipt(fromSubmitBody: legacy) else { throw SiteFeedbackError.wrongCode }
+            return receipt
+        }
         guard (200..<300).contains(status) else { throw error(fromRPCBody: data, status: status) }
-        guard let number = caseNumber(fromSubmitBody: data) else { throw SiteFeedbackError.wrongCode }
-        return number
+        guard let receipt = receipt(fromSubmitBody: data) else { throw SiteFeedbackError.wrongCode }
+        return receipt
+    }
+
+    /// The conversation for one ticket, or nil when the token is unknown.
+    static func thread(token: String) async throws -> FeedbackThread? {
+        let (data, status) = try await call("get_app_feedback", body: ["p_token": token])
+        guard (200..<300).contains(status) else { throw error(fromRPCBody: data, status: status) }
+        return FeedbackThread.decode(data)
+    }
+
+    static func sendFollowUp(token: String, body: String) async throws {
+        let (data, status) = try await call("add_app_feedback_message", body: ["p_token": token, "p_body": body])
+        guard (200..<300).contains(status) else { throw error(fromRPCBody: data, status: status) }
+        guard (try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) as? Bool) == true else { throw SiteFeedbackError.network }
     }
 
     private static func call(_ function: String, body: [String: String]) async throws -> (Data, Int) {
