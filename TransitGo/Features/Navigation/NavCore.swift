@@ -347,8 +347,13 @@ enum NavCamera {
         return 380 + min(max(speed, 0), 35) * 10
     }
 
-    /// How far ahead of the user the camera aims, in metres.
-    static func lookAheadMeters(distance: Double) -> Double { distance * 0.32 }
+    /// How far ahead of the user the camera aims, in metres. Small on purpose: at a 62° pitch the ground behind the
+    /// aim point is foreshortened, so 0.32 of the view distance put the dot ~89 % of the way down the screen —
+    /// behind the metrics card. 0.12 puts it at roughly 60 % (perspective: nadir angle of the ground point
+    /// D·sin(p) − L over D·cos(p), against the centre ray at p, with MapKit's ~30° vertical field of view), which
+    /// stays clear of the bottom card while still leaving the road ahead in the upper part of the screen.
+    static let lookAheadFraction = 0.12
+    static func lookAheadMeters(distance: Double) -> Double { distance * lookAheadFraction }
 
     /// Fast enough to keep up with a car at 1 fix/s; the old default (~0.35 s ease) trailed the dot.
     static let followAnimationSeconds = 0.18

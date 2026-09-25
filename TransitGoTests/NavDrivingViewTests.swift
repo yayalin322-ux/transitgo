@@ -23,8 +23,24 @@ final class NavDrivingViewTests: XCTestCase {
     }
 
     func testCameraAimsAheadOfTheUserByAFractionOfTheViewDistance() {
-        XCTAssertEqual(NavCamera.lookAheadMeters(distance: 500), 160, accuracy: 0.1)
+        XCTAssertEqual(NavCamera.lookAheadMeters(distance: 500), 60, accuracy: 0.1)
         XCTAssertLessThan(NavCamera.followAnimationSeconds, 0.35)   // the old default ease trailed the dot
+    }
+
+    /// The dot must land above the bottom metrics card (which covers roughly the lowest 30 % of the screen).
+    /// Same perspective model the constant is derived from: screen offset of the user's ground point relative to the
+    /// half-height, for a ~30° vertical field of view.
+    func testDotStaysAboveTheBottomCardAtEveryDrivingSpeed() {
+        let pitch = NavCamera.pitch(driving: true) * .pi / 180
+        for speed in [0.0, 10, 20, 35] {
+            let d = NavCamera.distance(driving: true, speed: speed)
+            let l = NavCamera.lookAheadMeters(distance: d)
+            let phi = atan((d * sin(pitch) - l) / (d * cos(pitch)))
+            let screenFromCentre = tan(pitch - phi) / tan(15 * .pi / 180)   // + = below centre, in half-heights
+            let fractionDown = 0.5 + 0.5 * screenFromCentre
+            XCTAssertGreaterThan(fractionDown, 0.5, "the dot should sit below the middle (speed \(speed))")
+            XCTAssertLessThan(fractionDown, 0.68, "the dot must stay above the bottom card (speed \(speed))")
+        }
     }
 
     // MARK: dot position
