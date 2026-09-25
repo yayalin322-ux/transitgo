@@ -77,6 +77,9 @@ const $ = (id) => document.getElementById(id);
 // Everything below is text from a database or a public API: escape it before it goes into the page.
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const token = location.pathname.split("/").filter(Boolean).pop();
+// Opened on this server: /s/<token> talks to /v1/... . Opened through yayalin.com (a proxy in front of this server):
+// /app/s/<token> talks to /app/api/... , which the proxy forwards to the same /v1/... routes.
+const API = location.pathname.startsWith("/app/s/") ? "/app/api" : "/v1";
 const MODE = { BUS: ["🚌", "公車"], MRT: ["🚇", "捷運"], TRA: ["🚆", "台鐵"], HSR: ["🚄", "高鐵"], WALK: ["🚶", "步行"], BIKE: ["🚲", "YouBike"] };
 const clock = (ms) => ms ? new Date(ms).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Taipei" }) : "—";
 const isVehicle = (s) => s.mode !== "WALK" && s.mode !== "BIKE";
@@ -249,7 +252,7 @@ function gone(msg) {
   $("err").hidden = false; $("err").textContent = msg;
 }
 async function loadPlan() {
-  const r = await fetchWithRetry("/v1/shares/" + encodeURIComponent(token), { onWait: (a, e, nf) => waking(true, a, e, nf) });
+  const r = await fetchWithRetry(API + "/shares/" + encodeURIComponent(token), { onWait: (a, e, nf) => waking(true, a, e, nf) });
   waking(false);
   if (r.status === 404) return gone("這個分享連結已過期或不存在");
   if (r.status !== 200 || !r.body) return gone("連不上伺服器。請稍後再重新整理這一頁（伺服器休眠或維護中）。");
@@ -266,7 +269,7 @@ async function refreshLive(force) {
   if (!plan || polling || (document.hidden && !force)) return;
   polling = true;
   try {
-    const r = await tryFetch("/v1/shares/" + encodeURIComponent(token) + "/live");
+    const r = await tryFetch(API + "/shares/" + encodeURIComponent(token) + "/live");
     if (r.status === 404) return gone("這個分享連結已過期");
     if (r.status === 200 && r.body) { live = r.body; lastOkAt = Date.now(); renderLegs(); }
     else if (!live) renderLegs();   // first attempt failed: show the schedule at least; the next tick retries
@@ -282,7 +285,7 @@ document.addEventListener("click", async (e) => {
   const msg = $("rate-msg-" + leg);
   document.querySelectorAll(`button[data-leg="${leg}"]`).forEach((x) => x.classList.toggle("on", Number(x.dataset.star) <= stars));
   msg.textContent = "送出中…";
-  const r = await tryFetch(`/v1/shares/${encodeURIComponent(token)}/rating`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stars, legIndex: leg }) });
+  const r = await tryFetch(`${API}/shares/${encodeURIComponent(token)}/rating`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ stars, legIndex: leg }) });
   if (r.status === 200) { try { localStorage.setItem(`rated:${token}:${leg}`, String(stars)); } catch { /* private mode */ } renderLegs(); }
   else if (r.status === 409) msg.textContent = r.body?.error === "already rated" ? "你已經評過分了，謝謝！" : "這班車還沒到達，到達後才能評分。";
   else msg.textContent = "送出失敗，請稍後再試。";

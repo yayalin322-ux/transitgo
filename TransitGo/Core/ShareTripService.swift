@@ -88,7 +88,7 @@ enum ShareLink {
             .replacingOccurrences(of: "=", with: "")
     }
 
-    static func url(token: String, base: URL? = BackendConfig.baseURL) -> URL? {
+    static func url(token: String, base: URL? = BackendConfig.shareBaseURL) -> URL? {
         base?.appendingPathComponent("s").appendingPathComponent(token)
     }
 

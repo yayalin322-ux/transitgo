@@ -39,6 +39,7 @@ targets:
           - remote-notification
           - location
         BackendHost: $(BACKEND_HOST)
+        ShareBaseHost: $(SHARE_BASE_HOST)
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         # Needed when BACKEND_HOST points at a computer on the same Wi-Fi (e.g. MacBook.local:8787): iOS asks once for

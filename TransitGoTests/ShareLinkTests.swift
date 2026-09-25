@@ -117,4 +117,13 @@ final class ShareLinkTests: XCTestCase {
         XCTAssertEqual(out, .failed)
         XCTAssertTrue(s.requests.isEmpty)
     }
+
+    func testShareLinkCanLiveOnAnotherDomain() {
+        // SHARE_BASE_HOST = yayalin.com/app  →  https://yayalin.com/app/s/<token>
+        let base = BackendConfig.shareBaseURL(fromHost: "yayalin.com/app")
+        XCTAssertEqual(base?.absoluteString, "https://yayalin.com/app")
+        XCTAssertEqual(ShareLink.url(token: "abc", base: base)?.absoluteString, "https://yayalin.com/app/s/abc")
+        XCTAssertNil(BackendConfig.shareBaseURL(fromHost: ""))                  // unset → caller falls back to the backend
+        XCTAssertNil(BackendConfig.shareBaseURL(fromHost: "$(SHARE_BASE_HOST)")) // an unresolved build variable is not a host
+    }
 }
