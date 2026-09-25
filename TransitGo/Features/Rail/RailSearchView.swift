@@ -41,10 +41,35 @@ final class RailSearchViewModel {
 }
 
 struct RailSearchView: View {
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var model = RailSearchViewModel()
     @State private var store = RailStationStore.shared
+    @State private var selectedRun: TrainRun?
 
     var body: some View {
+        if sizeClass == .regular {
+            // Wide screen (iPad, unfolded / dual-screen iPhone): the search and its results on the left, the chosen
+            // train's stops on the right, instead of pushing a full-screen page.
+            HStack(spacing: 0) {
+                searchForm.frame(width: 420)
+                Divider()
+                Group {
+                    if let run = selectedRun {
+                        TrainDetailView(system: model.system, trainNo: run.trainNo,
+                                        highlightFromID: model.origin?.id, highlightToID: model.destination?.id)
+                            .id(run.id)
+                    } else {
+                        ContentUnavailableView("選一班列車", systemImage: "tram", description: Text("查詢後從左邊挑一班，這裡會顯示停靠站與時間"))
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+        } else {
+            searchForm
+        }
+    }
+
+    private var searchForm: some View {
         Form {
                 Section {
                     Picker("系統", selection: $model.system) {
@@ -81,6 +106,7 @@ struct RailSearchView: View {
 
                 Section {
                     Button {
+                        selectedRun = nil
                         Task { await model.search() }
                     } label: {
                         HStack { Spacer(); Text("查詢時刻").bold(); Spacer() }
@@ -98,15 +124,23 @@ struct RailSearchView: View {
                             Text("查無班次").foregroundStyle(.secondary)
                         }
                         ForEach(model.displayRuns) { run in
-                            NavigationLink {
-                                TrainDetailView(
-                                    system: model.system,
-                                    trainNo: run.trainNo,
-                                    highlightFromID: model.origin?.id,
-                                    highlightToID: model.destination?.id
-                                )
-                            } label: {
-                                TrainRunRow(run: run, system: model.system)
+                            if sizeClass == .regular {
+                                Button { selectedRun = run } label: {
+                                    TrainRunRow(run: run, system: model.system)
+                                }
+                                .buttonStyle(.plain)
+                                .listRowBackground(selectedRun?.id == run.id ? Color.accentColor.opacity(0.15) : nil)
+                            } else {
+                                NavigationLink {
+                                    TrainDetailView(
+                                        system: model.system,
+                                        trainNo: run.trainNo,
+                                        highlightFromID: model.origin?.id,
+                                        highlightToID: model.destination?.id
+                                    )
+                                } label: {
+                                    TrainRunRow(run: run, system: model.system)
+                                }
                             }
                         }
                     }
