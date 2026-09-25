@@ -84,6 +84,17 @@ struct TransitGoShortcuts: AppShortcutsProvider {
             shortTitle: "開始導航",
             systemImageName: "location.north.line.fill"
         )
+        AppShortcut(
+            intent: NextTrainIntent(),
+            phrases: [
+                // A phrase may hold only ONE parameter: Siri asks for the other one.
+                "\(.applicationName)\(\.$station)下一班火車",
+                "用\(.applicationName)查\(\.$station)的下一班",
+                "\(.applicationName)下一班\(\.$direction)列車",
+            ],
+            shortTitle: "下一班台鐵",
+            systemImageName: "tram.fill"
+        )
     }
 }
 

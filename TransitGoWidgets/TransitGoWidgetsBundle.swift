@@ -5,6 +5,7 @@ import WidgetKit
 struct TransitGoWidgetsBundle: WidgetBundle {
     var body: some Widget {
         TimetableWidget()
+        RailBoardWidget()
         BusTripLiveActivity()
         RailTripLiveActivity()
         BikeTripLiveActivity()
