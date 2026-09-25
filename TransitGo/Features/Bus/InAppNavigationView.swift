@@ -234,8 +234,6 @@ struct InAppNavigationView: View {
     @State private var announcedNowStepIndices: Set<Int> = []
     @State private var announcedStraightSteps: Set<Int> = []
     @AppStorage("navVoiceMode") private var voiceModeRaw = VoiceMode.standard.rawValue
-    @State private var showParkingChoice = false
-    @State private var parkingPromptDone = false
     /// Set once the user has picked a lot: from then on this trip never asks about parking again.
     @State private var parkingChosen = false
     /// What the bottom panel shows: rounded and rate-limited (see NavPanel) so it does not flicker every GPS fix.
@@ -247,6 +245,7 @@ struct InAppNavigationView: View {
     @State private var nearbyCams: [SpeedCam] = []
     @State private var announcedCamIDs: Set<String> = []
     @State private var upcomingCam: SpeedCam?
+    @State private var upcomingCamDistance: Int?
     @State private var camFetchCenter: CLLocationCoordinate2D?
     @State private var legInitialDistance: CLLocationDistance?
     /// Guards handleLocationUpdate's milestone/arrival logic until premarking has
@@ -282,6 +281,8 @@ struct InAppNavigationView: View {
     /// Distance milestones (metres) to call out, checked in descending order.
     private static let milestones = [1000, 500, 200, 100, 50]
     private static let arrivalThreshold: CLLocationDistance = 20
+    /// How far from the destination the bottom parking list appears (driving only, see `offersParking`).
+    private static let parkingOfferDistance: CLLocationDistance = 400
     /// Consecutive fixes required inside a threshold before acting on it.
     private static let requiredCloseFixes = 2
     /// Fixes worse than this are too noisy to trust for arrival/maneuver decisions.
@@ -335,9 +336,9 @@ struct InAppNavigationView: View {
                     Annotation("", coordinate: userCoord) {
                         Circle()
                             .fill(.blue)
-                            .frame(width: 16, height: 16)
-                            .overlay(Circle().stroke(.white, lineWidth: 3))
-                            .shadow(radius: 2)
+                            .frame(width: 26, height: 26)
+                            .overlay(Circle().stroke(.white, lineWidth: 4))
+                            .shadow(radius: 3)
                     }
                 }
                 if let route {
@@ -458,7 +459,8 @@ struct InAppNavigationView: View {
                 if let cam = upcomingCam {
                     HStack(spacing: 10) {
                         Image(systemName: "camera.fill").font(.title3)
-                        Text(cam.announcement).font(.subheadline.weight(.semibold)).lineLimit(2)
+                        Text(upcomingCamDistance.map { "\(Int((Double($0) / 10).rounded()) * 10) 公尺・" + cam.announcement } ?? cam.announcement)
+                            .font(.subheadline.weight(.semibold)).lineLimit(2)
                         Spacer(minLength: 0)
                     }
                     .foregroundStyle(.white)
@@ -536,7 +538,7 @@ struct InAppNavigationView: View {
                     // stopped at the destination.
                     if earlyParkingTriggered, !nearbyParking.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("即將抵達・附近停車場").font(.caption).foregroundStyle(.secondary)
+                            Text("快到了・附近停車場").font(.caption).foregroundStyle(.secondary)
                             ForEach(Array(nearbyParking.prefix(3).enumerated()), id: \.offset) { _, item in
                                 Button {
                                     navigateToParking(item)
@@ -684,14 +686,6 @@ struct InAppNavigationView: View {
         .onChange(of: tracker.headingDegrees) { _, _ in
             if followUser { recenter() }
         }
-        .confirmationDialog("要先導航到目的地附近的停車場嗎？", isPresented: $showParkingChoice, titleVisibility: .visible) {
-            ForEach(Array(nearbyParking.prefix(3).enumerated()), id: \.offset) { _, item in
-                Button("\(item.name ?? "停車場")・離目的地 \(parkingDistanceText(item))") { navigateToParking(item) }
-            }
-            Button("直接導航到目的地", role: .cancel) {}
-        } message: {
-            Text("停車場是依目的地附近的地圖資料列出，不含即時車位。")
-        }
         .fullScreenCover(item: $parkingLeg) { leg in
             InAppNavigationView(legs: [leg], tripName: leg.name)
         }
@@ -754,7 +748,13 @@ struct InAppNavigationView: View {
     /// side of the road), the raw fix otherwise — never hiding a real detour.
     private var displayCoordinate: CLLocationCoordinate2D? {
         guard let loc = tracker.location else { return nil }
-        if let progress, progress.distanceFromRoute <= max(12, loc.horizontalAccuracy * 1.5) { return progress.snapped }
+        let driving = transportType == .automobile
+        if let track, let progress,
+           progress.distanceFromRoute <= NavPosition.snapTolerance(accuracy: loc.horizontalAccuracy, driving: driving) {
+            // The fix is already a moment old; draw where the car has got to since, along the road.
+            let lead = NavPosition.leadMeters(speed: loc.speed, fixAge: Date().timeIntervalSince(loc.timestamp))
+            return lead > 0 ? track.coordinate(atAlong: progress.alongMeters + lead) : progress.snapped
+        }
         return loc.coordinate
     }
 
@@ -844,57 +844,25 @@ struct InAppNavigationView: View {
         }
     }
 
-    /// The real camera data's `direction` field is free-text Chinese from several
-    /// different sources (MOI: "東向西"/"往南"/"北上"/"南下"; Kaohsiung: "南向北"; Hsinchu:
-    /// "雙向") — it was never actually checked against the way the user is driving, which
-    /// is exactly why a camera facing the opposite direction still triggered a warning.
-    /// This parses out a target compass bearing and compares it to the real current
-    /// heading; anything bidirectional, unparseable, or with no heading data yet falls
-    /// back to "applies" — a false alert once in a while is far better than silently
-    /// dropping a real speed-camera warning because the text didn't match a pattern.
-    private static func speedCamDirectionApplies(_ direction: String?, heading: CLLocationDirection?) -> Bool {
-        guard let direction, !direction.isEmpty, direction != "雙向" else { return true }
-        guard let target = speedCamTargetBearing(direction) else { return true }
-        guard let heading, heading >= 0 else { return true }
-        let diff = abs((heading - target).truncatingRemainder(dividingBy: 360))
-        let angularDiff = min(diff, 360 - diff)
-        return angularDiff <= 70   // generous — GPS heading noise + road curvature, not a precise compass reading
-    }
-
-    private static let compassBearings: [(String, Double)] = [
-        ("東北", 45), ("東南", 135), ("西南", 225), ("西北", 315),
-        ("北", 0), ("南", 180), ("東", 90), ("西", 270),
-    ]
-
-    /// "東向西"/"西往東" style: the SECOND direction is the one the camera watches traffic
-    /// travel toward. "北上"/"南下" are highway-specific shorthand for the same idea.
-    private static func speedCamTargetBearing(_ direction: String) -> Double? {
-        if direction.contains("北上") { return 0 }
-        if direction.contains("南下") { return 180 }
-        if let range = direction.range(of: "向") ?? direction.range(of: "往") {
-            let after = String(direction[range.upperBound...])
-            for (name, bearing) in compassBearings where after.hasPrefix(name) { return bearing }
-        }
-        for (name, bearing) in compassBearings where direction == name { return bearing }
-        return nil   // e.g. "往國道二號方向" — no cardinal direction to parse, treat as always-applies
-    }
-
     private func recenter() {
         guard let loc = tracker.location else { return }
         let heading: CLLocationDirection = tracker.effectiveHeading ?? 0
-        // recenter() runs on every heading/location tick — the change handler above
-        // needs to know this particular camera update isn't a manual drag. `withAnimation`
-        // with no explicit duration runs ~0.35s; padding to 0.5s covers it with margin.
-        suppressFollowDetectionUntil = Date().addingTimeInterval(0.5)
-        withAnimation {
+        let driving = transportType == .automobile
+        let speed = max(loc.speed, 0)
+        let distance = NavCamera.distance(driving: driving, speed: speed)
+        // Aim the camera ahead of the user so the dot sits low on screen and the road ahead fills it,
+        // starting from the same lead-compensated point the dot is drawn at.
+        let here = displayCoordinate ?? loc.coordinate
+        let aim = Self.coordinate(here, movedMeters: NavCamera.lookAheadMeters(distance: distance), bearingDegrees: heading)
+        // recenter() runs on every heading/location tick — the change handler above needs to know this
+        // particular camera update isn't a manual drag.
+        suppressFollowDetectionUntil = Date().addingTimeInterval(NavCamera.selfUpdateSuppressionSeconds + NavCamera.followAnimationSeconds)
+        withAnimation(.easeOut(duration: NavCamera.followAnimationSeconds)) {
             camera = .camera(MapCamera(
-                centerCoordinate: loc.coordinate,
-                // Closer + flatter — a car-nav-style view, not an overview: tighter zoom
-                // and a shallower tilt read as "close to the road ahead" instead of
-                // looking down at the map from height.
-                distance: transportType == .walking ? 160 : 260,
+                centerCoordinate: aim,
+                distance: distance,
                 heading: heading,
-                pitch: 15
+                pitch: NavCamera.pitch(driving: driving)
             ))
         }
     }
@@ -928,7 +896,6 @@ struct InAppNavigationView: View {
 
     private func navigateToParking(_ item: MKMapItem) {
         parkingChosen = true
-        showParkingChoice = false
         parkingLeg = NavigationLeg(
             coordinate: item.placemark.coordinate,
             name: item.name ?? "停車場",
@@ -1002,10 +969,9 @@ struct InAppNavigationView: View {
                 announcedMilestones.insert(m)
                 speak(m >= 1000 ? "距離目的地還有一公里" : "距離目的地還有\(m)公尺", .milestone, .low)
             }
-            // Surface parking options a little before arrival, not only after — by the
-            // time you're actually stopped, you'd rather already know where to go than
-            // start searching. 50m still leaves room to react before pulling in.
-            if offersParking, distance <= 50, !earlyParkingTriggered {
+            // Parking is offered only near the end of the trip (never as a question at the start), as a list at
+            // the bottom of the screen. 400 m out leaves time to choose and turn in; the old 50 m was too late.
+            if offersParking, distance <= Self.parkingOfferDistance, !earlyParkingTriggered {
                 earlyParkingTriggered = true
                 speak("即將抵達，附近有停車場可以選擇", .parking, .low)
                 Task { await loadNearbyParking() }
@@ -1203,14 +1169,6 @@ struct InAppNavigationView: View {
         route = first
         installTrack(for: first)
         panel.reset()
-        // Before driving off: offer parking near the destination (once per trip, not on every reroute).
-        if offersParking, !parkingPromptDone {
-            parkingPromptDone = true
-            Task {
-                await loadNearbyParking()
-                if !nearbyParking.isEmpty { showParkingChoice = true }
-            }
-        }
         Task { await loadCamerasAlongRoute(first) }
         let wasOffRoute = offRoute
         offRoute = false
@@ -1356,18 +1314,20 @@ struct InAppNavigationView: View {
                 // populated cameras far ahead on the planned route; a plain replace here
                 // would wipe those back down to just this 3km circle on the very first
                 // tick after departure, undoing the whole point of prefetching the route.
-                if let cams = await SpeedCamService.nearby(near: loc.coordinate) {
+                if let cams = await SpeedCamService.nearby(near: loc.coordinate, radius: 4000, limit: 150) {
                     mergeCams(cams)
                 }
             }
         }
 
-        let announceThreshold: CLLocationDistance = 300
+        let announceThreshold = SpeedCamPolicy.announceDistance(speed: loc.speed)
         let passThreshold: CLLocationDistance = 60
         let heading: CLLocationDirection? = tracker.effectiveHeading
         var stillAhead: SpeedCam?
+        var stillAheadDistance: Int?
         for cam in nearbyCams {
-            guard Self.speedCamDirectionApplies(cam.direction, heading: heading) else { continue }
+            guard SpeedCamPolicy.directionApplies(cam.direction, heading: heading),
+                  SpeedCamPolicy.isAhead(user: loc.coordinate, cam: cam.coordinate, heading: heading) else { continue }
             let d = loc.distance(from: CLLocation(latitude: cam.lat, longitude: cam.lon))
             if d <= announceThreshold, !announcedCamIDs.contains(cam.id) {
                 announcedCamIDs.insert(cam.id)
@@ -1388,10 +1348,12 @@ struct InAppNavigationView: View {
                 // Prefer the closest still-relevant camera for the on-screen banner.
                 if stillAhead == nil || d < loc.distance(from: CLLocation(latitude: stillAhead!.lat, longitude: stillAhead!.lon)) {
                     stillAhead = cam
+                    stillAheadDistance = Int(d.rounded())
                 }
             }
         }
         upcomingCam = stillAhead
+        upcomingCamDistance = stillAheadDistance
     }
 
     private func mergeCams(_ cams: [SpeedCam]) {
@@ -1419,16 +1381,18 @@ struct InAppNavigationView: View {
         var accumulated: CLLocationDistance = 0
         for i in 1..<count {
             accumulated += points[i - 1].distance(to: points[i])
-            if accumulated >= 5000 {
+            if accumulated >= 3000 {
                 samples.append(points[i].coordinate)
                 accumulated = 0
             }
         }
         samples.append(points[count - 1].coordinate)
+        // Very long trips: the live refetch as you drive fills in whatever this cap leaves out.
+        if samples.count > 60 { samples = Array(samples.prefix(60)) }
 
         let results = await withTaskGroup(of: [SpeedCam]?.self) { group -> [[SpeedCam]] in
             for coord in samples {
-                group.addTask { await SpeedCamService.nearby(near: coord, radius: 3000) }
+                group.addTask { await SpeedCamService.nearby(near: coord, radius: 2500, limit: 200) }
             }
             var all: [[SpeedCam]] = []
             for await result in group { if let result { all.append(result) } }
