@@ -106,6 +106,8 @@ final class BusSearchViewModel {
 }
 
 struct BusSearchView: View {
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    @State private var selectedRoute: ScopedRoute?
     @State private var model = BusSearchViewModel()
     @State private var history = SearchHistoryStore.shared
     @State private var showSettings = false
@@ -114,9 +116,8 @@ struct BusSearchView: View {
         model.keyword.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
-    var body: some View {
-        NavigationStack {
-            List {
+    /// The list's content, shared by the phone layout (pushes the detail) and the wide layout (shows it beside the list).
+    @ViewBuilder private var rows: some View {
                 AnnouncementBanner(categories: ["bus"])
                     .listRowInsets(EdgeInsets())
                     .listRowSeparator(.hidden)
@@ -216,7 +217,11 @@ struct BusSearchView: View {
                                                description: Text("換個關鍵字，或用右上角篩選地區"))
                     }
                 }
-            }
+    }
+
+    /// Title, filter menu, search field and loading indicator — identical in both layouts.
+    private func decorated<Content: View>(_ content: Content) -> some View {
+        content
             .navigationTitle("公車 / 客運")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -240,11 +245,33 @@ struct BusSearchView: View {
             .onChange(of: model.keyword) { _, _ in model.search() }
             .onChange(of: model.regionFilter) { _, _ in model.search() }
             .overlay { if model.isLoading { ProgressView() } }
+            .sheet(isPresented: $showSettings) { SettingsView() }
+    }
+
+    var body: some View {
+        if sizeClass == .regular {
+            // Wide screen (iPad, unfolded / dual-screen iPhone): results on the left, the chosen route on the right.
+            NavigationSplitView {
+                decorated(List(selection: $selectedRoute) { rows })
+            } detail: {
+                NavigationStack {
+                    if let item = selectedRoute {
+                        BusRouteDetailView(scope: item.scope, route: item.route)
+                            .id(item)
+                            .onAppear { history.record(scope: item.scope, route: item.route) }
+                    } else {
+                        ContentUnavailableView("選一條路線", systemImage: "bus", description: Text("從左邊的結果挑一條，這裡會顯示到站時間與路線"))
+                    }
+                }
+            }
+        } else {
+            NavigationStack {
+                decorated(List { rows })
             .navigationDestination(for: ScopedRoute.self) { item in
                 BusRouteDetailView(scope: item.scope, route: item.route)
                     .onAppear { history.record(scope: item.scope, route: item.route) }
             }
-            .sheet(isPresented: $showSettings) { SettingsView() }
+            }
         }
     }
 }
