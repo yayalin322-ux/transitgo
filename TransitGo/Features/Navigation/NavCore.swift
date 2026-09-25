@@ -331,3 +331,119 @@ struct NavPanel {
 
     mutating func reset() { shown = nil; changedAt = nil; speedEMA = nil }
 }
+
+// MARK: - Driving camera framing
+
+/// How the follow camera frames the road. A flat, close view (the old 15° pitch at 260 m) shows barely one
+/// block ahead, which is too little warning at speed; a steeper pitch, a longer view that grows with speed, and
+/// aiming the camera *ahead* of the car (so the dot sits low on screen and the road fills the rest) shows what is
+/// coming in time to react.
+enum NavCamera {
+    static func pitch(driving: Bool) -> Double { driving ? 62 : 52 }
+
+    /// Camera-to-target distance in metres: 380 m at a standstill up to 730 m at ~126 km/h; walking stays close.
+    static func distance(driving: Bool, speed: Double) -> Double {
+        guard driving else { return 200 }
+        return 380 + min(max(speed, 0), 35) * 10
+    }
+
+    /// How far ahead of the user the camera aims, in metres. Small on purpose: at a 62° pitch the ground behind the
+    /// aim point is foreshortened, so 0.32 of the view distance put the dot ~89 % of the way down the screen —
+    /// behind the metrics card. 0.12 puts it at roughly 60 % (perspective: nadir angle of the ground point
+    /// D·sin(p) − L over D·cos(p), against the centre ray at p, with MapKit's ~30° vertical field of view), which
+    /// stays clear of the bottom card while still leaving the road ahead in the upper part of the screen.
+    static let lookAheadFraction = 0.12
+    static func lookAheadMeters(distance: Double) -> Double { distance * lookAheadFraction }
+
+    /// Fast enough to keep up with a car at 1 fix/s; the old default (~0.35 s ease) trailed the dot.
+    static let followAnimationSeconds = 0.18
+    /// A camera update we made ourselves must not be mistaken for the user dragging the map.
+    static let selfUpdateSuppressionSeconds = 0.3
+}
+
+extension RouteTrack {
+    /// The point `along` metres from the start of the route (clamped to its ends).
+    func coordinate(atAlong along: Double) -> CLLocationCoordinate2D {
+        let target = min(max(along, 0), totalMeters)
+        for i in 1..<cumulative.count where cumulative[i] >= target {
+            let seg = cumulative[i] - cumulative[i - 1]
+            let t = seg == 0 ? 0 : (target - cumulative[i - 1]) / seg
+            return frame.coordinate(x: pts[i - 1].x + t * (pts[i].x - pts[i - 1].x),
+                                    y: pts[i - 1].y + t * (pts[i].y - pts[i - 1].y))
+        }
+        return end
+    }
+}
+
+// MARK: - Position display
+
+enum NavPosition {
+    /// A fix is already `age` seconds old when it is drawn; at 100 km/h that is a car length or ten. Moving the
+    /// dot forward by what the car has travelled since (capped, and only when the speed is a real reading) makes
+    /// it sit where the car actually is instead of trailing it.
+    static func leadMeters(speed: Double, fixAge: TimeInterval) -> Double {
+        guard speed >= 2 else { return 0 }
+        return min(speed * min(max(fixAge, 0), 2), 45)
+    }
+
+    /// How far from the route a fix may be and still be drawn on the road. Wider for driving: lanes, medians and
+    /// an elevated road beside the route put a real car well over 12 m from MapKit's centre line.
+    static func snapTolerance(accuracy: Double, driving: Bool) -> Double {
+        driving ? min(40, max(25, accuracy * 2)) : max(12, accuracy * 1.5)
+    }
+}
+
+// MARK: - Speed / enforcement cameras
+
+enum SpeedCamPolicy {
+    /// Warn about 20 s ahead (never closer than 300 m, never further than 1.2 km): 300 m was only ~11 s at
+    /// highway speed, which is why alerts on a 國道 flashed past.
+    static func announceDistance(speed: Double) -> Double { min(1200, max(300, max(speed, 0) * 20)) }
+
+    /// Cameras behind the car (just passed, or on the far side of a junction) are not "ahead". Very close ones
+    /// count either way — GPS jitter should not flip a camera 20 m away to "behind".
+    static func isAhead(user: CLLocationCoordinate2D, cam: CLLocationCoordinate2D, heading: Double?) -> Bool {
+        guard let heading, heading >= 0 else { return true }
+        let f = LocalFrame(origin: user)
+        let p = f.xy(cam)
+        guard hypot(p.x, p.y) > 25 else { return true }
+        var bearing = atan2(p.x, p.y) * 180 / .pi
+        if bearing < 0 { bearing += 360 }
+        let diff = abs((heading - bearing).truncatingRemainder(dividingBy: 360))
+        return min(diff, 360 - diff) <= 100
+    }
+
+    private static let compass: [(String, Double)] = [
+        ("東北", 45), ("東南", 135), ("西南", 225), ("西北", 315),
+        ("北", 0), ("南", 180), ("東", 90), ("西", 270),
+    ]
+    private static func exact(_ s: String) -> Double? { compass.first { $0.0 == s }?.1 }
+
+    /// The compass bearing of traffic a camera watches, from the free-text `direction` of the open-data feeds
+    /// ("往南", "東向西", "西南向東北", "北向(區間測速)", "往北方向", …). `nil` = both ways / not a bearing we can read.
+    /// Real feed values that used to be misread: "往南北" (both ways) parsed as south-only, "往北方向" was not read.
+    static func targetBearing(_ direction: String) -> Double? {
+        var d = direction
+        for open in ["(", "（"] { if let r = d.range(of: open) { d = String(d[..<r.lowerBound]) } }
+        d = d.replacingOccurrences(of: "方向", with: "").trimmingCharacters(in: .whitespaces)
+        if d.isEmpty || d.contains("雙向") { return nil }
+        if d.contains("北上") { return 0 }
+        if d.contains("南下") { return 180 }
+        if let i = d.firstIndex(where: { $0 == "向" || $0 == "往" }) {
+            let after = String(d[d.index(after: i)...]).replacingOccurrences(of: "向", with: "")
+            if !after.isEmpty { return exact(after) }
+            return exact(String(d[..<i]))          // "北向" = travelling north
+        }
+        return exact(d)
+    }
+
+    /// Anything bidirectional, unreadable, or with no heading yet applies: an occasional false alert is better than
+    /// silently dropping a real one.
+    static func directionApplies(_ direction: String?, heading: Double?) -> Bool {
+        guard let direction, !direction.isEmpty else { return true }
+        guard let target = targetBearing(direction) else { return true }
+        guard let heading, heading >= 0 else { return true }
+        let diff = abs((heading - target).truncatingRemainder(dividingBy: 360))
+        return min(diff, 360 - diff) <= 70
+    }
+}
