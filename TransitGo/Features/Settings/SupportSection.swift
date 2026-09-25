@@ -21,8 +21,10 @@ struct InAppPage: Identifiable {
 /// facts a support request needs (app + system version, and the device identifier used to find your data for a deletion
 /// request).
 struct SupportSection: View {
+    /// Which page to show. The sheet that presents it is attached by the owner of the Form (SettingsView), NOT to this
+    /// Section: a presentation modifier on a Section inside a Form is not reliably hosted, and the pages simply never opened.
+    @Binding var page: InAppPage?
     @State private var copied = false
-    @State private var page: InAppPage?
     private var osText: String { "iOS " + ProcessInfo.processInfo.operatingSystemVersionString }
 
     var body: some View {
@@ -50,7 +52,6 @@ struct SupportSection: View {
         } footer: {
             Text("要求查詢或刪除你的資料時，請附上裝置識別碼（點一下即可複製）。")
         }
-        .sheet(item: $page) { SafariView(url: $0.url).ignoresSafeArea() }
     }
 
     private func pageButton(_ title: String, _ symbol: String, _ url: URL) -> some View {
