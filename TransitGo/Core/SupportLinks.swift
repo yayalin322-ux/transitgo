@@ -74,12 +74,13 @@ struct FeedbackDraft: Equatable {
          "p_app_version": appVersion, "p_os": os]
     }
 
-    /// Body of the site's `request_email_code` RPC (purpose "contact" — the same one the website's contact form uses).
-    func codeRequestBody() -> [String: String] { ["p_email": trimmedEmail, "p_purpose": "contact"] }
+    /// Body of the site's `request_email_code` RPC. Purpose "app" makes the code mail look like the app's own (sender
+    /// app@yayalin.com); "contact" is the older shared purpose, used as a fallback until the site knows "app".
+    func codeRequestBody(purpose: String = "app") -> [String: String] { ["p_email": trimmedEmail, "p_purpose": purpose] }
 }
 
 enum SiteFeedbackError: Error, Equatable {
-    case notConfigured, invalidEmail, tooManyRequests, wrongCode, conversationClosed, network
+    case notConfigured, invalidEmail, tooManyRequests, wrongCode, conversationClosed, invalidPurpose, network
 }
 
 enum SiteFeedbackService {
@@ -99,6 +100,7 @@ enum SiteFeedbackService {
         let message = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["message"] as? String ?? ""
         if message.contains("too_many_requests") { return .tooManyRequests }
         if message.contains("invalid_email") { return .invalidEmail }
+        if message.contains("invalid_purpose") { return .invalidPurpose }
         if message.contains("conversation_closed") { return .conversationClosed }
         return .network
     }
@@ -130,8 +132,12 @@ enum SiteFeedbackService {
     }
 
     static func requestCode(_ draft: FeedbackDraft) async throws {
-        let (data, status) = try await call("request_email_code", body: draft.codeRequestBody())
-        guard (200..<300).contains(status) else { throw error(fromRPCBody: data, status: status) }
+        let (data, status) = try await call("request_email_code", body: draft.codeRequestBody(purpose: "app"))
+        if (200..<300).contains(status) { return }
+        // The site has not been taught the "app" purpose yet: use the shared one so feedback keeps working.
+        guard error(fromRPCBody: data, status: status) == .invalidPurpose else { throw error(fromRPCBody: data, status: status) }
+        let (data2, status2) = try await call("request_email_code", body: draft.codeRequestBody(purpose: "contact"))
+        guard (200..<300).contains(status2) else { throw error(fromRPCBody: data2, status: status2) }
     }
 
     /// Files the feedback as a ticket (so replies can come back to this phone). Until the site's ticket SQL is installed it

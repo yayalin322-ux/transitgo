@@ -58,7 +58,8 @@ final class SupportLinksTests: XCTestCase {
     func testBodiesMatchTheWebsitesOwnContactFormRPCs() {
         var d = draft(message: "  想要小工具  ", email: " Me@Example.com ", code: " 123456 ")
         d.kind = .idea
-        XCTAssertEqual(d.codeRequestBody(), ["p_email": "me@example.com", "p_purpose": "contact"])
+        XCTAssertEqual(d.codeRequestBody(), ["p_email": "me@example.com", "p_purpose": "app"])          // the app's own mail look
+        XCTAssertEqual(d.codeRequestBody(purpose: "contact")["p_purpose"], "contact")                    // fallback for a site that predates "app"
         let body = d.submitBody(appVersion: "0.1.0", os: "iOS 26.6")
         XCTAssertEqual(body["p_name"], "TransitGo App")
         XCTAssertEqual(body["p_email"], "me@example.com")
@@ -78,6 +79,7 @@ final class SupportLinksTests: XCTestCase {
         // request_email_code raises 'too_many_requests' / 'invalid_email'; PostgREST wraps them as {"message":...}.
         XCTAssertEqual(SiteFeedbackService.error(fromRPCBody: Data(#"{"code":"P0001","message":"too_many_requests"}"#.utf8), status: 400), .tooManyRequests)
         XCTAssertEqual(SiteFeedbackService.error(fromRPCBody: Data(#"{"code":"P0001","message":"invalid_email"}"#.utf8), status: 400), .invalidEmail)
+        XCTAssertEqual(SiteFeedbackService.error(fromRPCBody: Data(#"{"code":"P0001","message":"invalid_purpose"}"#.utf8), status: 400), .invalidPurpose)
         XCTAssertEqual(SiteFeedbackService.error(fromRPCBody: Data("<html>"  .utf8), status: 502), .network)
     }
 }
