@@ -41,6 +41,7 @@ import {
 import { sanitizeSegments, sanitizeTitle, ttlMs, newToken, isToken, isExpired, isVehicle, parseTrainTrip, canRate, createRatingLedger } from "./shares.mjs";
 import { pushAnnouncement } from "./push.mjs";
 import { clampReport } from "./reports.mjs";
+import { buildStatus, allowedOrigin } from "./status.mjs";
 import { startAlertPoller } from "./alerts.mjs";
 import { startBikePoller, nearestFrom, bikePollStatus } from "./bikepoller.mjs";
 import { startSpeedcamPoller, nearestCams } from "./speedcampoller.mjs";
@@ -105,6 +106,14 @@ app.get("/v1/health", (_req, res) => {
     memory: { rssMB: mb(mem.rss), heapUsedMB: mb(mem.heapUsed), peakRssMB: mb(process.resourceUsage().maxRSS * 1024), limitMB: 512 },
     graph: { loaded: routingGraph !== null, nodeCount: routingGraph?.nodeCount ?? null, edgeCount: routingGraph?.edgeCount ?? null },
   });
+});
+
+// Public, minimal status for the website (yayalin.com/app). Readable from a browser only on our own origins.
+app.get("/v1/status", (req, res) => {
+  const origin = allowedOrigin(req.headers.origin);
+  if (origin) res.set({ "Access-Control-Allow-Origin": origin, Vary: "Origin" });
+  res.set("Cache-Control", "no-store");
+  res.json(buildStatus({ uptimeSeconds: process.uptime(), routingLoaded: routingGraph !== null }));
 });
 
 // Which storage backend is actually active — never echoes the connection string itself,
