@@ -77,7 +77,7 @@ enum SpeedCamService {
 
     /// `nil` means the backend isn't configured/reachable — callers should just skip the
     /// alert rather than treat it as "confirmed no cameras nearby".
-    static func nearby(near coord: CLLocationCoordinate2D, radius: Int = 3000) async -> [SpeedCam]? {
+    static func nearby(near coord: CLLocationCoordinate2D, radius: Int = 3000, limit: Int = 50) async -> [SpeedCam]? {
         guard let base = BackendConfig.baseURL else { return nil }
         var comps = URLComponents(url: base.appendingPathComponent("v1/speedcams/nearby"),
                                   resolvingAgainstBaseURL: false)
@@ -85,6 +85,7 @@ enum SpeedCamService {
             URLQueryItem(name: "lat", value: String(coord.latitude)),
             URLQueryItem(name: "lon", value: String(coord.longitude)),
             URLQueryItem(name: "radius", value: String(radius)),
+            URLQueryItem(name: "limit", value: String(limit)),
         ]
         guard let url = comps?.url else { return nil }
 
