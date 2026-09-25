@@ -40,6 +40,7 @@ import {
 } from "./appdata.mjs";
 import { sanitizeSegments, sanitizeTitle, ttlMs, newToken, isToken, isExpired, isVehicle, parseTrainTrip, canRate, createRatingLedger } from "./shares.mjs";
 import { pushAnnouncement } from "./push.mjs";
+import { clampReport } from "./reports.mjs";
 import { startAlertPoller } from "./alerts.mjs";
 import { startBikePoller, nearestFrom, bikePollStatus } from "./bikepoller.mjs";
 import { startSpeedcamPoller, nearestCams } from "./speedcampoller.mjs";
@@ -142,9 +143,9 @@ app.post("/v1/reports", async (req, res) => {
   hist.push(now);
   reportBucket.set(req.clientIp, hist);
 
-  const { type, message, context, appVersion, os, device } = req.body || {};
-  if (!type) return res.status(400).json({ error: "type required" });
-  await createReport({ type, message, context, appVersion, os, device, ip: req.clientIp });
+  const report = clampReport(req.body || {});
+  if (!report) return res.status(400).json({ error: "type required" });
+  await createReport({ ...report, ip: req.clientIp });
   res.json({ ok: true });
 });
 
