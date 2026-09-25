@@ -422,6 +422,7 @@ final class SpeedCamNearbyViewModel {
 // MARK: - Nearby view
 
 struct NearbyStopsView: View {
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var location = LocationManager()
     @State private var resolver = RegionResolver.shared
     @State private var mode: NearbyMode = .bus
@@ -508,10 +509,23 @@ struct NearbyStopsView: View {
             ContentUnavailableView("需要定位權限", systemImage: "location.slash",
                                    description: Text("請至「設定 › 隱私權 › 定位服務」開啟本 App 的定位權限"))
         } else if let loc = location.location {
-            VStack(spacing: 0) {
-                map(loc)
-                    .frame(height: 240)
-                list(loc)
+            // Wide screen (iPad, unfolded / dual-screen iPhone): the list on the left and the map filling the rest,
+            // both at full height; a narrow screen keeps the map above the list. All the state lives in this view,
+            // so folding or unfolding just re-lays the same data out.
+            Group {
+                if sizeClass == .regular {
+                    HStack(spacing: 0) {
+                        list(loc).frame(width: 400)
+                        Divider()
+                        map(loc)
+                    }
+                } else {
+                    VStack(spacing: 0) {
+                        map(loc)
+                            .frame(height: 240)
+                        list(loc)
+                    }
+                }
             }
             .task(id: loc.coordinate.latitude) { await resolver.resolve(for: loc) }
             .task(id: taskKey(loc)) { await reload(loc) }
