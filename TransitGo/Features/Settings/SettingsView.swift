@@ -6,6 +6,7 @@ struct SettingsView: View {
     @State private var checking = false
     @AppStorage(HabitLog.enabledKey) private var habitsEnabled = true
     @State private var confirmClearHabits = false
+    @State private var page: InAppPage?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -58,8 +59,9 @@ struct SettingsView: View {
                         .font(.caption2)
                 }
 
-                SupportSection()
+                SupportSection(page: $page)
             }
+            .sheet(item: $page) { SafariView(url: $0.url).ignoresSafeArea() }
             .navigationTitle("設定")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
