@@ -42,6 +42,7 @@ import { sanitizeSegments, sanitizeTitle, ttlMs, newToken, isToken, isExpired, i
 import { pushAnnouncement } from "./push.mjs";
 import { clampReport } from "./reports.mjs";
 import { buildStatus, allowedOrigin } from "./status.mjs";
+import { shareLinkUrl, cleanPublicOrigin, viewerIp } from "./publicUrl.mjs";
 import { startAlertPoller } from "./alerts.mjs";
 import { startBikePoller, nearestFrom, bikePollStatus } from "./bikepoller.mjs";
 import { startSpeedcamPoller, nearestCams } from "./speedcampoller.mjs";
@@ -75,7 +76,7 @@ const app = guardAsyncRoutes(express());
 // Raised from 64kb — place-review/landmark submissions can carry a base64-encoded photo.
 app.use(express.json({ limit: "2mb" }));
 app.use((req, _res, next) => {
-  req.clientIp = (req.headers["x-forwarded-for"]?.split(",")[0] || req.socket.remoteAddress || "").trim();
+  req.clientIp = viewerIp(req.headers, req.socket.remoteAddress);
   next();
 });
 
@@ -544,7 +545,7 @@ async function storeShare(req, res, token) {
     return res.status(500).json({ ok: false, error: "could not create link" });
   }
   const origin = `${req.headers["x-forwarded-proto"]?.split(",")[0] || req.protocol}://${req.get("host")}`;
-  res.json({ ok: true, token, url: `${origin}/s/${token}`, expiresAt: new Date(expiresAtMs).toISOString() });
+  res.json({ ok: true, token, url: shareLinkUrl({ token, publicOrigin: cleanPublicOrigin(process.env.PUBLIC_SHARE_ORIGIN), requestOrigin: origin }), expiresAt: new Date(expiresAtMs).toISOString() });
 }
 
 app.post("/v1/shares", (req, res) => storeShare(req, res, newToken()));

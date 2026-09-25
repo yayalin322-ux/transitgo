@@ -39,6 +39,7 @@ targets:
           - remote-notification
           - location
         BackendHost: $(BACKEND_HOST)
+        ShareBaseHost: $(SHARE_BASE_HOST)
         SiteSupabaseHost: $(SITE_SUPABASE_HOST)
         SiteSupabaseKey: $(SITE_SUPABASE_KEY)
         NSAppTransportSecurity:
