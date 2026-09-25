@@ -482,6 +482,7 @@ if (!storageConfigured()) {
 // TDX calls use the routing engine's own credentials (the iOS app's embedded TDX key is
 // currently rejected by TDX, so realtime cannot go app -> TDX directly anyway).
 const realtime = createRealtimeService({ tdxGet: getRouting, db });
+const railBoardBucket = new Map();
 // YouBike availability: ONE snapshot (the poller's shared cache), cached + de-duplicated, read by
 // route planning and by the app's availability/candidates calls alike.
 const bikeRealtime = createBikeRealtime({ loadCaches: allBikeCaches });
@@ -560,6 +561,23 @@ app.get("/v1/shares/:token", async (req, res) => {
 
 /** Live status of the shared trip's vehicles. 台鐵 legs get the train's real position (last station, next station,
  * stops left, delay) from two cached reads; every other mode goes through the ordinary realtime overlay. */
+/**
+ * A TRA station's departure board split 北上 / 南下 (see realtime/railBoard.mjs). One cached upstream read serves every
+ * device asking about the same station, so widgets on several phones cost TDX one call per 30 s, not one each.
+ */
+app.get("/v1/rail/board", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  const stationId = String(req.query.station ?? "");
+  if (!/^\d{4}$/.test(stationId)) return res.status(400).json({ ok: false, error: "station must be a 4-digit TRA station id" });
+  if (limited(railBoardBucket, req.clientIp, 120)) return res.status(429).json({ ok: false, error: "rate limited" });
+  res.json({ ok: true, ...(await realtime.railBoard({ stationId })) });
+});
+
+app.get("/v1/rail/stations", async (_req, res) => {
+  res.set("Cache-Control", "public, max-age=3600");
+  res.json({ ok: true, ...(await realtime.railStations()) });
+});
+
 app.get("/v1/shares/:token/live", async (req, res) => {
   res.set("Cache-Control", "no-store");
   if (!isToken(req.params.token) || limited(shareViewBucket, req.clientIp, 90)) return res.status(404).json({ ok: false, error: "not found" });

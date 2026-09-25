@@ -86,6 +86,9 @@ targets:
         CFBundleDisplayName: 交通即時查
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        BackendHost: $(BACKEND_HOST)
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         TDXClientID: $(TDX_CLIENT_ID)
         TDXClientSecret: $(TDX_CLIENT_SECRET)
 

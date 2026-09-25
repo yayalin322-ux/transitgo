@@ -6,6 +6,7 @@ import { metroLiveBoardPath, metroAlertPath, mapMetroLiveBoard, mapMetroAlerts }
 import { traStationBoardPath, traAlertPath, mapTraTrain, mapTraAlerts, traTrainLiveBoardPath, traTimetablePath } from "./sources/tra.mjs";
 import { parseTimetable, parseLiveRow, summarizeTrain } from "./trainProgress.mjs";
 import { thsrAlertPath, mapThsrAlerts } from "./sources/hsr.mjs";
+import { parseStationCoords, buildRailBoard } from "./railBoard.mjs";
 
 /**
  * Cache lifetimes, chosen from what each source really reports as its refresh rate
@@ -23,6 +24,7 @@ export const REALTIME_TTL_MS = Object.freeze({
   traLiveBoard: 20_000,      // one read covers every running train
   traTimetable: 6 * 3_600_000, // static for the day
   traAlert: 120_000,
+  traStations: 24 * 3_600_000, // station list + coordinates: static
   thsrAlert: 120_000,
 });
 
@@ -257,5 +259,31 @@ export function createRealtimeService({ tdxGet, db = null, cache = createRealtim
     };
   }
 
-  return { routeOverlay, busStopArrivals, trainStatus, capabilities: () => REALTIME_CAPABILITIES, cache };
+  /** One TRA station's departure board split 北上 / 南下 — the data behind the station widget and Siri's "next train". */
+  async function railBoard({ stationId }) {
+    const nowMs = now();
+    const nowHm = new Date(nowMs + 8 * 3_600_000).toISOString().slice(11, 16);
+    const [board, stations] = await Promise.all([
+      read(`tra:board:${stationId}`, traStationBoardPath(stationId), ttl.traBoard, { staleOnErrorMs: 5 * 60_000 }),
+      read("tra:stations", "v3/Rail/TRA/Station", ttl.traStations, { staleOnErrorMs: 7 * 24 * 3_600_000 }),
+    ]);
+    if (!board.ok) return { available: false, reason: board.reason, station: { id: String(stationId) } };
+    const coords = stations.ok ? parseStationCoords(stations.value) : new Map();
+    return {
+      available: true,
+      stale: !!board.stale,
+      fetchedAt: board.fetchedAt ?? null,
+      ...buildRailBoard(board.value, { stationId, coords, nowHm }),
+    };
+  }
+
+  /** Every TRA station (id + name) for pickers, from the cached station list — so devices never call TDX for it. */
+  async function railStations() {
+    const r = await read("tra:stations", "v3/Rail/TRA/Station", ttl.traStations, { staleOnErrorMs: 7 * 24 * 3_600_000 });
+    if (!r.ok) return { available: false, reason: r.reason, stations: [] };
+    const stations = [...parseStationCoords(r.value)].map(([id, s]) => ({ id, name: s.name })).sort((a, b) => a.id.localeCompare(b.id));
+    return { available: true, stations };
+  }
+
+  return { routeOverlay, busStopArrivals, trainStatus, railBoard, railStations, capabilities: () => REALTIME_CAPABILITIES, cache };
 }
