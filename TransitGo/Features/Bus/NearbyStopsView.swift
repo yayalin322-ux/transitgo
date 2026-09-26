@@ -413,7 +413,7 @@ final class SpeedCamNearbyViewModel {
     /// isLoading/errorText the way the mode view models do; a slow or failed fetch just
     /// means no camera icons yet, not a user-facing error state.
     func load(near location: CLLocation) async {
-        if let cams = await SpeedCamService.nearby(near: location.coordinate, radius: 3000) {
+        if let cams = await SpeedCamService.nearby(near: location.coordinate, radius: 3000, limit: 120) {
             items = cams
         }
     }
@@ -529,6 +529,7 @@ struct NearbyStopsView: View {
             }
             .task(id: loc.coordinate.latitude) { await resolver.resolve(for: loc) }
             .task(id: taskKey(loc)) { await reload(loc) }
+            .task(id: camTaskKey(loc)) { await camVM.load(near: loc) }
         } else {
             ContentUnavailableView {
                 Label("尚未取得位置", systemImage: "location")
@@ -759,7 +760,15 @@ struct NearbyStopsView: View {
         case .landmark:
             await landmarkVM.load(near: loc)
         }
-        await camVM.load(near: loc)
+        // Speed cameras are NOT loaded here: this function waits for the mode's own data first (bus / bike / metro / landmark,
+        // several of which lean on TDX), and camera markers used to appear only after that finished — or never, when it hung.
+        // They have their own task, see `camTaskKey`.
+    }
+
+    /// Cameras follow the position only, never the mode: switching bus / bike / metro must not refetch them, and a slow
+    /// or failing TDX call must not hold them back (the camera data comes from our own backend).
+    private func camTaskKey(_ loc: CLLocation) -> String {
+        "\(Int(loc.coordinate.latitude * 500))-\(Int(loc.coordinate.longitude * 500))"      // ≈ 220 m cells: refetch when you have really moved
     }
 }
 
