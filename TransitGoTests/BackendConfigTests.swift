@@ -30,4 +30,15 @@ final class BackendConfigTests: XCTestCase {
         XCTAssertNil(BackendConfig.url(forHost: "   "))
         XCTAssertNil(BackendConfig.url(forHost: "$(BACKEND_HOST)"))
     }
+
+    func testShopURLUsesTheBareHostNotTheAppSubpath() {
+        // ShareBaseHost is configured as "yayalin.com/app" — the shop pages live at the site's
+        // root ("yayalin.com"), a sibling of /app, not underneath it.
+        XCTAssertEqual(BackendConfig.shopURL(id: 42, host: "yayalin.com")?.absoluteString, "https://yayalin.com/shop/42")
+    }
+
+    func testShopURLIsNilWithoutAConfiguredHost() {
+        XCTAssertNil(BackendConfig.shopURL(id: 42, host: nil))
+        XCTAssertNil(BackendConfig.shopURL(id: 42, host: ""))
+    }
 }
