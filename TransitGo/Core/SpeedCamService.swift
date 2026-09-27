@@ -23,6 +23,13 @@ struct SpeedCam: Decodable, Identifiable {
     var announcement: String {
         switch kind {
         case "speed":
+            // 區間測速 averages your speed over the whole segment between two cameras — slowing
+            // for this point and speeding back up still gets caught, unlike a plain fixed camera,
+            // so it gets its own wording rather than the generic "前方有測速照相".
+            if note?.contains("區間測速") == true {
+                if let limit = speedLimit { return "前方區間測速，請將時速保持在\(limit)公里以內" }
+                return "前方進入區間測速路段，請保持速限"
+            }
             if let limit = speedLimit { return "前方有測速照相，速限\(limit)公里" }
             return "前方有測速照相"
         case "intersection":

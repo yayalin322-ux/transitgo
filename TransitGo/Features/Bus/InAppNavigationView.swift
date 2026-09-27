@@ -1289,7 +1289,13 @@ struct InAppNavigationView: View {
         let passThreshold: CLLocationDistance = transportType == .walking ? 6 : 12
 
         let nowThreshold: CLLocationDistance = transportType == .walking ? 15 : 35
-        if distanceToManeuver <= announceThreshold, !announcedStepIndices.contains(nextIndex), !nextStep.instructions.isEmpty {
+        // On a short block the "此路口右轉" for the corner just ahead and the "前方OO公尺" heads-up for
+        // the ONE AFTER IT can both become due within a couple of seconds of each other. Speaking them
+        // back to back — the second starting the instant the first ends — is what read as "already
+        // talking about the next junction" while still at this one. Holding the heads-up back while
+        // the voice is busy (it simply retries on the next fix, a second later) means it only ever
+        // speaks into actual silence.
+        if distanceToManeuver <= announceThreshold, !announcedStepIndices.contains(nextIndex), !nextStep.instructions.isEmpty, !speaker.isSpeaking {
             announcedStepIndices.insert(nextIndex)
             maneuverHaptic.impactOccurred()
             maneuverHaptic.prepare()

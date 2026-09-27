@@ -35,4 +35,16 @@ final class EnforcementWordingTests: XCTestCase {
     func testParkingCameraAnnouncement() throws {
         XCTAssertEqual(try cam(kind: "violation", note: "違規（臨時）停車、違規上客、違規攬客").announcement, "前方有違規照相，取締違規停車、違規上客、違規攬客")
     }
+
+    // 區間測速 (average speed over a road segment) needs different driving advice from a plain fixed
+    // camera — slowing down right at this point and speeding back up afterwards still gets caught.
+    func testSectionSpeedCameraGetsItsOwnWording() throws {
+        let c = try cam(kind: "speed", note: "區間測速（新北市政府警察局交通警察大隊）", limit: 70)
+        XCTAssertEqual(c.announcement, "前方區間測速，請將時速保持在70公里以內")
+    }
+
+    func testSectionSpeedCameraWithoutAKnownLimitStillSaysItsASection() throws {
+        let c = try cam(kind: "speed", note: "區間測速（新北市政府警察局交通警察大隊）")
+        XCTAssertEqual(c.announcement, "前方進入區間測速路段，請保持速限")
+    }
 }

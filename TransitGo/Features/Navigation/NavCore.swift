@@ -261,6 +261,7 @@ struct SpeechGate {
     private var lastText: String?
     private var lastAt = Date.distantPast
     private var speaking: SpeechPriority?
+    var isSpeaking: Bool { speaking != nil }
 
     mutating func decide(_ text: String, priority: SpeechPriority, now: Date) -> Action {
         if text == lastText, now.timeIntervalSince(lastAt) < Self.repeatWindow { return .skip }
