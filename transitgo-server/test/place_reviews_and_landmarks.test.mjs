@@ -10,7 +10,7 @@ const {
   createPlaceReview, listPlaceReviews, listMyPlaceReviews, deletePlaceReviewByDevice,
   createUserLandmark, listApprovedLandmarksNear, getApprovedLandmark, listAllUserLandmarks,
   listMyUserLandmarks, updateMyUserLandmark, searchApprovedLandmarks, claimUserLandmark,
-  approveUserLandmark, LANDMARK_CATEGORIES,
+  approveUserLandmark, listVerifiedBusinesses, LANDMARK_CATEGORIES,
 } = await import("../src/db.mjs");
 const { requestSiteEmailCode, verifySiteEmailCode } = await import("../src/siteEmailCode.mjs");
 
@@ -154,6 +154,26 @@ await createUserLandmark({ name: "另一家五金行（還沒審核）", descrip
   const hits = await searchApprovedLandmarks("五金");
   check("name search finds the approved landmark by a substring of its name", hits.some((l) => l.name === "巷口五金行"));
   check("name search never returns an unapproved landmark, even with a matching name", !hits.some((l) => l.name === "另一家五金行（還沒審核）"));
+}
+
+// ---- directory: browsable list of verified businesses (yayalin.com/shop's index page) ----
+{
+  const { businesses, total } = await listVerifiedBusinesses();
+  check("directory includes the verified dentist claim", businesses.some((b) => b.name === "小林牙醫"));
+  check("directory includes the claimed 五金行 too", businesses.some((b) => b.name === "巷口五金行"));
+  check("directory never includes an unverified landmark", !businesses.some((b) => b.name === "另一家五金行（還沒審核）"));
+  check("total reflects the real count, not just the returned page", total === businesses.length);
+  check("directory hides phone/email — only what a public listing page should show", !("phone" in businesses[0]) && !("email" in businesses[0]));
+}
+{
+  const { businesses } = await listVerifiedBusinesses({ category: "dentist" });
+  check("category filter narrows the list", businesses.length === 1 && businesses[0].name === "小林牙醫");
+}
+{
+  const { businesses: page1, total } = await listVerifiedBusinesses({ limit: 1, offset: 0 });
+  const { businesses: page2 } = await listVerifiedBusinesses({ limit: 1, offset: 1 });
+  check("pagination: limit is honoured", page1.length === 1);
+  check("pagination: offset moves to the next distinct item (sorted by name)", total >= 2 && page1[0].id !== page2[0]?.id);
 }
 
 // ---- category taxonomy: fine-grained, and the old coarse strings never end up stored again ----

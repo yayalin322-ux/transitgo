@@ -963,6 +963,30 @@ export async function searchApprovedLandmarks(query, limit = 20) {
 }
 
 /**
+ * Verified businesses, browsable — yayalin.com/shop's directory page (as opposed to
+ * yayalin.com/shop/:id, which needs the id already). Only `business_verified` landmarks: an
+ * unclaimed community-added landmark has no business info to show and shouldn't read as "here
+ * are our businesses" alongside real ones.
+ */
+export async function listVerifiedBusinesses({ category, limit = 60, offset = 0 } = {}) {
+  const cappedLimit = Math.min(200, Math.max(1, limit));
+  const params = [];
+  let where = "approved = 1 AND business_verified = 1";
+  if (category) { where += ` AND category = ?`; params.push(category); }
+  const rows = await db.prepare(`
+    SELECT * FROM user_landmarks WHERE ${where} ORDER BY name LIMIT ? OFFSET ?
+  `).all(...params, cappedLimit, offset);
+  const total = (await db.prepare(`SELECT COUNT(*) c FROM user_landmarks WHERE ${where}`).get(...params))?.c ?? 0;
+  return {
+    businesses: rows.map((r) => ({
+      id: r.id, name: r.name, description: r.description, category: r.category,
+      businessHours: r.business_hours, businessStatus: r.business_status ?? "open",
+    })),
+    total: Number(total),
+  };
+}
+
+/**
  * A business owner claiming an EXISTING landmark (already approved, community-added or
  * otherwise) that nobody has verified yet — as opposed to submitting a brand new one (see
  * createUserLandmark). The Email is already verified by the caller (POST
