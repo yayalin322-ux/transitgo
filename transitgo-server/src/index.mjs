@@ -16,9 +16,11 @@ import {
   routeRatingStats,
   createPlaceReview,
   listPlaceReviews,
+  listMyPlaceReviews,
   placeReviewStats,
   reportPlaceReview,
   deletePlaceReview,
+  deletePlaceReviewByDevice,
   listAllPlaceReviews,
   createUserLandmark,
   listApprovedLandmarksNear,
@@ -46,6 +48,7 @@ import { shareLinkUrl, cleanPublicOrigin, viewerIp } from "./publicUrl.mjs";
 import { startAlertPoller } from "./alerts.mjs";
 import { startBikePoller, nearestFrom, bikePollStatus } from "./bikepoller.mjs";
 import { startSpeedcamPoller, nearestCams } from "./speedcampoller.mjs";
+import { requestSiteEmailCode, verifySiteEmailCode } from "./siteEmailCode.mjs";
 import { db } from "./db.mjs";
 import { logMemorySummary, startMemorySampler } from "./graph/memlog.mjs";
 import { RebuildLock } from "./graph/rebuildLock.mjs";
@@ -193,6 +196,25 @@ function validPhoto(photo) {
   return photo.length <= 2_000_000;
 }
 
+// ---- email verification (borrowed from yayalin.com — see src/siteEmailCode.mjs) ----
+// Shared by reviews and business-landmark claims below: both need "prove you own this
+// inbox" before anything goes live, and there's no reason to build two separate flows.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const emailCodeBucket = new Map();
+app.post("/v1/email-code/request", async (req, res) => {
+  const now = Date.now();
+  const hist = (emailCodeBucket.get(req.clientIp) || []).filter((t) => now - t < 3_600_000);
+  if (hist.length >= 5) return res.status(429).json({ error: "rate limited" });
+  hist.push(now);
+  emailCodeBucket.set(req.clientIp, hist);
+
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  if (!EMAIL_RE.test(email)) return res.status(400).json({ error: "invalid email" });
+  const ok = await requestSiteEmailCode(email);
+  if (!ok) return res.status(502).json({ error: "send failed" });
+  res.json({ ok: true });
+});
+
 // ---- place reviews (real user-submitted content, no external Places API) ----
 const placeReviewBucket = new Map();
 app.post("/v1/places/reviews", async (req, res) => {
@@ -202,12 +224,19 @@ app.post("/v1/places/reviews", async (req, res) => {
   hist.push(now);
   placeReviewBucket.set(req.clientIp, hist);
 
-  const { placeKey, placeName, lat, lon, stars, comment, photo, appVersion, device } = req.body || {};
+  const { placeKey, placeName, lat, lon, stars, comment, photo, appVersion, device, email, code } = req.body || {};
   const n = parseInt(stars, 10);
   if (!placeKey || !placeName) return res.status(400).json({ error: "placeKey and placeName required" });
   if (!(n >= 1 && n <= 5)) return res.status(400).json({ error: "stars 1-5 required" });
   if (!validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
-  await createPlaceReview({ placeKey, placeName, lat, lon, stars: n, comment, photo, appVersion, device, ip: req.clientIp });
+  // Every review now needs a verified email — anonymous drive-by comments were the whole
+  // problem this is fixing. Re-submitting from the same device (the upsert path in
+  // createPlaceReview) still has to re-prove ownership; there's no "already verified, skip
+  // it next time" shortcut, since the code itself already only works once.
+  const cleanEmail = String(email || "").trim().toLowerCase();
+  if (!EMAIL_RE.test(cleanEmail)) return res.status(400).json({ error: "invalid email" });
+  if (!(await verifySiteEmailCode(cleanEmail, String(code || "")))) return res.status(400).json({ error: "invalid code" });
+  await createPlaceReview({ placeKey, placeName, lat, lon, stars: n, comment, photo, appVersion, device, email: cleanEmail, ip: req.clientIp });
   res.json({ ok: true });
 });
 
@@ -215,6 +244,25 @@ app.get("/v1/places/reviews", async (req, res) => {
   const placeKey = typeof req.query.placeKey === "string" ? req.query.placeKey : null;
   if (!placeKey) return res.status(400).json({ error: "placeKey required" });
   res.json({ stats: await placeReviewStats(placeKey), reviews: await listPlaceReviews(placeKey) });
+});
+
+/** This device's own reviews (any place) — same shape as /v1/landmarks/mine, so the app can
+ * show "your review" with a delete button without the public listing ever revealing whose
+ * device posted what. */
+app.get("/v1/places/reviews/mine", async (req, res) => {
+  const device = typeof req.query.device === "string" ? req.query.device : null;
+  res.json({ reviews: await listMyPlaceReviews(device) });
+});
+
+/** Self-service delete — the poster's own device, no admin needed. Same ownership check as
+ * "my landmarks" below; a wrong/missing device id looks identical to "not found" on purpose. */
+app.delete("/v1/places/reviews/:id", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
+  const device = typeof req.body?.device === "string" ? req.body.device : null;
+  const ok = await deletePlaceReviewByDevice(id, device);
+  if (!ok) return res.status(404).json({ error: "not found" });
+  res.json({ ok: true });
 });
 
 const placeReviewReportBucket = new Map();
@@ -246,11 +294,24 @@ app.post("/v1/landmarks", async (req, res) => {
   hist.push(now);
   landmarkBucket.set(req.clientIp, hist);
 
-  const { name, description, category, lat, lon, photo, isBusinessClaim, businessHours, phone, appVersion, device } = req.body || {};
+  const { name, description, category, lat, lon, photo, isBusinessClaim, businessHours, phone, appVersion, device, email, code } = req.body || {};
   if (!name || typeof name !== "string") return res.status(400).json({ error: "name required" });
   if (typeof lat !== "number" || typeof lon !== "number") return res.status(400).json({ error: "lat/lon required" });
   if (!validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
-  await createUserLandmark({ name, description, category, lat, lon, photo, isBusinessClaim, businessHours, phone, appVersion, device, ip: req.clientIp });
+  // A plain community landmark suggestion needs no email — only a business claim does,
+  // since that's the case where "verified" starts meaning something (hours/phone shown to
+  // other users, later self-editing). The admin's manual "verify-business" button still
+  // exists as a fallback for whoever can't get a code (typo'd email, corporate spam filter…).
+  let cleanEmail = null;
+  if (isBusinessClaim) {
+    cleanEmail = String(email || "").trim().toLowerCase();
+    if (!EMAIL_RE.test(cleanEmail)) return res.status(400).json({ error: "invalid email" });
+    if (!(await verifySiteEmailCode(cleanEmail, String(code || "")))) return res.status(400).json({ error: "invalid code" });
+  }
+  await createUserLandmark({
+    name, description, category, lat, lon, photo, isBusinessClaim, businessHours, phone, appVersion, device,
+    email: cleanEmail, businessVerified: isBusinessClaim ? true : false, ip: req.clientIp,
+  });
   res.json({ ok: true });
 });
 
@@ -259,7 +320,7 @@ app.get("/v1/landmarks", async (req, res) => {
   const lat = parseFloat(req.query.lat);
   const lon = parseFloat(req.query.lon);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return res.status(400).json({ error: "lat/lon required" });
-  const radius = Number.isFinite(parseFloat(req.query.radius)) ? parseFloat(req.query.radius) : 1000;
+  const radius = Math.min(50_000, Number.isFinite(parseFloat(req.query.radius)) ? parseFloat(req.query.radius) : 1000);
   res.json({ landmarks: await listApprovedLandmarksNear(lat, lon, radius) });
 });
 

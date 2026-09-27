@@ -45,8 +45,16 @@ enum PlaceReviewService {
         return (decoded.stats, decoded.reviews)
     }
 
-    static func submit(name: String, coordinate: CLLocationCoordinate2D, stars: Int, comment: String, photo: String? = nil) {
-        guard let base = BackendConfig.baseURL else { return }
+    enum SubmitResult { case ok, invalidCode, failed }
+
+    /// A verified Email is required now — see the server's /v1/places/reviews for why
+    /// (anonymous drive-by comments were the whole problem). Get a code first with
+    /// `EmailVerificationService.requestCode(email:)`.
+    static func submit(
+        name: String, coordinate: CLLocationCoordinate2D, stars: Int, comment: String,
+        email: String, code: String, photo: String? = nil
+    ) async -> SubmitResult {
+        guard let base = BackendConfig.baseURL else { return .failed }
         var payload: [String: Any] = [
             "placeKey": key(name: name, coordinate: coordinate),
             "placeName": name,
@@ -56,15 +64,54 @@ enum PlaceReviewService {
             "comment": comment,
             "appVersion": BackendConfig.appVersion,
             "device": BackendConfig.deviceID,
+            "email": email,
+            "code": code,
         ]
         if let photo { payload["photo"] = photo }
-        Task {
-            var req = URLRequest(url: base.appendingPathComponent("v1/places/reviews"))
-            req.httpMethod = "POST"
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-            _ = try? await URLSession.shared.data(for: req)
-        }
+        var req = URLRequest(url: base.appendingPathComponent("v1/places/reviews"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        guard let (_, resp) = try? await URLSession.shared.data(for: req),
+              let status = (resp as? HTTPURLResponse)?.statusCode else { return .failed }
+        if status == 200 { return .ok }
+        return status == 400 ? .invalidCode : .failed
+    }
+
+    /// Self-service delete: only the device that posted it can remove it — no separate token,
+    /// the app already sends its own device id on every review it posts.
+    @discardableResult
+    static func deleteMine(id: Int) async -> Bool {
+        guard let base = BackendConfig.baseURL else { return false }
+        var req = URLRequest(url: base.appendingPathComponent("v1/places/reviews/\(id)"))
+        req.httpMethod = "DELETE"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["device": BackendConfig.deviceID])
+        guard let (_, resp) = try? await URLSession.shared.data(for: req) else { return false }
+        return (resp as? HTTPURLResponse)?.statusCode == 200
+    }
+
+    /// This device's own reviews (any place) — lets the app show "your review" with a delete
+    /// button, without the public /v1/places/reviews listing ever revealing whose device posted
+    /// what (same principle as UserLandmarkService.mine()).
+    struct MyPlaceReview: Decodable, Identifiable {
+        let id: Int
+        let placeKey: String
+        let placeName: String
+        let stars: Int
+        let comment: String
+        let photo: String?
+        let createdAt: String
+    }
+    static func mine() async -> [MyPlaceReview] {
+        guard let base = BackendConfig.baseURL else { return [] }
+        var comps = URLComponents(url: base.appendingPathComponent("v1/places/reviews/mine"), resolvingAgainstBaseURL: false)
+        comps?.queryItems = [URLQueryItem(name: "device", value: BackendConfig.deviceID)]
+        struct Response: Decodable { let reviews: [MyPlaceReview] }
+        guard let url = comps?.url,
+              let (data, _) = try? await URLSession.shared.data(from: url),
+              let decoded = try? JSONDecoder().decode(Response.self, from: data) else { return [] }
+        return decoded.reviews
     }
 
     /// Flags a review as inappropriate — visible to admins as a categorized report

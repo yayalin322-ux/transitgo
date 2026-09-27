@@ -156,11 +156,6 @@ final class TransferPlannerViewModel {
     /// match first, then distance, and collapse near-duplicate entries (sub-tenants of
     /// the same building) down to one.
     static func searchLandmarks(_ keyword: String, near: CLLocationCoordinate2D) async -> [DestinationCandidate] {
-        let request = MKLocalSearch.Request()
-        request.naturalLanguageQuery = keyword
-        request.region = MKCoordinateRegion(center: near, span: MKCoordinateSpan(latitudeDelta: 0.3, longitudeDelta: 0.3))
-        request.resultTypes = [.pointOfInterest, .address]
-        guard let response = try? await MKLocalSearch(request: request).start() else { return [] }
         let nearLoc = CLLocation(latitude: near.latitude, longitude: near.longitude)
 
         func matchRank(_ name: String) -> Int {
@@ -171,24 +166,46 @@ final class TransferPlannerViewModel {
             return 3   // matched on something other than its own name (category, address…)
         }
 
-        let ranked = response.mapItems.compactMap { item -> (item: MKMapItem, rank: Int, distance: CLLocationDistance)? in
-            guard let name = item.name else { return nil }
-            let d = CLLocation(latitude: item.placemark.coordinate.latitude, longitude: item.placemark.coordinate.longitude).distance(from: nearLoc)
-            return (item, matchRank(name), d)
-        }.sorted { $0.rank != $1.rank ? $0.rank < $1.rank : $0.distance < $1.distance }
+        async let appleTask: [MKMapItem] = {
+            let request = MKLocalSearch.Request()
+            request.naturalLanguageQuery = keyword
+            request.region = MKCoordinateRegion(center: near, span: MKCoordinateSpan(latitudeDelta: 0.3, longitudeDelta: 0.3))
+            request.resultTypes = [.pointOfInterest, .address]
+            return (try? await MKLocalSearch(request: request).start())?.mapItems ?? []
+        }()
+        // Our own users' approved landmarks (a small local shop Apple's POI index doesn't have,
+        // etc.) — otherwise these only ever showed as a pin on 附近, never reachable from here.
+        // The 0.3° search span above is ~33 km at Taiwan's latitude; match that radius so both
+        // sources are looking at the same area.
+        async let ownTask = UserLandmarkService.nearby(near, radiusMeters: 33_000)
+
+        var ranked: [(name: String, subtitle: String?, coordinate: CLLocationCoordinate2D, kind: TripEndpointKind, rank: Int, distance: CLLocationDistance)] = []
+        for item in await appleTask {
+            guard let name = item.name else { continue }
+            let c = item.placemark.coordinate
+            let d = CLLocation(latitude: c.latitude, longitude: c.longitude).distance(from: nearLoc)
+            ranked.append((name, item.placemark.title, c, item.pointOfInterestCategory != nil ? .poi : .address, matchRank(name), d))
+        }
+        for l in await ownTask {
+            let rank = matchRank(l.name)
+            guard rank < 3 else { continue }
+            let d = CLLocation(latitude: l.lat, longitude: l.lon).distance(from: nearLoc)
+            // Rank ties with an equally-matched Apple result sort first — it's real content
+            // someone in the app actually added, not a guess at what Apple's index has.
+            ranked.append((l.name, l.description.isEmpty ? nil : l.description, l.coordinate, .poi, rank, d - 1))
+        }
+        ranked.sort { $0.rank != $1.rank ? $0.rank < $1.rank : $0.distance < $1.distance }
 
         var out: [DestinationCandidate] = []
         for entry in ranked {
-            let c = entry.item.placemark.coordinate
-            // Same building's sub-tenants land within a few metres of each other —
-            // keep only the first (best-ranked) one per cluster.
+            // Same building's sub-tenants (or our own landmark duplicating an Apple POI) land
+            // within a few metres of each other — keep only the first (best-ranked) one per cluster.
             let isDuplicate = out.contains { existing in
                 CLLocation(latitude: existing.coordinate.latitude, longitude: existing.coordinate.longitude)
-                    .distance(from: CLLocation(latitude: c.latitude, longitude: c.longitude)) < 40
+                    .distance(from: CLLocation(latitude: entry.coordinate.latitude, longitude: entry.coordinate.longitude)) < 40
             }
-            guard !isDuplicate, let name = entry.item.name else { continue }
-            out.append(DestinationCandidate(name: name, subtitle: entry.item.placemark.title, coordinate: c, isLandmark: true,
-                                            kind: entry.item.pointOfInterestCategory != nil ? .poi : .address))
+            guard !isDuplicate else { continue }
+            out.append(DestinationCandidate(name: entry.name, subtitle: entry.subtitle, coordinate: entry.coordinate, isLandmark: true, kind: entry.kind))
             if out.count >= 8 { break }
         }
         return out
