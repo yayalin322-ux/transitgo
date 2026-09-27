@@ -222,6 +222,8 @@ struct InAppNavigationView: View {
     /// boarding scan, so the UI always labels it "推測" (inferred).
     @State private var currentVehiclePlate: String?
     @State private var errorText: String?
+    /// Only speak the "no highway-free route" warning once per navigation session, not on every reroute.
+    @State private var highwayWarningSpoken = false
     @State private var lastRerouteAt = Date.distantPast
     @State private var followUser = true
     @State private var activity: Activity<NavigationTripAttributes>?
@@ -1160,6 +1162,13 @@ struct InAppNavigationView: View {
                 // Legally can't use the only route MapKit found (機車/腳踏車/行人 on a
                 // 國道) — say so plainly rather than silently sending them onto it.
                 highwayWarning = "找不到避開國道的路線，請注意目前路線可能不適用於您的交通方式"
+                // A banner alone is easy to miss while riding — this is the one case where the
+                // app is about to send a scooter/bike/pedestrian onto a road they may not
+                // legally use, so it has to be said out loud, not just shown silently.
+                if !highwayWarningSpoken {
+                    highwayWarningSpoken = true
+                    speak(highwayWarning!, .offRoute, .high)
+                }
             }
         }
         if transportType == .automobile, let best = RouteScoring.bestIndex(pool.map(RouteScoring.option(from:))) {
@@ -1219,7 +1228,14 @@ struct InAppNavigationView: View {
     private func checkOffRoute(_ loc: CLLocation) {
         guard route != nil, let progress, !isRouting, parkingLeg == nil else { return }
         let mode: OffRouteDetector.Mode = transportType == .walking ? .walking : .vehicle
-        let strayed = offRouteDetector.update(distanceFromRoute: progress.distanceFromRoute, accuracy: loc.horizontalAccuracy, mode: mode)
+        // Below ~9 km/h course readings are noisy (stopped at a light, crawling in a lot) —
+        // only trust the heading-vs-road-direction check while actually moving.
+        var headingDiff: Double?
+        if mode == .vehicle, loc.speed >= 2.5, let heading = tracker.effectiveHeading {
+            let diff = abs((heading - progress.bearingDegrees).truncatingRemainder(dividingBy: 360))
+            headingDiff = min(diff, 360 - diff)
+        }
+        let strayed = offRouteDetector.update(distanceFromRoute: progress.distanceFromRoute, accuracy: loc.horizontalAccuracy, mode: mode, headingDiffDegrees: headingDiff)
         if strayed, !offRoute { speak("已偏離路線，重新規劃路線中", .offRoute, .high) }
         offRoute = strayed
         if strayed, Date().timeIntervalSince(lastRerouteAt) > 6 {
@@ -1252,13 +1268,21 @@ struct InAppNavigationView: View {
         // A fixed 150m warning felt premature at low/parking-lot speed and late on a
         // fast road — scaling it off the real current speed (≈8 real seconds of
         // lead time, clamped to a sane range) is what turn-by-turn apps actually do.
-        let announceThreshold: CLLocationDistance
+        var announceThreshold: CLLocationDistance
         if transportType == .walking {
             announceThreshold = 60
         } else if loc.speed >= 0 {
             announceThreshold = min(220, max(50, loc.speed * 8))
         } else {
             announceThreshold = 150
+        }
+        // On a short city block the speed-based lead can reach further than the block itself —
+        // "前方OO公尺右轉" then fires while still turning off the PREVIOUS street, before this
+        // one has really started, which reads as announced too early. Never look further ahead
+        // than most of this step's own length once it is known (a step under ~15 m is too short
+        // to measure meaningfully and keeps the speed-based lead).
+        if transportType != .walking, nextStep.distance > 15 {
+            announceThreshold = min(announceThreshold, nextStep.distance * 0.8)
         }
         // With road distance the "passed it" test can be tight: 35 m switched the banner to the NEXT turn while
         // the current one was still ahead — the instructions "jumped" too early.

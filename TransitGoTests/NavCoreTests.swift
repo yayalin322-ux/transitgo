@@ -128,6 +128,30 @@ final class NavCoreTests: XCTestCase {
         XCTAssertLessThanOrEqual(OffRouteDetector.threshold(mode: .vehicle, accuracy: 500), 70)
     }
 
+    // A wrong turn onto a street that runs close and parallel to the planned one (common on a dense
+    // city grid) stays under the plain distance threshold — the driver's heading no longer matching
+    // the planned road is what actually gives it away.
+    func testAWrongTurnOntoAParallelStreetIsCaughtByHeadingEvenWhenClose() {
+        var d = OffRouteDetector()
+        // 35 m off, good fix: under the ~40 m vehicle threshold at this accuracy — distance alone would miss it.
+        XCTAssertFalse(d.update(distanceFromRoute: 35, accuracy: 5, mode: .vehicle, headingDiffDegrees: 90))
+        XCTAssertTrue(d.update(distanceFromRoute: 35, accuracy: 5, mode: .vehicle, headingDiffDegrees: 90))
+    }
+
+    // Genuinely on the planned road (heading matches it), the same 35 m of GPS wobble must not trigger.
+    func testHeadingMatchingTheRouteNeverTightensTheThreshold() {
+        var d = OffRouteDetector()
+        XCTAssertFalse(d.update(distanceFromRoute: 35, accuracy: 5, mode: .vehicle, headingDiffDegrees: 5))
+        XCTAssertFalse(d.update(distanceFromRoute: 35, accuracy: 5, mode: .vehicle, headingDiffDegrees: 5))
+    }
+
+    // No heading available (stopped, walking, poor fix) — behaves exactly like the plain distance check.
+    func testNoHeadingFallsBackToPlainDistanceCheck() {
+        var d = OffRouteDetector()
+        XCTAssertFalse(d.update(distanceFromRoute: 35, accuracy: 5, mode: .vehicle))
+        XCTAssertFalse(d.update(distanceFromRoute: 35, accuracy: 5, mode: .vehicle))
+    }
+
     // MARK: remaining time
 
     func testRemainingTimeCountsDownWithProgress() {
