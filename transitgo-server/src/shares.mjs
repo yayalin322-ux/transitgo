@@ -108,6 +108,15 @@ export function ttlMs(hours) {
 export function newToken() { return randomBytes(16).toString("base64url"); }
 export const isToken = (t) => typeof t === "string" && /^[A-Za-z0-9_-]{22}$/.test(t);
 
+/**
+ * share.html's Content-Security-Policy. Locked down (`default-src 'none'`), but with explicit
+ * allowances for what the page actually loads — most importantly `img-src`, which must cover
+ * wherever the page's own logo `<img>` is hosted (yayalin.com). Missed once already: the logo
+ * was added to the page without updating this policy, so it silently never rendered (no img-src
+ * meant `default-src 'none'` blocked every image outright) — a regression test pins this.
+ */
+export const SHARE_PAGE_CSP = "default-src 'none'; img-src 'self' https://yayalin.com; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'";
+
 /** True when there is no such share or its time has run out — a viewer never sees the stored trip then. */
 export function isExpired(row, nowMs = Date.now()) { return !row || Number(row.expires_at_ms) <= nowMs; }
 
