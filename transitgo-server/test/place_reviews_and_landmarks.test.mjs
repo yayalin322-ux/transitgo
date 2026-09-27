@@ -8,7 +8,7 @@ process.env.DB_PATH = join(mkdtempSync(join(tmpdir(), "reviews-landmarks-")), "t
 delete process.env.DATABASE_URL;
 const {
   createPlaceReview, listPlaceReviews, listMyPlaceReviews, deletePlaceReviewByDevice,
-  createUserLandmark, listApprovedLandmarksNear, listAllUserLandmarks,
+  createUserLandmark, listApprovedLandmarksNear, getApprovedLandmark, listAllUserLandmarks,
   listMyUserLandmarks, updateMyUserLandmark, searchApprovedLandmarks, claimUserLandmark,
   approveUserLandmark, LANDMARK_CATEGORIES,
 } = await import("../src/db.mjs");
@@ -162,6 +162,25 @@ await createUserLandmark({ name: "測試舊分類", description: "", category: "
 {
   const [row] = await listAllUserLandmarks().then((all) => all.filter((l) => l.name === "測試舊分類"));
   check("an old, no-longer-recognised category falls back to 'other' on a fresh insert (not silently accepted)", row.category === "other");
+}
+
+// ---- a single landmark, public — the yayalin.com/shop/:id page's data source ----
+await createUserLandmark({
+  name: "老王牛肉麵", description: "在地老店", category: "restaurant", lat: 24.88, lon: 121.05,
+  isBusinessClaim: true, businessVerified: true, businessHours: "11-14, 17-20", phone: "03-5551234",
+  device: "wang-phone", email: "wang@b.com", ip: "1.1.1.1",
+});
+await createUserLandmark({ name: "還沒審核的攤位", description: "", category: "other", lat: 24.881, lon: 121.051, device: "x", ip: "1.1.1.1" });
+{
+  const [shop] = await listAllUserLandmarks().then((all) => all.filter((l) => l.name === "老王牛肉麵"));
+  check("not approved yet: the public single-landmark lookup returns nothing", (await getApprovedLandmark(shop.id)) === null);
+  await approveUserLandmark(shop.id);
+  const page = await getApprovedLandmark(shop.id);
+  check("once approved: shows the verified business's hours and phone", page?.name === "老王牛肉麵" && page?.businessHours === "11-14, 17-20" && page?.phone === "03-5551234");
+  check("a made-up id returns null, not a crash", (await getApprovedLandmark(999999)) === null);
+
+  const [unapproved] = await listAllUserLandmarks().then((all) => all.filter((l) => l.name === "還沒審核的攤位"));
+  check("an unapproved landmark's id is never resolvable this way either", (await getApprovedLandmark(unapproved.id)) === null);
 }
 
 process.exit(failed ? 1 : 0);

@@ -242,6 +242,15 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
       businessVerified: !!r.business_verified, businessStatus: r.business_verified ? (r.business_status || "open") : "open",
     }));
   }
+  async function getApprovedLandmark(id) {
+    const r = await store.get("user_landmarks", id);
+    if (!r || !r.approved) return null;
+    return {
+      id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
+      businessHours: r.business_verified ? r.business_hours : null, phone: r.business_verified ? r.phone : null,
+      businessVerified: !!r.business_verified, businessStatus: r.business_verified ? (r.business_status || "open") : "open",
+    };
+  }
   async function listAllUserLandmarks(limit = 200) {
     const rows = await store.list("user_landmarks", { orderBy: [["approved", "asc"], ["created_at", "desc"]], limit });
     return Promise.all(rows.map(async (r) => ({
@@ -344,7 +353,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     createObservation, listObservations,
     setBikeCache, getBikeCache, allBikeCaches, setSpeedcamCache, getSpeedcamCache,
     createPlaceReview, listPlaceReviews, listMyPlaceReviews, reportPlaceReview, deletePlaceReview, deletePlaceReviewByDevice, listAllPlaceReviews, placeReviewStats,
-    createUserLandmark, listApprovedLandmarksNear, listAllUserLandmarks, approveUserLandmark, verifyUserLandmarkBusiness,
+    createUserLandmark, listApprovedLandmarksNear, getApprovedLandmark, listAllUserLandmarks, approveUserLandmark, verifyUserLandmarkBusiness,
     deleteUserLandmark, reportUserLandmark, listMyUserLandmarks, updateMyUserLandmark,
     searchApprovedLandmarks, claimUserLandmark,
     getAlertState, setAlertState,
