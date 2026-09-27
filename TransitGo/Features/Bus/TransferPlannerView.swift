@@ -424,24 +424,27 @@ struct TransferPlannerView: View {
 
     private var effectiveOrigin: CLLocationCoordinate2D { model.originOverride?.coordinate ?? origin }
     @State private var previewTarget: RoutePreviewTarget?
-    @State private var shareLiveLocationPromptRoute: MultimodalRoute?
+    /// 安全分享: off by default, set right here on the same page — no separate confirm screen.
+    @State private var shareLiveLocationOn = false
     @State private var livePusher = LiveLocationPusher()
     /// Sharing goes through InstantShare: the link exists at once and the share sheet is presented from UIKit, so the row
     /// this button is in being rebuilt by a realtime refresh can no longer dismiss it.
-    private func share(_ route: MultimodalRoute, shareLiveLocation: Bool) {
+    private func share(_ route: MultimodalRoute) {
         let name = model.destination?.name ?? "目的地"
-        let prepared = ShareTripService.prepare(route: route, title: "前往\(name)", shareLiveLocation: shareLiveLocation)
+        let prepared = ShareTripService.prepare(route: route, title: "前往\(name)", shareLiveLocation: shareLiveLocationOn)
         InstantShare.run(prepared,
-                         message: "我搭這趟前往\(name)，可以看班次狀態（6 小時內有效" + (shareLiveLocation ? "，我也開啟了即時位置分享）：" : "，不含我的位置）："))
+                         message: "我搭這趟前往\(name)，可以看班次狀態（6 小時內有效" + (shareLiveLocationOn ? "，我也開啟了即時位置分享）：" : "，不含我的位置）："))
         // Only start pushing coordinates once the link actually exists AND the sharer opted in —
         // never for the default (off) share.
-        if shareLiveLocation, case .success(let p) = prepared { livePusher.start(token: p.token) }
+        if shareLiveLocationOn, case .success(let p) = prepared { livePusher.start(token: p.token) }
     }
 
     @ViewBuilder
     private func shareButton(_ route: MultimodalRoute) -> some View {
         if ShareTripService.isShareable(route) {
-            Button { shareLiveLocationPromptRoute = route } label: {
+            Toggle("分享即時位置（安全用途）", isOn: $shareLiveLocationOn)
+                .font(.footnote)
+            Button { share(route) } label: {
                 Label("分享行程給親友", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
@@ -790,9 +793,6 @@ struct TransferPlannerView: View {
             }
             // 安全分享 never outlives this screen — leaving stops any live-location push in flight.
             .onDisappear { livePusher.stop() }
-            .sheet(item: $shareLiveLocationPromptRoute) { r in
-                ShareLiveLocationConfirmSheet { shareLiveLocation in share(r, shareLiveLocation: shareLiveLocation) }
-            }
         }
     }
 

@@ -230,9 +230,7 @@ struct InAppNavigationView: View {
     /// (remaining distance/time, never a coordinate) to that share while navigating.
     @State private var navShareToken: String?
     @State private var lastNavShareProgressAt: Date = .distantPast
-    @State private var showShareLiveLocationPrompt = false
-    /// Set once, when the sharer opts in on the confirm sheet — off by default, same as every
-    /// other share (see ShareLiveLocationConfirmSheet).
+    /// 安全分享: off by default, toggled right in the share menu — no separate confirm screen.
     @State private var navShareLiveLocationEnabled = false
     @State private var lastLiveLocationPushAt: Date = .distantPast
     @State private var activity: Activity<NavigationTripAttributes>?
@@ -600,7 +598,14 @@ struct InAppNavigationView: View {
                                 metric(speedText, label: "目前時速")
                             }
                             Spacer()
-                            Button { showShareLiveLocationPrompt = true } label: {
+                            Menu {
+                                Toggle(isOn: $navShareLiveLocationEnabled) {
+                                    Label("分享即時位置（安全用途）", systemImage: "location.fill")
+                                }
+                                Button { shareTrip(shareLiveLocation: navShareLiveLocationEnabled) } label: {
+                                    Label("分享行程給親友", systemImage: "square.and.arrow.up")
+                                }
+                            } label: {
                                 Image(systemName: "square.and.arrow.up")
                                     .frame(width: 36, height: 36)
                                     .background(.gray.opacity(0.25), in: Circle())
@@ -716,9 +721,6 @@ struct InAppNavigationView: View {
         }
         .sheet(item: $parkingDetailTarget) { target in
             PlaceDetailView(name: target.name, coordinate: target.coordinate, subtitle: target.subtitle)
-        }
-        .sheet(isPresented: $showShareLiveLocationPrompt) {
-            ShareLiveLocationConfirmSheet { enabled in shareTrip(shareLiveLocation: enabled) }
         }
     }
 
