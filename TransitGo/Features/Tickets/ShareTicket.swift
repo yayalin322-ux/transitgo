@@ -29,13 +29,13 @@ extension ShareTripService {
         )
     }
 
-    static func requestBody(ticket: RailTicket, ttlHours: Int = 12) throws -> Data? {
+    static func requestBody(ticket: RailTicket, ttlHours: Int = 12, shareLiveLocation: Bool = false) throws -> Data? {
         guard let seg = segment(for: ticket) else { return nil }
-        return try JSONEncoder().encode(Body(title: "\(ticket.fromName) → \(ticket.toName)・\(ticket.trainLabel)", ttlHours: ttlHours, segments: [seg], shareLiveLocation: false))
+        return try JSONEncoder().encode(Body(title: "\(ticket.fromName) → \(ticket.toName)・\(ticket.trainLabel)", ttlHours: ttlHours, segments: [seg], shareLiveLocation: shareLiveLocation))
     }
 
-    static func prepare(ticket: RailTicket) -> Result<Prepared, Failure> {
-        guard let body = (try? requestBody(ticket: ticket)) ?? nil else { return .failure(.nothingToFollow) }
-        return prepare(body: body)
+    static func prepare(ticket: RailTicket, shareLiveLocation: Bool = false) -> Result<Prepared, Failure> {
+        guard let body = (try? requestBody(ticket: ticket, shareLiveLocation: shareLiveLocation)) ?? nil else { return .failure(.nothingToFollow) }
+        return prepare(body: body, shareLiveLocation: shareLiveLocation)
     }
 }

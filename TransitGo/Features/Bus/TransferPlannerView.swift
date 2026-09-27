@@ -445,9 +445,6 @@ struct TransferPlannerView: View {
                 Label("分享行程給親友", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
-            .sheet(item: $shareLiveLocationPromptRoute) { r in
-                ShareLiveLocationConfirmSheet { shareLiveLocation in share(r, shareLiveLocation: shareLiveLocation) }
-            }
         }
     }
     @State private var editingSavedPlaceRole: SavedPlaceRole?
@@ -793,6 +790,9 @@ struct TransferPlannerView: View {
             }
             // 安全分享 never outlives this screen — leaving stops any live-location push in flight.
             .onDisappear { livePusher.stop() }
+            .sheet(item: $shareLiveLocationPromptRoute) { r in
+                ShareLiveLocationConfirmSheet { shareLiveLocation in share(r, shareLiveLocation: shareLiveLocation) }
+            }
         }
     }
 
