@@ -39,7 +39,7 @@ const names = [
   "createReport", "listReports", "createRating", "listRatings", "routeRatingStats", "ratingStats",
   "createObservation", "listObservations",
   "setBikeCache", "getBikeCache", "allBikeCaches", "setSpeedcamCache", "getSpeedcamCache",
-  "createPlaceReview", "listPlaceReviews", "reportPlaceReview", "deletePlaceReview", "listAllPlaceReviews", "placeReviewStats",
+  "createPlaceReview", "listPlaceReviews", "listMyPlaceReviews", "reportPlaceReview", "deletePlaceReview", "deletePlaceReviewByDevice", "listAllPlaceReviews", "placeReviewStats",
   "createUserLandmark", "listApprovedLandmarksNear", "listAllUserLandmarks", "approveUserLandmark", "verifyUserLandmarkBusiness",
   "deleteUserLandmark", "reportUserLandmark", "listMyUserLandmarks", "updateMyUserLandmark",
   "getAlertState", "setAlertState",
@@ -69,8 +69,10 @@ export const setSpeedcamCache = (...a) => impl.setSpeedcamCache(...a);
 export const getSpeedcamCache = (...a) => impl.getSpeedcamCache(...a);
 export const createPlaceReview = (...a) => impl.createPlaceReview(...a);
 export const listPlaceReviews = (...a) => impl.listPlaceReviews(...a);
+export const listMyPlaceReviews = (...a) => impl.listMyPlaceReviews(...a);
 export const reportPlaceReview = (...a) => impl.reportPlaceReview(...a);
 export const deletePlaceReview = (...a) => impl.deletePlaceReview(...a);
+export const deletePlaceReviewByDevice = (...a) => impl.deletePlaceReviewByDevice(...a);
 export const listAllPlaceReviews = (...a) => impl.listAllPlaceReviews(...a);
 export const placeReviewStats = (...a) => impl.placeReviewStats(...a);
 export const createUserLandmark = (...a) => impl.createUserLandmark(...a);

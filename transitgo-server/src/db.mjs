@@ -109,6 +109,7 @@ if (usingPg) {
       photo       TEXT,
       app_version TEXT,
       device      TEXT,
+      email       TEXT,
       ip          TEXT,
       reported    INTEGER NOT NULL DEFAULT 0,
       created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -116,6 +117,8 @@ if (usingPg) {
     CREATE INDEX IF NOT EXISTS idx_place_reviews_key ON place_reviews (place_key, created_at);
     ALTER TABLE place_reviews ADD COLUMN IF NOT EXISTS reported INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE place_reviews ADD COLUMN IF NOT EXISTS photo TEXT;
+    -- Email 驗證改成留言的必要條件（防止匿名亂留言）；既有的舊留言沒有這欄，NULL 保留原樣，不會被回溯要求驗證。
+    ALTER TABLE place_reviews ADD COLUMN IF NOT EXISTS email TEXT;
     DELETE FROM place_reviews WHERE device IS NOT NULL AND id NOT IN (
       SELECT MAX(id) FROM place_reviews WHERE device IS NOT NULL GROUP BY place_key, device
     );
@@ -145,12 +148,15 @@ if (usingPg) {
       phone             TEXT,
       app_version       TEXT,
       device            TEXT,
+      email             TEXT,
       ip                TEXT,
       approved          INTEGER NOT NULL DEFAULT 0,
       reported          INTEGER NOT NULL DEFAULT 0,
       created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
     );
     CREATE INDEX IF NOT EXISTS idx_user_landmarks_approved ON user_landmarks (approved, created_at);
+    -- 店家自己驗證信箱後留下的信箱（跟手動驗證並存：兩條路都能讓 business_verified 變 true）。
+    ALTER TABLE user_landmarks ADD COLUMN IF NOT EXISTS email TEXT;
 
     CREATE TABLE IF NOT EXISTS user_landmark_reports (
       id          SERIAL PRIMARY KEY,
@@ -265,6 +271,7 @@ if (usingPg) {
       photo       TEXT,
       app_version TEXT,
       device      TEXT,
+      email       TEXT,
       ip          TEXT,
       reported    INTEGER NOT NULL DEFAULT 0,
       created_at  TEXT NOT NULL DEFAULT (datetime('now'))
@@ -295,6 +302,7 @@ if (usingPg) {
       phone             TEXT,
       app_version       TEXT,
       device            TEXT,
+      email             TEXT,
       ip                TEXT,
       approved          INTEGER NOT NULL DEFAULT 0,
       reported          INTEGER NOT NULL DEFAULT 0,
@@ -340,6 +348,13 @@ if (usingPg) {
   }
   if (!cols.includes("photo")) {
     db.exec(`ALTER TABLE place_reviews ADD COLUMN photo TEXT`);
+  }
+  if (!cols.includes("email")) {
+    db.exec(`ALTER TABLE place_reviews ADD COLUMN email TEXT`);
+  }
+  const landmarkCols = db.prepare(`PRAGMA table_info(user_landmarks)`).all().map((c) => c.name);
+  if (!landmarkCols.includes("email")) {
+    db.exec(`ALTER TABLE user_landmarks ADD COLUMN email TEXT`);
   }
   // One review per (place, device) — without this, a single phone could post an
   // unlimited number of 5-star reviews for the same place. Existing duplicates (from
@@ -573,26 +588,36 @@ export async function createPlaceReview(r) {
   const now = usingPg ? "now()" : "datetime('now')";
   if (r.device) {
     await db.prepare(`
-      INSERT INTO place_reviews (place_key, place_name, lat, lon, stars, comment, photo, app_version, device, ip)
-      VALUES (:place_key, :place_name, :lat, :lon, :stars, :comment, :photo, :app_version, :device, :ip)
+      INSERT INTO place_reviews (place_key, place_name, lat, lon, stars, comment, photo, app_version, device, email, ip)
+      VALUES (:place_key, :place_name, :lat, :lon, :stars, :comment, :photo, :app_version, :device, :email, :ip)
       ON CONFLICT(place_key, device) DO UPDATE SET
         stars = excluded.stars, comment = excluded.comment, photo = excluded.photo,
-        app_version = excluded.app_version, ip = excluded.ip,
+        app_version = excluded.app_version, email = excluded.email, ip = excluded.ip,
         reported = 0, created_at = ${now}
     `).run({
       place_key: r.placeKey, place_name: r.placeName, lat: r.lat ?? null, lon: r.lon ?? null,
       stars, comment, photo: r.photo ?? null, app_version: r.appVersion ?? null,
-      device: r.device, ip: r.ip ?? null,
+      device: r.device, email: r.email ?? null, ip: r.ip ?? null,
     });
   } else {
     await db.prepare(`
-      INSERT INTO place_reviews (place_key, place_name, lat, lon, stars, comment, photo, app_version, device, ip)
-      VALUES (:place_key, :place_name, :lat, :lon, :stars, :comment, :photo, :app_version, NULL, :ip)
+      INSERT INTO place_reviews (place_key, place_name, lat, lon, stars, comment, photo, app_version, device, email, ip)
+      VALUES (:place_key, :place_name, :lat, :lon, :stars, :comment, :photo, :app_version, NULL, :email, :ip)
     `).run({
       place_key: r.placeKey, place_name: r.placeName, lat: r.lat ?? null, lon: r.lon ?? null,
-      stars, comment, photo: r.photo ?? null, app_version: r.appVersion ?? null, ip: r.ip ?? null,
+      stars, comment, photo: r.photo ?? null, app_version: r.appVersion ?? null, email: r.email ?? null, ip: r.ip ?? null,
     });
   }
+}
+
+/** Self-service delete: only the device that posted a review may remove it — same ownership
+ * model the App already uses for "my landmarks", no separate token to manage. */
+export async function deletePlaceReviewByDevice(id, device) {
+  if (!device) return false;
+  const info = await db.prepare(`DELETE FROM place_reviews WHERE id = ? AND device = ?`).run(id, device);
+  if (info.changes === 0) return false;
+  await db.prepare(`DELETE FROM place_review_reports WHERE review_id = ?`).run(id);
+  return true;
 }
 
 export async function listPlaceReviews(placeKey, limit = 50) {
@@ -602,6 +627,20 @@ export async function listPlaceReviews(placeKey, limit = 50) {
   `).all(placeKey, limit);
   return rows.map((row) => ({
     id: row.id, stars: row.stars, comment: row.comment, photo: row.photo, createdAt: isoZ(row.created_at),
+  }));
+}
+
+/** This device's own reviews (any place) — so the app can show "delete my review" without the
+ * public listing ever exposing whose device posted what. */
+export async function listMyPlaceReviews(device) {
+  if (!device) return [];
+  const rows = await db.prepare(`
+    SELECT id, place_key, place_name, stars, comment, photo, created_at FROM place_reviews
+    WHERE device = ? ORDER BY created_at DESC LIMIT 200
+  `).all(device);
+  return rows.map((row) => ({
+    id: row.id, placeKey: row.place_key, placeName: row.place_name,
+    stars: row.stars, comment: row.comment, photo: row.photo, createdAt: isoZ(row.created_at),
   }));
 }
 
@@ -638,7 +677,7 @@ export async function listAllPlaceReviews(limit = 200) {
   return rows.map((r) => ({
     id: r.id, placeKey: r.place_key, placeName: r.place_name,
     stars: r.stars, comment: r.comment, reported: r.reported,
-    reportReasons: reasonsByReview.get(r.id) ?? {},
+    reportReasons: reasonsByReview.get(r.id) ?? {}, email: r.email,
     appVersion: r.app_version, createdAt: isoZ(r.created_at),
   }));
 }
@@ -653,8 +692,8 @@ export const LANDMARK_CATEGORIES = [
 export async function createUserLandmark(r) {
   const category = LANDMARK_CATEGORIES.includes(r.category) ? r.category : "other";
   await db.prepare(`
-    INSERT INTO user_landmarks (name, description, category, lat, lon, photo, is_business_claim, business_hours, phone, app_version, device, ip)
-    VALUES (:name, :description, :category, :lat, :lon, :photo, :is_business_claim, :business_hours, :phone, :app_version, :device, :ip)
+    INSERT INTO user_landmarks (name, description, category, lat, lon, photo, is_business_claim, business_verified, business_hours, phone, app_version, device, email, ip)
+    VALUES (:name, :description, :category, :lat, :lon, :photo, :is_business_claim, :business_verified, :business_hours, :phone, :app_version, :device, :email, :ip)
   `).run({
     name: r.name,
     description: (r.description ?? "").slice(0, 500),
@@ -663,10 +702,14 @@ export async function createUserLandmark(r) {
     lon: r.lon,
     photo: r.photo ?? null,
     is_business_claim: r.isBusinessClaim ? 1 : 0,
+    // Verified by Email at submission time (see POST /v1/landmarks) — not the old
+    // admin-clicks-a-button path, though that manual override still exists too.
+    business_verified: r.businessVerified ? 1 : 0,
     business_hours: (r.businessHours ?? "").slice(0, 500) || null,
     phone: (r.phone ?? "").slice(0, 50) || null,
     app_version: r.appVersion ?? null,
     device: r.device ?? null,
+    email: r.email ?? null,
     ip: r.ip ?? null,
   });
 }
@@ -704,7 +747,7 @@ export async function listAllUserLandmarks(limit = 200) {
   return rows.map((r) => ({
     id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
     isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified, businessHours: r.business_hours, phone: r.phone,
-    approved: !!r.approved, reported: r.reported, reportReasons: reasonsByLandmark.get(r.id) ?? {},
+    email: r.email, approved: !!r.approved, reported: r.reported, reportReasons: reasonsByLandmark.get(r.id) ?? {},
     appVersion: r.app_version, createdAt: isoZ(r.created_at),
   }));
 }

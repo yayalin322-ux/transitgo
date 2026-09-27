@@ -25,6 +25,9 @@ struct PlaceDetailView: View {
     @State private var loading = true
     @State private var reportedReviewIDs: Set<Int> = []
     @State private var landmarkReported = false
+    /// Which review (if any) in `reviews` this device itself posted — enables a "delete my
+    /// review" button in place of the report menu on that one row.
+    @State private var myReviewID: Int?
 
     var body: some View {
         NavigationStack {
@@ -129,7 +132,21 @@ struct PlaceDetailView: View {
                                     }
                                 }
                                 Spacer()
-                                if reportedReviewIDs.contains(r.id) {
+                                if myReviewID == r.id {
+                                    Button(role: .destructive) {
+                                        Task {
+                                            if await PlaceReviewService.deleteMine(id: r.id) {
+                                                reviews.removeAll { $0.id == r.id }
+                                                myReviewID = nil
+                                                if let result = await PlaceReviewService.fetch(name: name, coordinate: coordinate) {
+                                                    stats = result.stats
+                                                }
+                                            }
+                                        }
+                                    } label: {
+                                        Image(systemName: "trash").font(.caption)
+                                    }
+                                } else if reportedReviewIDs.contains(r.id) {
                                     Text("已檢舉").font(.caption2).foregroundStyle(.secondary)
                                 } else {
                                     Menu {
@@ -160,8 +177,11 @@ struct PlaceDetailView: View {
             .task {
                 async let detail = loadMapItem()
                 async let review = PlaceReviewService.fetch(name: name, coordinate: coordinate)
+                async let mine = PlaceReviewService.mine()
                 mapItem = await detail
                 if let result = await review { stats = result.stats; reviews = result.reviews }
+                let placeKey = PlaceReviewService.key(name: name, coordinate: coordinate)
+                myReviewID = await mine.first { $0.placeKey == placeKey }?.id
                 loading = false
             }
             .sheet(isPresented: $showAddReview) {
@@ -171,6 +191,8 @@ struct PlaceDetailView: View {
                         if let result = await PlaceReviewService.fetch(name: name, coordinate: coordinate) {
                             stats = result.stats; reviews = result.reviews
                         }
+                        let placeKey = PlaceReviewService.key(name: name, coordinate: coordinate)
+                        myReviewID = await PlaceReviewService.mine().first { $0.placeKey == placeKey }?.id
                     }
                 }
             }
@@ -209,7 +231,10 @@ private struct AddPlaceReviewView: View {
     @State private var comment = ""
     @State private var photoItem: PhotosPickerItem?
     @State private var photoImage: UIImage?
+    @State private var email = ""
+    @State private var code = ""
     @State private var isSubmitting = false
+    @State private var errorText: String?
 
     var body: some View {
         NavigationStack {
@@ -244,17 +269,33 @@ private struct AddPlaceReviewView: View {
                         }
                     }
                 }
+                // Every留言 now needs a verified Email — see PlaceReviewService.submit.
+                EmailCodeField(email: $email, code: $code)
+                if let errorText {
+                    Text(errorText).font(.caption).foregroundStyle(.red)
+                }
                 Spacer()
                 Button {
-                    isSubmitting = true
-                    let photo = photoImage.flatMap { PhotoUpload.encode($0) }
-                    if stars > 0 { PlaceReviewService.submit(name: name, coordinate: coordinate, stars: stars, comment: comment, photo: photo) }
-                    onDone()
+                    Task {
+                        isSubmitting = true
+                        errorText = nil
+                        let photo = photoImage.flatMap { PhotoUpload.encode($0) }
+                        let result = await PlaceReviewService.submit(
+                            name: name, coordinate: coordinate, stars: stars, comment: comment,
+                            email: email, code: code, photo: photo
+                        )
+                        isSubmitting = false
+                        switch result {
+                        case .ok: onDone()
+                        case .invalidCode: errorText = "驗證碼不正確或已過期，請重新按「寄驗證碼」。"
+                        case .failed: errorText = "送出失敗，請稍後再試一次。"
+                        }
+                    }
                 } label: {
                     if isSubmitting { ProgressView() } else { Text("送出").frame(maxWidth: .infinity) }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(stars == 0 || isSubmitting)
+                .disabled(stars == 0 || code.count != 6 || isSubmitting)
             }
             .padding()
             .navigationTitle("寫評論")
@@ -263,7 +304,7 @@ private struct AddPlaceReviewView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("取消", action: onDone) }
             }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
     }
 }
 

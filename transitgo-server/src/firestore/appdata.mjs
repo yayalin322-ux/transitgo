@@ -130,7 +130,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
       const [existing] = await store.list("place_reviews", { where: [["place_key", "==", r.placeKey], ["device", "==", r.device]], limit: 1 });
       if (existing) {
         await store.update("place_reviews", existing._id, {
-          stars, comment, photo: r.photo ?? null, app_version: r.appVersion ?? null, ip: r.ip ?? null, reported: 0, created_at: iso(),
+          stars, comment, photo: r.photo ?? null, app_version: r.appVersion ?? null, email: r.email ?? null, ip: r.ip ?? null, reported: 0, created_at: iso(),
         });
         return;
       }
@@ -138,12 +138,29 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     const id = await store.nextId("place_reviews");
     await store.set("place_reviews", id, {
       id, place_key: r.placeKey, place_name: r.placeName, lat: r.lat ?? null, lon: r.lon ?? null, stars, comment,
-      photo: r.photo ?? null, app_version: r.appVersion ?? null, device: r.device ?? null, ip: r.ip ?? null, reported: 0, created_at: iso(),
+      photo: r.photo ?? null, app_version: r.appVersion ?? null, device: r.device ?? null, email: r.email ?? null, ip: r.ip ?? null, reported: 0, created_at: iso(),
     });
+  }
+  /** Self-service delete: only the device that posted a review may remove it. */
+  async function deletePlaceReviewByDevice(id, device) {
+    if (!device) return false;
+    const row = await store.get("place_reviews", id);
+    if (!row || row.device !== device) return false;
+    const existed = await store.remove("place_reviews", id);
+    await store.removeWhere("place_review_reports", [["review_id", "==", Number(id)]]);
+    return existed;
   }
   async function listPlaceReviews(placeKey, limit = 50) {
     const rows = await store.list("place_reviews", { where: [["place_key", "==", placeKey]], orderBy: [["created_at", "desc"]], limit });
     return rows.map((r) => ({ id: r.id, stars: r.stars, comment: r.comment, photo: r.photo, createdAt: r.created_at }));
+  }
+  async function listMyPlaceReviews(device) {
+    if (!device) return [];
+    const rows = await store.list("place_reviews", { where: [["device", "==", device]], orderBy: [["created_at", "desc"]], limit: 200 });
+    return rows.map((r) => ({
+      id: r.id, placeKey: r.place_key, placeName: r.place_name,
+      stars: r.stars, comment: r.comment, photo: r.photo, createdAt: r.created_at,
+    }));
   }
   async function reportPlaceReview(id, reason, ip) {
     if (!(await store.increment("place_reviews", id, "reported", 1))) return false;
@@ -167,7 +184,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     return Promise.all(rows.map(async (r) => ({
       id: r.id, placeKey: r.place_key, placeName: r.place_name, stars: r.stars, comment: r.comment, reported: r.reported,
       reportReasons: r.reported > 0 ? await reasonBreakdown("place_review_reports", "review_id", r.id) : {},
-      appVersion: r.app_version, createdAt: r.created_at,
+      email: r.email, appVersion: r.app_version, createdAt: r.created_at,
     })));
   }
   async function placeReviewStats(placeKey) {
@@ -181,8 +198,8 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     await store.set("user_landmarks", id, {
       id, name: r.name, description: (r.description ?? "").slice(0, 500),
       category: LANDMARK_CATEGORIES.includes(r.category) ? r.category : "other", lat: r.lat, lon: r.lon, photo: r.photo ?? null,
-      is_business_claim: r.isBusinessClaim ? 1 : 0, business_verified: 0, business_hours: (r.businessHours ?? "").slice(0, 500) || null,
-      phone: (r.phone ?? "").slice(0, 50) || null, app_version: r.appVersion ?? null, device: r.device ?? null, ip: r.ip ?? null,
+      is_business_claim: r.isBusinessClaim ? 1 : 0, business_verified: r.businessVerified ? 1 : 0, business_hours: (r.businessHours ?? "").slice(0, 500) || null,
+      phone: (r.phone ?? "").slice(0, 50) || null, app_version: r.appVersion ?? null, device: r.device ?? null, email: r.email ?? null, ip: r.ip ?? null,
       approved: 0, reported: 0, created_at: iso(),
     });
     dropLandmarkCache();
@@ -209,7 +226,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     return Promise.all(rows.map(async (r) => ({
       id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
       isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified, businessHours: r.business_hours, phone: r.phone,
-      approved: !!r.approved, reported: r.reported,
+      email: r.email, approved: !!r.approved, reported: r.reported,
       reportReasons: r.reported > 0 ? await reasonBreakdown("user_landmark_reports", "landmark_id", r.id) : {},
       appVersion: r.app_version, createdAt: r.created_at,
     })));
@@ -275,7 +292,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     createReport, listReports, createRating, listRatings, routeRatingStats, ratingStats,
     createObservation, listObservations,
     setBikeCache, getBikeCache, allBikeCaches, setSpeedcamCache, getSpeedcamCache,
-    createPlaceReview, listPlaceReviews, reportPlaceReview, deletePlaceReview, listAllPlaceReviews, placeReviewStats,
+    createPlaceReview, listPlaceReviews, listMyPlaceReviews, reportPlaceReview, deletePlaceReview, deletePlaceReviewByDevice, listAllPlaceReviews, placeReviewStats,
     createUserLandmark, listApprovedLandmarksNear, listAllUserLandmarks, approveUserLandmark, verifyUserLandmarkBusiness,
     deleteUserLandmark, reportUserLandmark, listMyUserLandmarks, updateMyUserLandmark,
     getAlertState, setAlertState,

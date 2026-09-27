@@ -17,7 +17,10 @@ struct AddLandmarkView: View {
     @State private var isBusinessClaim = false
     @State private var businessHours = ""
     @State private var phone = ""
+    @State private var email = ""
+    @State private var code = ""
     @State private var isSubmitting = false
+    @State private var errorText: String?
     @State private var pinCoordinate: CLLocationCoordinate2D
 
     init(coordinate: CLLocationCoordinate2D, onDone: @escaping () -> Void) {
@@ -71,11 +74,15 @@ struct AddLandmarkView: View {
                             .lineLimit(2...4)
                         TextField("電話", text: $phone)
                             .keyboardType(.phonePad)
+                        EmailCodeField(email: $email, code: $code)
                     }
                 } footer: {
                     Text(isBusinessClaim
-                         ? "店家身分需要後台人工審核通過後，營業時間才會顯示給其他使用者——任何人都能新增地標，所以未經驗證的內容不會直接視為真實店家資訊。"
-                         : "如果你是這個地點的店家本人，可以打開這個選項填寫營業時間（需審核）。")
+                         ? "驗證這個 Email 之後就會標示為已驗證店家，營業時間與電話才會顯示給其他使用者；地標本身仍要等後台審核通過才會出現在「附近」。"
+                         : "如果你是這個地點的店家本人，可以打開這個選項填寫營業時間（需驗證信箱）。")
+                }
+                if let errorText {
+                    Text(errorText).font(.caption).foregroundStyle(.red)
                 }
             }
             .navigationTitle("新增地標")
@@ -87,17 +94,27 @@ struct AddLandmarkView: View {
                         ProgressView()
                     } else {
                         Button("送出") {
-                            isSubmitting = true
-                            let photo = photoImage.flatMap { PhotoUpload.encode($0) }
-                            UserLandmarkService.submit(
-                                name: name, description: description, category: category, coordinate: pinCoordinate,
-                                photo: photo, isBusinessClaim: isBusinessClaim,
-                                businessHours: isBusinessClaim ? businessHours : nil,
-                                phone: isBusinessClaim ? phone : nil
-                            )
-                            onDone()
+                            Task {
+                                isSubmitting = true
+                                errorText = nil
+                                let photo = photoImage.flatMap { PhotoUpload.encode($0) }
+                                let result = await UserLandmarkService.submit(
+                                    name: name, description: description, category: category, coordinate: pinCoordinate,
+                                    photo: photo, isBusinessClaim: isBusinessClaim,
+                                    businessHours: isBusinessClaim ? businessHours : nil,
+                                    phone: isBusinessClaim ? phone : nil,
+                                    email: isBusinessClaim ? email : nil,
+                                    code: isBusinessClaim ? code : nil
+                                )
+                                isSubmitting = false
+                                switch result {
+                                case .ok: onDone()
+                                case .invalidCode: errorText = "驗證碼不正確或已過期，請重新按「寄驗證碼」。"
+                                case .failed: errorText = "送出失敗，請稍後再試一次。"
+                                }
+                            }
                         }
-                        .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || (isBusinessClaim && code.count != 6))
                     }
                 }
             }

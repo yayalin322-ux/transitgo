@@ -193,11 +193,17 @@ enum UserLandmarkService {
         return (resp as? HTTPURLResponse)?.statusCode == 200
     }
 
+    enum SubmitResult { case ok, invalidCode, failed }
+
+    /// `email`/`code` only matter (and are only required server-side) when `isBusinessClaim` is
+    /// true — a plain community landmark suggestion needs no verification. Get a code first with
+    /// `EmailVerificationService.requestCode(email:)`.
     static func submit(
         name: String, description: String, category: LandmarkCategory, coordinate: CLLocationCoordinate2D,
-        photo: String?, isBusinessClaim: Bool = false, businessHours: String? = nil, phone: String? = nil
-    ) {
-        guard let base = BackendConfig.baseURL else { return }
+        photo: String?, isBusinessClaim: Bool = false, businessHours: String? = nil, phone: String? = nil,
+        email: String? = nil, code: String? = nil
+    ) async -> SubmitResult {
+        guard let base = BackendConfig.baseURL else { return .failed }
         var payload: [String: Any] = [
             "name": name,
             "description": description,
@@ -211,12 +217,15 @@ enum UserLandmarkService {
         if let photo { payload["photo"] = photo }
         if let businessHours, !businessHours.isEmpty { payload["businessHours"] = businessHours }
         if let phone, !phone.isEmpty { payload["phone"] = phone }
-        Task {
-            var req = URLRequest(url: base.appendingPathComponent("v1/landmarks"))
-            req.httpMethod = "POST"
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-            _ = try? await URLSession.shared.data(for: req)
-        }
+        if let email { payload["email"] = email }
+        if let code { payload["code"] = code }
+        var req = URLRequest(url: base.appendingPathComponent("v1/landmarks"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        guard let (_, resp) = try? await URLSession.shared.data(for: req),
+              let status = (resp as? HTTPURLResponse)?.statusCode else { return .failed }
+        if status == 200 { return .ok }
+        return status == 400 ? .invalidCode : .failed
     }
 }
