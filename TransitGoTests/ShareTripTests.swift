@@ -6,7 +6,10 @@ final class ShareTripTests: XCTestCase {
     func testTheRequestCarriesNoCoordinatesAndNoIdentity() throws {
         let route = try Nav.walkBusMrtWalk()
         let json = String(decoding: try ShareTripService.requestBody(route: route, title: "前往南京復興"), as: UTF8.self)
-        for forbidden in ["fromLat", "fromLng", "toLat", "toLng", "latitude", "longitude", "deviceID", "deviceId", "location"] {
+        // "shareLiveLocation" (the 安全分享 opt-in flag, off by default here) legitimately
+        // contains "location" — checked separately below instead of banning the word outright.
+        XCTAssertTrue(json.contains("\"shareLiveLocation\":false"))
+        for forbidden in ["fromLat", "fromLng", "toLat", "toLng", "latitude", "longitude", "deviceID", "deviceId"] {
             XCTAssertFalse(json.contains(forbidden), "share request must not contain \(forbidden)")
         }
         XCTAssertTrue(json.contains("\"title\":\"前往南京復興\""))

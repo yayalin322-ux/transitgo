@@ -44,7 +44,7 @@ const names = [
   "deleteUserLandmark", "reportUserLandmark", "listMyUserLandmarks", "updateMyUserLandmark",
   "searchApprovedLandmarks", "claimUserLandmark",
   "getAlertState", "setAlertState",
-  "createShare", "getShare", "updateShareProgress", "deleteShare",
+  "createShare", "getShare", "updateShareProgress", "updateShareLocation", "deleteShare",
 ];
 for (const n of names) if (typeof impl[n] !== "function") throw new Error(`app data backend is missing ${n}`);
 
@@ -93,4 +93,5 @@ export const setAlertState = (...a) => impl.setAlertState(...a);
 export const createShare = (...a) => impl.createShare(...a);
 export const getShare = (...a) => impl.getShare(...a);
 export const updateShareProgress = (...a) => impl.updateShareProgress(...a);
+export const updateShareLocation = (...a) => impl.updateShareLocation(...a);
 export const deleteShare = (...a) => impl.deleteShare(...a);

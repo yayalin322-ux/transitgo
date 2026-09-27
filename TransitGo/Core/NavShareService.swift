@@ -15,17 +15,20 @@ enum NavShareService {
         let kind = "nav"
         let ttlHours: Int
         let nav: Nav
+        /// "安全分享": off unless the sharer explicitly turns it on for this one link (see
+        /// ShareTripService.Body — same flag, same meaning, for either kind of share).
+        let shareLiveLocation: Bool
     }
 
     /// A link that exists the moment the button is pressed — reuses ShareTripService.Prepared
     /// (token+url+body) so this plugs straight into the existing InstantShare.run flow: the
     /// share sheet opens at once, upload/retry happens in the background.
-    static func prepare(destinationName: String, mode: Mode, ttlHours: Int = 6) -> Result<ShareTripService.Prepared, ShareTripService.Failure> {
+    static func prepare(destinationName: String, mode: Mode, ttlHours: Int = 6, shareLiveLocation: Bool = false) -> Result<ShareTripService.Prepared, ShareTripService.Failure> {
         let token = ShareLink.makeToken()
         guard let url = ShareLink.url(token: token) else { return .failure(.backendUnavailable) }
-        let body = CreateBody(title: "前往\(destinationName)", ttlHours: ttlHours, nav: .init(mode: mode.rawValue, destinationName: destinationName))
+        let body = CreateBody(title: "前往\(destinationName)", ttlHours: ttlHours, nav: .init(mode: mode.rawValue, destinationName: destinationName), shareLiveLocation: shareLiveLocation)
         guard let data = try? JSONEncoder().encode(body) else { return .failure(.backendUnavailable) }
-        return .success(ShareTripService.Prepared(token: token, url: url, body: data))
+        return .success(ShareTripService.Prepared(token: token, url: url, body: data, shareLiveLocation: shareLiveLocation))
     }
 
     private struct ProgressBody: Encodable {

@@ -6,7 +6,11 @@ final class NavShareTests: XCTestCase {
     func testTheRequestCarriesNoCoordinatesAndNoIdentity() throws {
         let prepared = try XCTUnwrap(NavShareService.prepare(destinationName: "台北車站", mode: .automobile).successValue)
         let json = String(decoding: prepared.body, as: UTF8.self)
-        for forbidden in ["lat", "lon", "latitude", "longitude", "deviceID", "deviceId", "location", "coordinate"] {
+        // "shareLiveLocation" (the 安全分享 opt-in flag, off here) legitimately contains the
+        // substring "location" — check for that field's exact off-value instead of banning the
+        // word outright, and keep the ban for every field name that would actually carry a value.
+        XCTAssertTrue(json.contains("\"shareLiveLocation\":false"))
+        for forbidden in ["lat", "lon", "latitude", "longitude", "deviceID", "deviceId", "coordinate"] {
             XCTAssertFalse(json.lowercased().contains(forbidden.lowercased()), "nav share request must not contain \(forbidden)")
         }
         XCTAssertTrue(json.contains("\"kind\":\"nav\""))

@@ -336,11 +336,12 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
   }
 
   // ---- shared trip links ----
-  async function createShare({ token, title, segments, kind = "trip", nav, nowMs, expiresAtMs }) {
+  async function createShare({ token, title, segments, kind = "trip", nav, liveLocationEnabled = false, nowMs, expiresAtMs }) {
     await store.removeWhere("shares", [["expires_at_ms", "<=", nowMs]], 100);   // sweep expired ones on every create
     await store.set("shares", token, {
       token, title: title ?? null, kind, segments_json: JSON.stringify(segments ?? []),
       nav_json: nav ? JSON.stringify(nav) : null, nav_progress_json: null, nav_progress_at_ms: null,
+      live_location_enabled: liveLocationEnabled ? 1 : 0, live_lat: null, live_lon: null, live_location_at_ms: null,
       created_at_ms: nowMs, expires_at_ms: expiresAtMs,
     });
   }
@@ -353,6 +354,10 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
       nav: r.nav_json ? JSON.parse(r.nav_json) : null,
       navProgress: r.nav_progress_json ? JSON.parse(r.nav_progress_json) : null,
       navProgressAtMs: r.nav_progress_at_ms != null ? Number(r.nav_progress_at_ms) : null,
+      liveLocationEnabled: !!(r.live_location_enabled && Number(r.live_location_enabled) !== 0),
+      liveLat: r.live_lat != null ? Number(r.live_lat) : null,
+      liveLon: r.live_lon != null ? Number(r.live_lon) : null,
+      liveLocationAtMs: r.live_location_at_ms != null ? Number(r.live_location_at_ms) : null,
       created_at_ms: Number(r.created_at_ms), expires_at_ms: Number(r.expires_at_ms),
     };
   }
@@ -360,6 +365,12 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     const r = await store.get("shares", token);
     if (!r || r.kind !== "nav" || Number(r.expires_at_ms) <= nowMs) return false;
     await store.update("shares", token, { nav_progress_json: JSON.stringify(progress), nav_progress_at_ms: nowMs });
+    return true;
+  }
+  async function updateShareLocation(token, { lat, lon }, nowMs) {
+    const r = await store.get("shares", token);
+    if (!r || !r.live_location_enabled || Number(r.expires_at_ms) <= nowMs) return false;
+    await store.update("shares", token, { live_lat: lat, live_lon: lon, live_location_at_ms: nowMs });
     return true;
   }
   const deleteShare = async (token) => { await store.remove("shares", token); };
@@ -375,6 +386,6 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     deleteUserLandmark, reportUserLandmark, listMyUserLandmarks, updateMyUserLandmark,
     searchApprovedLandmarks, claimUserLandmark,
     getAlertState, setAlertState,
-    createShare, getShare, updateShareProgress, deleteShare,
+    createShare, getShare, updateShareProgress, updateShareLocation, deleteShare,
   };
 }

@@ -42,9 +42,10 @@ import {
   createShare,
   getShare,
   updateShareProgress,
+  updateShareLocation,
   deleteShare,
 } from "./appdata.mjs";
-import { sanitizeSegments, sanitizeTitle, ttlMs, newToken, isToken, isExpired, isVehicle, parseTrainTrip, canRate, createRatingLedger, sanitizeNav, sanitizeNavProgress, NAV_PROGRESS_STALE_MS } from "./shares.mjs";
+import { sanitizeSegments, sanitizeTitle, ttlMs, newToken, isToken, isExpired, isVehicle, parseTrainTrip, canRate, createRatingLedger, sanitizeNav, sanitizeNavProgress, NAV_PROGRESS_STALE_MS, sanitizeLiveLocation, LIVE_LOCATION_STALE_MS } from "./shares.mjs";
 import { pushAnnouncement } from "./push.mjs";
 import { clampReport } from "./reports.mjs";
 import { buildStatus, allowedOrigin } from "./status.mjs";
@@ -685,8 +686,11 @@ async function storeShare(req, res, token) {
   }
   const nowMs = Date.now();
   const expiresAtMs = nowMs + ttlMs(req.body?.ttlHours);
+  // "安全分享": off unless the sharer explicitly opts in on THIS link. Applies to trip and nav
+  // shares alike — the point is "let people know where I am right now", not tied to navigating.
+  const liveLocationEnabled = req.body?.shareLiveLocation === true;
   try {
-    await createShare({ token, title: sanitizeTitle(req.body?.title), kind: isNav ? "nav" : "trip", segments, nav, nowMs, expiresAtMs });
+    await createShare({ token, title: sanitizeTitle(req.body?.title), kind: isNav ? "nav" : "trip", segments, nav, liveLocationEnabled, nowMs, expiresAtMs });
   } catch (e) {
     return res.status(500).json({ ok: false, error: "could not create link" });
   }
@@ -713,8 +717,21 @@ app.get("/v1/shares/:token", async (req, res) => {
   if (!isToken(req.params.token) || limited(shareViewBucket, req.clientIp, 90)) return res.status(404).json({ ok: false, error: "not found" });
   const row = await getShare(req.params.token);
   if (isExpired(row)) return res.status(404).json({ ok: false, error: "expired or unknown" });
-  if (row.kind === "nav") return res.json({ ok: true, kind: "nav", title: row.title, nav: row.nav, expiresAt: new Date(row.expires_at_ms).toISOString() });
-  res.json({ ok: true, kind: "trip", title: row.title, segments: row.segments, expiresAt: new Date(row.expires_at_ms).toISOString() });
+  if (row.kind === "nav") return res.json({ ok: true, kind: "nav", title: row.title, nav: row.nav, liveLocationEnabled: row.liveLocationEnabled, expiresAt: new Date(row.expires_at_ms).toISOString() });
+  res.json({ ok: true, kind: "trip", title: row.title, segments: row.segments, liveLocationEnabled: row.liveLocationEnabled, expiresAt: new Date(row.expires_at_ms).toISOString() });
+});
+
+/** The sharer's own app calls this every so often while "安全分享" is turned on for this link —
+ * for either kind of share. Silently 404s unless the sharer explicitly enabled it on this exact
+ * token, so a stale/foreign token can't be used to start broadcasting a coordinate that was
+ * never opted into (same shape as every other /v1/shares/:token route). */
+app.post("/v1/shares/:token/location", async (req, res) => {
+  if (!isToken(req.params.token) || limited(shareViewBucket, req.clientIp, 120)) return res.status(404).json({ ok: false, error: "not found" });
+  const loc = sanitizeLiveLocation(req.body);
+  if (!loc) return res.status(400).json({ ok: false, error: "invalid location" });
+  const ok = await updateShareLocation(req.params.token, loc, Date.now());
+  if (!ok) return res.status(404).json({ ok: false, error: "not found" });
+  res.json({ ok: true });
 });
 
 /** The sharer's own app calls this every ~10–15 s while navigating — never a coordinate, only
@@ -754,11 +771,14 @@ app.get("/v1/shares/:token/live", async (req, res) => {
   if (!isToken(req.params.token) || limited(shareViewBucket, req.clientIp, 90)) return res.status(404).json({ ok: false, error: "not found" });
   const row = await getShare(req.params.token);
   if (isExpired(row)) return res.status(404).json({ ok: false, error: "expired or unknown" });
+  const liveFresh = row.liveLocationEnabled && row.liveLocationAtMs != null && Date.now() - row.liveLocationAtMs <= LIVE_LOCATION_STALE_MS;
+  const liveLocation = liveFresh ? { lat: row.liveLat, lon: row.liveLon, updatedAt: new Date(row.liveLocationAtMs).toISOString() } : null;
   if (row.kind === "nav") {
     const fresh = row.navProgressAtMs != null && Date.now() - row.navProgressAtMs <= NAV_PROGRESS_STALE_MS;
     return res.json({
       ok: true, kind: "nav",
       nav: fresh ? { ...row.navProgress, updatedAt: new Date(row.navProgressAtMs).toISOString() } : null,
+      liveLocation,
     });
   }
   const segs = row.segments;
@@ -786,7 +806,7 @@ app.get("/v1/shares/:token/live", async (req, res) => {
       summary = o.summary ?? summary;
     } catch { summary.unavailableReasons = ["unavailable"]; }
   }
-  res.json({ ok: true, generatedAt: new Date().toISOString(), legs, trains, summary });
+  res.json({ ok: true, generatedAt: new Date().toISOString(), legs, trains, summary, liveLocation });
 });
 
 /** A viewer rates a leg once it has arrived. Stars only (no free text from an anonymous page). */

@@ -230,6 +230,11 @@ struct InAppNavigationView: View {
     /// (remaining distance/time, never a coordinate) to that share while navigating.
     @State private var navShareToken: String?
     @State private var lastNavShareProgressAt: Date = .distantPast
+    @State private var showShareLiveLocationPrompt = false
+    /// Set once, when the sharer opts in on the confirm sheet — off by default, same as every
+    /// other share (see ShareLiveLocationConfirmSheet).
+    @State private var navShareLiveLocationEnabled = false
+    @State private var lastLiveLocationPushAt: Date = .distantPast
     @State private var activity: Activity<NavigationTripAttributes>?
     @State private var arrived = false
     @State private var announcedMilestones: Set<Int> = []
@@ -595,11 +600,14 @@ struct InAppNavigationView: View {
                                 metric(speedText, label: "目前時速")
                             }
                             Spacer()
-                            Button { shareTrip() } label: {
+                            Button { showShareLiveLocationPrompt = true } label: {
                                 Image(systemName: "square.and.arrow.up")
                                     .frame(width: 36, height: 36)
                                     .background(.gray.opacity(0.25), in: Circle())
                                     .foregroundStyle(.primary)
+                            }
+                            .sheet(isPresented: $showShareLiveLocationPrompt) {
+                                ShareLiveLocationConfirmSheet { enabled in shareTrip(shareLiveLocation: enabled) }
                             }
                             Menu {
                                 Picker("語音", selection: $voiceModeRaw) {
@@ -884,6 +892,7 @@ struct InAppNavigationView: View {
         if let navShareToken {
             NavShareService.pushProgress(token: navShareToken, remainingMeters: 0, etaSeconds: 0, instruction: nil, arrived: true)
         }
+        navShareLiveLocationEnabled = false   // 安全分享 never outlives this navigation session
         speaker.stop()
         tracker.stop()
         endActivity()
@@ -895,13 +904,16 @@ struct InAppNavigationView: View {
     /// Same "link exists the instant the button is pressed" flow as ShareTripService/InstantShare
     /// — inlined rather than reused because this needs to hold on to the token afterwards, to push
     /// progress updates to it while navigating (see reportNavShareProgress).
-    private func shareTrip() {
+    private func shareTrip(shareLiveLocation: Bool) {
         let mode: NavShareService.Mode = transportType == .walking ? .walking : (currentLeg.avoidsHighways ? .scooter : .automobile)
-        switch NavShareService.prepare(destinationName: destinationName, mode: mode) {
+        switch NavShareService.prepare(destinationName: destinationName, mode: mode, shareLiveLocation: shareLiveLocation) {
         case .success(let prepared):
             navShareToken = prepared.token
+            navShareLiveLocationEnabled = shareLiveLocation
             lastNavShareProgressAt = .distantPast   // send the first progress update right away, not after the usual gap
-            SharePresenter.present(items: ["我正在前往\(destinationName)，可以看剩餘距離與預估到達時間（6 小時內有效，不含我的位置）：", prepared.url])
+            lastLiveLocationPushAt = .distantPast
+            let locationNote = shareLiveLocation ? "，我也開啟了即時位置分享）：" : "，不含我的位置）："
+            SharePresenter.present(items: ["我正在前往\(destinationName)，可以看剩餘距離與預估到達時間（6 小時內有效" + locationNote, prepared.url])
             Task {
                 if await ShareUploader.upload(prepared) == .failed {
                     SharePresenter.alert(title: "分享連結沒有建立成功", message: "剛才送出的連結目前打不開：連不上伺服器。請稍後再重新分享一次。")
@@ -917,6 +929,10 @@ struct InAppNavigationView: View {
     private func reportNavShareProgress(_ loc: CLLocation) {
         guard let navShareToken else { return }
         let now = Date()
+        if navShareLiveLocationEnabled, now.timeIntervalSince(lastLiveLocationPushAt) >= LiveLocationSharing.minInterval {
+            lastLiveLocationPushAt = now
+            LiveLocationSharing.push(token: navShareToken, coordinate: loc.coordinate)
+        }
         guard now.timeIntervalSince(lastNavShareProgressAt) >= 8 else { return }
         lastNavShareProgressAt = now
         guard let remaining = remainingMeters, let eta = etaSeconds else { return }

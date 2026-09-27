@@ -37,7 +37,11 @@ enum ShareTripService {
         }
     }
 
-    struct Body: Encodable { let title: String; let ttlHours: Int; let segments: [SegmentBody] }
+    /// `shareLiveLocation` is "安全分享": off unless the sharer explicitly turns it on for this one
+    /// link. Everything else in this file is unaffected either way — the segments/route info never
+    /// carried a coordinate to begin with; this flag only tells the server to accept later pushes
+    /// of the phone's real location onto THIS token (see LiveLocationSharing).
+    struct Body: Encodable { let title: String; let ttlHours: Int; let segments: [SegmentBody]; let shareLiveLocation: Bool }
     private struct Reply: Decodable { let ok: Bool; let url: String? }
 
     enum Failure: Error, Equatable {
@@ -51,8 +55,8 @@ enum ShareTripService {
         route.segments.contains { $0.mode != "WALK" && $0.mode != "BIKE" }
     }
 
-    static func requestBody(route: MultimodalRoute, title: String, ttlHours: Int = 6) throws -> Data {
-        try JSONEncoder().encode(Body(title: title, ttlHours: ttlHours, segments: route.segments.map(SegmentBody.init)))
+    static func requestBody(route: MultimodalRoute, title: String, ttlHours: Int = 6, shareLiveLocation: Bool = false) throws -> Data {
+        try JSONEncoder().encode(Body(title: title, ttlHours: ttlHours, segments: route.segments.map(SegmentBody.init), shareLiveLocation: shareLiveLocation))
     }
 
     /// A link that exists the moment the button is pressed. The token is made HERE (128 random bits — the same shape the server
@@ -61,18 +65,21 @@ enum ShareTripService {
         let token: String
         let url: URL
         let body: Data
+        /// Whether THIS link was created with 安全分享 on — drives whether InstantShare also starts
+        /// LiveLocationSharing after presenting the share sheet.
+        var shareLiveLocation: Bool = false
     }
 
-    static func prepare(route: MultimodalRoute, title: String) -> Result<Prepared, Failure> {
+    static func prepare(route: MultimodalRoute, title: String, shareLiveLocation: Bool = false) -> Result<Prepared, Failure> {
         guard isShareable(route) else { return .failure(.nothingToFollow) }
-        guard let body = try? requestBody(route: route, title: title) else { return .failure(.nothingToFollow) }
-        return prepare(body: body)
+        guard let body = try? requestBody(route: route, title: title, shareLiveLocation: shareLiveLocation) else { return .failure(.nothingToFollow) }
+        return prepare(body: body, shareLiveLocation: shareLiveLocation)
     }
 
-    static func prepare(body: Data) -> Result<Prepared, Failure> {
+    static func prepare(body: Data, shareLiveLocation: Bool = false) -> Result<Prepared, Failure> {
         let token = ShareLink.makeToken()
         guard let url = ShareLink.url(token: token) else { return .failure(.backendUnavailable) }
-        return .success(Prepared(token: token, url: url, body: body))
+        return .success(Prepared(token: token, url: url, body: body, shareLiveLocation: shareLiveLocation))
     }
 }
 

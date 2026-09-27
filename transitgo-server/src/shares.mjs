@@ -79,6 +79,25 @@ export function sanitizeNavProgress(input) {
  * further apart than this and the link honestly says so instead of showing a frozen number. */
 export const NAV_PROGRESS_STALE_MS = 45_000;
 
+/**
+ * "安全分享" (opt-in safety live-location). Off by default on every share — a sharer must
+ * explicitly turn it on when creating the link (see shareLiveLocationEnabled on the create
+ * request). Only then does the app push real coordinates here; a normal share never calls this
+ * at all. Range-checked like any untrusted client input.
+ */
+export function sanitizeLiveLocation(input) {
+  if (!input || typeof input !== "object") return null;
+  const lat = Number(input.lat);
+  const lon = Number(input.lon);
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90) return null;
+  if (!Number.isFinite(lon) || lon < -180 || lon > 180) return null;
+  return { lat, lon };
+}
+
+/** A shared live location older than this is too stale to show as "current" — the viewer sees
+ * that sharing has paused/stopped instead of a frozen, possibly-misleading dot. */
+export const LIVE_LOCATION_STALE_MS = 45_000;
+
 /** How long the link lives, in ms. */
 export function ttlMs(hours) {
   const h = Number.isFinite(hours) ? Math.min(MAX_TTL_HOURS, Math.max(1, hours)) : DEFAULT_TTL_HOURS;
