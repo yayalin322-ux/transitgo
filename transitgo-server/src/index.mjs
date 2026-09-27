@@ -41,9 +41,10 @@ import {
   getSpeedcamCache,
   createShare,
   getShare,
+  updateShareProgress,
   deleteShare,
 } from "./appdata.mjs";
-import { sanitizeSegments, sanitizeTitle, ttlMs, newToken, isToken, isExpired, isVehicle, parseTrainTrip, canRate, createRatingLedger } from "./shares.mjs";
+import { sanitizeSegments, sanitizeTitle, ttlMs, newToken, isToken, isExpired, isVehicle, parseTrainTrip, canRate, createRatingLedger, sanitizeNav, sanitizeNavProgress, NAV_PROGRESS_STALE_MS } from "./shares.mjs";
 import { pushAnnouncement } from "./push.mjs";
 import { clampReport } from "./reports.mjs";
 import { buildStatus, allowedOrigin } from "./status.mjs";
@@ -673,12 +674,19 @@ function limited(bucket, ip, perMinute) {
 /** Shared by POST (server picks the token) and PUT (the app picked it, so it can hand out the link at once). */
 async function storeShare(req, res, token) {
   if (limited(shareCreateBucket, req.clientIp, 10)) return res.status(429).json({ ok: false, error: "rate limited" });
-  const segments = sanitizeSegments(req.body?.segments);
-  if (!segments) return res.status(400).json({ ok: false, error: "need 1-8 valid segments including at least one vehicle leg" });
+  const isNav = req.body?.kind === "nav";
+  let segments = null, nav = null;
+  if (isNav) {
+    nav = sanitizeNav(req.body?.nav);
+    if (!nav) return res.status(400).json({ ok: false, error: "nav needs a mode and a destinationName" });
+  } else {
+    segments = sanitizeSegments(req.body?.segments);
+    if (!segments) return res.status(400).json({ ok: false, error: "need 1-8 valid segments including at least one vehicle leg" });
+  }
   const nowMs = Date.now();
   const expiresAtMs = nowMs + ttlMs(req.body?.ttlHours);
   try {
-    await createShare({ token, title: sanitizeTitle(req.body?.title), segments, nowMs, expiresAtMs });
+    await createShare({ token, title: sanitizeTitle(req.body?.title), kind: isNav ? "nav" : "trip", segments, nav, nowMs, expiresAtMs });
   } catch (e) {
     return res.status(500).json({ ok: false, error: "could not create link" });
   }
@@ -705,7 +713,21 @@ app.get("/v1/shares/:token", async (req, res) => {
   if (!isToken(req.params.token) || limited(shareViewBucket, req.clientIp, 90)) return res.status(404).json({ ok: false, error: "not found" });
   const row = await getShare(req.params.token);
   if (isExpired(row)) return res.status(404).json({ ok: false, error: "expired or unknown" });
-  res.json({ ok: true, title: row.title, segments: row.segments, expiresAt: new Date(row.expires_at_ms).toISOString() });
+  if (row.kind === "nav") return res.json({ ok: true, kind: "nav", title: row.title, nav: row.nav, expiresAt: new Date(row.expires_at_ms).toISOString() });
+  res.json({ ok: true, kind: "trip", title: row.title, segments: row.segments, expiresAt: new Date(row.expires_at_ms).toISOString() });
+});
+
+/** The sharer's own app calls this every ~10–15 s while navigating — never a coordinate, only
+ * "how much further / how long", the same idea as a train's live position on the trip share.
+ * Silently 404s for anything that isn't a live 'nav' share, so this can't be used to probe
+ * tokens (same shape as every other /v1/shares/:token route). */
+app.post("/v1/shares/:token/progress", async (req, res) => {
+  if (!isToken(req.params.token) || limited(shareViewBucket, req.clientIp, 120)) return res.status(404).json({ ok: false, error: "not found" });
+  const progress = sanitizeNavProgress(req.body);
+  if (!progress) return res.status(400).json({ ok: false, error: "invalid progress" });
+  const ok = await updateShareProgress(req.params.token, progress, Date.now());
+  if (!ok) return res.status(404).json({ ok: false, error: "not found" });
+  res.json({ ok: true });
 });
 
 /** Live status of the shared trip's vehicles. 台鐵 legs get the train's real position (last station, next station,
@@ -732,6 +754,13 @@ app.get("/v1/shares/:token/live", async (req, res) => {
   if (!isToken(req.params.token) || limited(shareViewBucket, req.clientIp, 90)) return res.status(404).json({ ok: false, error: "not found" });
   const row = await getShare(req.params.token);
   if (isExpired(row)) return res.status(404).json({ ok: false, error: "expired or unknown" });
+  if (row.kind === "nav") {
+    const fresh = row.navProgressAtMs != null && Date.now() - row.navProgressAtMs <= NAV_PROGRESS_STALE_MS;
+    return res.json({
+      ok: true, kind: "nav",
+      nav: fresh ? { ...row.navProgress, updatedAt: new Date(row.navProgressAtMs).toISOString() } : null,
+    });
+  }
   const segs = row.segments;
   const first = segs[0], last = segs[segs.length - 1];
   const stopId = (n) => String(n ?? "").slice(String(n ?? "").indexOf(":") + 1) || null;

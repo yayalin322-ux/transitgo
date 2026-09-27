@@ -8,50 +8,57 @@
 <style>
   :root {
     color-scheme: light dark;
-    --bg: #f2f3f5; --card: #ffffff; --card-walk: #ffffffa0; --text: #1c1c1e; --muted: #6b6b70; --line: #e5e5e8;
-    --blue: #007aff; --blue-soft: #007aff14; --red: #d70015; --red-soft: #d7001514; --green: #1a8f45; --green-soft: #1a8f4516; --amber: #b25e00; --amber-soft: #b25e0018;
-    --shadow: 0 1px 2px #00000010, 0 8px 24px -12px #00000022;
+    --bg: #fbfdff; --card: #ffffff; --card-walk: #ffffffa0; --text: #0e2038; --muted: #57667e; --line: #e2e8f1;
+    --accent: #0a6cf0; --accent-soft: #e6f1ff; --accent2: #0fb88a; --accent2-soft: #e3faf3;
+    --red: #d63a3a; --red-soft: #fde4e2; --amber: #b25e00; --amber-soft: #fff7b0;
+    --shadow: 0 1px 2px #0e20380a, 0 12px 32px -16px #0e203822;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #0b0c0f; --card: #1a1b1e; --card-walk: #1a1b1ea0; --text: #f2f2f4; --muted: #9a9aa0; --line: #2c2d31;
-      --blue-soft: #0a84ff22; --red: #ff453a; --red-soft: #ff453a1e; --green: #32d158; --green-soft: #32d1581e; --amber: #ffb454; --amber-soft: #ffb4541e;
-      --shadow: 0 1px 2px #00000040, 0 8px 28px -12px #00000066; }
+    :root { --bg: #0b1626; --card: #101d33; --card-walk: #101d33a0; --text: #eef3fa; --muted: #9fb0c6; --line: #24344c;
+      --accent: #4da3ff; --accent-soft: #0a6cf033; --accent2: #2bd9ac; --accent2-soft: #0fb88a33;
+      --red: #ff8a76; --red-soft: #d63a3a33; --amber: #ffcf5c; --amber-soft: #ffe94a26;
+      --shadow: 0 1px 2px #00000040, 0 12px 32px -16px #00000066; }
   }
   * { box-sizing: border-box; }
   html, body { background: var(--bg); }
-  body { font: 16px/1.55 -apple-system, "PingFang TC", system-ui, sans-serif; color: var(--text); max-width: 560px; margin: 0 auto; padding: 20px 16px 48px; -webkit-font-smoothing: antialiased; }
-  h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.01em; margin: 4px 0 4px; }
+  body { font: 16px/1.55 -apple-system, "PingFang TC", system-ui, sans-serif; color: var(--text); max-width: 560px; margin: 0 auto; padding: 0 16px 48px; -webkit-font-smoothing: antialiased; }
+  .brand { display: flex; align-items: center; gap: 9px; padding: 20px 0 6px; text-decoration: none; color: var(--text); font-weight: 800; font-size: 15px; }
+  .brand img { width: 26px; height: 26px; display: block; }
+  h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.01em; margin: 10px 0 4px; }
   .sub { font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  .sub button { font: inherit; font-size: 12px; font-weight: 600; padding: 5px 13px; border-radius: 99px; border: 1px solid var(--line); background: var(--card); color: var(--blue); cursor: pointer; transition: opacity .15s; }
+  .sub button { font: inherit; font-size: 12px; font-weight: 600; padding: 5px 13px; border-radius: 99px; border: 1px solid var(--line); background: var(--card); color: var(--accent); cursor: pointer; transition: opacity .15s; }
   .sub button:active { opacity: .6; }
-  .banner { border-radius: 14px; padding: 11px 14px; font-size: 13px; line-height: 1.5; background: var(--blue-soft); color: var(--text); margin: 12px 0; }
+  .banner { border-radius: 14px; padding: 11px 14px; font-size: 13px; line-height: 1.5; background: var(--accent-soft); color: var(--text); margin: 12px 0; }
   .banner.warn { background: var(--amber-soft); color: var(--amber); }
   .banner.wake { background: var(--card); border: 1px solid var(--line); color: var(--muted); }
-  .leg { background: var(--card); box-shadow: var(--shadow); border-radius: 18px; padding: 16px; margin: 14px 0; }
+  .leg { background: var(--card); box-shadow: var(--shadow); border: 1px solid var(--line); border-radius: 18px; padding: 16px; margin: 14px 0; }
   .leg.walk { background: var(--card-walk); box-shadow: none; border: 1px dashed var(--line); opacity: .75; padding: 10px 16px; border-radius: 14px; display: flex; align-items: center; gap: 8px; font-size: 14px; }
-  .mode { font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 99px; background: var(--blue-soft); color: var(--blue); margin-right: 6px; letter-spacing: .01em; }
+  .mode { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); margin-right: 6px; letter-spacing: .01em; }
+  .mode svg { width: 13px; height: 13px; flex: none; }
   .leg.walk .mode { background: none; padding: 0; color: var(--muted); }
   .route { display: flex; align-items: baseline; gap: 8px; margin-top: 8px; flex-wrap: wrap; font-size: 15px; }
   .name { font-weight: 800; font-size: 16px; }
   .phase { margin-top: 12px; font-size: 19px; font-weight: 800; line-height: 1.3; letter-spacing: -0.01em; }
-  .phase.ok { color: var(--green); } .phase.late { color: var(--amber); } .phase.bad { color: var(--red); }
+  .phase.ok { color: var(--accent2); } .phase.late { color: var(--amber); } .phase.bad { color: var(--red); }
   .count { margin-top: 4px; font-size: 14px; color: var(--muted); }
   .count b { font-variant-numeric: tabular-nums; font-size: 17px; color: var(--text); font-weight: 700; }
-  .pos { margin-top: 10px; padding: 10px 12px; border-radius: 12px; background: var(--blue-soft); border-left: 3px solid var(--blue); font-size: 14px; font-weight: 500; }
+  .pos { margin-top: 10px; padding: 10px 12px; border-radius: 12px; background: var(--accent-soft); border-left: 3px solid var(--accent); font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 7px; }
+  .pos svg { width: 15px; height: 15px; flex: none; color: var(--accent); }
   .badges { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
   .badge { font-size: 12px; font-weight: 600; padding: 4px 11px; border-radius: 99px; background: var(--line); color: var(--muted); }
-  .badge.ok { background: var(--green-soft); color: var(--green); } .badge.late { background: var(--amber-soft); color: var(--amber); }
+  .badge.ok { background: var(--accent2-soft); color: var(--accent2); } .badge.late { background: var(--amber-soft); color: var(--amber); }
   ol.stops { list-style: none; margin: 14px 0 0; padding: 0; position: relative; }
   ol.stops li { position: relative; padding: 4px 0 4px 26px; font-size: 14px; display: flex; justify-content: space-between; gap: 8px; }
   ol.stops li::before { content: ""; position: absolute; left: 7px; top: 0; bottom: 0; width: 2px; background: var(--line); }
   ol.stops li:first-child::before { top: 10px; } ol.stops li:last-child::before { bottom: calc(100% - 10px); }
   ol.stops li::after { content: ""; position: absolute; left: 3px; top: 10px; width: 10px; height: 10px; border-radius: 50%; background: var(--line); border: 2px solid var(--card); }
-  ol.stops li.passed { color: var(--muted); } ol.stops li.passed::after { background: var(--green); }
-  ol.stops li.next { font-weight: 700; } ol.stops li.next::after { background: var(--blue); box-shadow: 0 0 0 4px var(--blue-soft); }
+  ol.stops li.passed { color: var(--muted); } ol.stops li.passed::after { background: var(--accent2); }
+  ol.stops li.next { font-weight: 700; } ol.stops li.next::after { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
   ol.stops li.edge { font-weight: 600; }
   ol.stops li .t { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 13px; }
   .note { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
-  .alert { font-size: 13px; color: var(--red); margin-top: 8px; font-weight: 600; }
+  .alert { font-size: 13px; color: var(--red); margin-top: 8px; font-weight: 600; display: flex; align-items: flex-start; gap: 6px; }
+  .alert svg { width: 14px; height: 14px; flex: none; margin-top: 2px; }
   .rate { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); text-align: center; }
   .rate .stars button { font-size: 30px; background: none; border: 0; cursor: pointer; padding: 2px 4px; color: var(--line); transition: transform .1s, color .1s; }
   .rate .stars button.on { color: #ffb400; }
@@ -59,9 +66,20 @@
   .rate p { margin: 6px 0; font-size: 14px; color: var(--muted); }
   #err { text-align: center; padding: 60px 16px; font-size: 15px; color: var(--muted); }
   footer { font-size: 12px; color: var(--muted); margin-top: 28px; text-align: center; }
+  footer a { color: var(--accent); }
+  /* ---- 分享行程（App 內導航：開車/騎機車/走路）---- */
+  .nav-dest { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 15px; }
+  .nav-dest svg { width: 15px; height: 15px; color: var(--muted); flex: none; }
+  .nav-eta { margin-top: 14px; font-size: 30px; font-weight: 800; letter-spacing: -0.02em; }
+  .nav-eta small { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin-top: 3px; letter-spacing: 0; }
+  .nav-bar { margin-top: 14px; height: 8px; border-radius: 99px; background: var(--line); overflow: hidden; }
+  .nav-bar > div { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 99px; transition: width 1s linear; }
+  .nav-instruction { margin-top: 12px; padding: 10px 12px; border-radius: 12px; background: var(--accent-soft); font-size: 14px; font-weight: 600; }
+  .nav-arrived { color: var(--accent2); }
 </style>
 </head>
 <body>
+<a class="brand" href="https://yayalin.com/app"><img src="https://yayalin.com/app-assets/logo-icon.png" alt="" /><span>交通即時查 TransitGo</span></a>
 <h1 id="title">行程分享</h1>
 <div class="sub"><span id="sub">讀取中…</span><button id="refresh" type="button" hidden>重新整理</button></div>
 <div id="wake" class="banner wake" hidden></div>
@@ -69,7 +87,7 @@
 <div class="banner" id="disclaimer">這裡顯示的是<b>班次狀態與列車最後回報的位置</b>（台鐵才有），<b>不是 GPS 即時定位</b>，也不含分享者本人的位置。</div>
 <div id="legs"></div>
 <div id="err" hidden></div>
-<footer>資料來源：交通部 TDX。連結到期後自動失效。</footer>
+<footer>資料來源：交通部 TDX。連結到期後自動失效。 · <a href="https://yayalin.com/app">交通即時查 TransitGo</a></footer>
 
 <script>
 "use strict";
@@ -80,7 +98,23 @@ const token = location.pathname.split("/").filter(Boolean).pop();
 // Opened on this server: /s/<token> talks to /v1/... . Opened through yayalin.com (a proxy in front of this server):
 // /app/s/<token> talks to /app/api/... , which the proxy forwards to the same /v1/... routes.
 const API = location.pathname.startsWith("/app/s/") ? "/app/api" : "/v1";
-const MODE = { BUS: ["🚌", "公車"], MRT: ["🚇", "捷運"], TRA: ["🚆", "台鐵"], HSR: ["🚄", "高鐵"], WALK: ["🚶", "步行"], BIKE: ["🚲", "YouBike"] };
+// Small line icons (not emoji) matching the App/website's own hand-drawn icon style, just simple
+// enough to read at 13px. `currentColor` picks up .mode's text color automatically.
+const ICONS = {
+  bus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M3 11h18"/><path d="M7 17v2M17 17v2"/></svg>',
+  metro: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="14" rx="4"/><path d="M4 11h16"/><path d="M9 21l-2-4M15 21l2-4"/><circle cx="9" cy="14" r="0.5" fill="currentColor"/><circle cx="15" cy="14" r="0.5" fill="currentColor"/></svg>',
+  train: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="13" rx="3"/><path d="M4 11h16"/><path d="M9 20l-2 2M15 20l2 2"/><circle cx="8" cy="14" r="0.5" fill="currentColor"/><circle cx="16" cy="14" r="0.5" fill="currentColor"/></svg>',
+  hsr: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17c0-7 2-12 7-12s7 5 7 12"/><path d="M5 17h14"/><path d="M8 21l-1.5 2M16 21l1.5 2"/></svg>',
+  walk: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="13" cy="4" r="1.6" fill="currentColor" stroke="none"/><path d="M10 22l1.5-6-2-2 1-5 3 1 2 3 3 1M11 16l4 1 2 5"/></svg>',
+  bike: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="17" r="3"/><circle cx="18" cy="17" r="3"/><path d="M6 17l4-8h5l3 8M10 9h3M14 9l3 4"/></svg>',
+  pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.7-6-10.5a6 6 0 0 1 12 0c0 4.8-6 10.5-6 10.5z"/><circle cx="12" cy="10.5" r="2.2"/></svg>',
+  warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5l9.5 16.5H2.5z"/><path d="M12 10v4"/><circle cx="12" cy="17" r="0.6" fill="currentColor" stroke="none"/></svg>',
+  car: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16l1.5-5.5A2 2 0 0 1 7.4 9h9.2a2 2 0 0 1 1.9 1.5L20 16"/><rect x="3" y="16" width="18" height="4" rx="1.5"/><circle cx="7.5" cy="20" r="1.3"/><circle cx="16.5" cy="20" r="1.3"/></svg>',
+  scooter: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="18" r="2.3"/><circle cx="18" cy="18" r="2.3"/><path d="M5.5 18h5l3-9h3M13.5 9h3M9 12h4l1.5 4"/></svg>',
+  flag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 21V4"/><path d="M6 4h12l-3 4 3 4H6"/></svg>',
+};
+const MODE = { BUS: [ICONS.bus, "公車"], MRT: [ICONS.metro, "捷運"], TRA: [ICONS.train, "台鐵"], HSR: [ICONS.hsr, "高鐵"], WALK: [ICONS.walk, "步行"], BIKE: [ICONS.bike, "YouBike"] };
+const NAV_MODE = { automobile: [ICONS.car, "開車"], scooter: [ICONS.scooter, "騎機車"], walking: [ICONS.walk, "步行"] };
 const clock = (ms) => ms ? new Date(ms).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Taipei" }) : "—";
 const isVehicle = (s) => s.mode !== "WALK" && s.mode !== "BIKE";
 const reasonText = { not_supported: "這個交通工具沒有公開的即時資料來源，只能顯示班次時間", no_data: "目前查不到這班車的即時資料", unavailable: "即時資料暫時取不到", rate_limited: "即時資料查詢太頻繁，稍後會自動再試" };
@@ -144,7 +178,7 @@ function legModel(seg, train, ov) {
     const p = train.position;
     if (p) {
       const where = p.status === "departed" ? `已離開 ${p.stationName}` : p.status === "at_station" ? `停靠 ${p.stationName}` : p.status === "approaching" ? `進站中：${p.stationName}` : `在 ${p.stationName}`;
-      m.pos = `📍 ${where}` + (train.next ? ` · 下一站 ${train.next.name}${train.next.estMs ? `（約 ${clock(train.next.estMs)}）` : ""}` : "");
+      m.pos = `${where}` + (train.next ? ` · 下一站 ${train.next.name}${train.next.estMs ? `（約 ${clock(train.next.estMs)}）` : ""}` : "");
     }
     switch (train.phase) {
       case "notStarted": m.phase = "尚未發車"; break;
@@ -187,12 +221,12 @@ function legHtml(seg, i, m) {
   const stops = m.stops.length ? `<ol class="stops">${m.stops.map((s) => `<li class="${s.status}${s.isBoarding || s.isAlighting ? " edge" : ""}"><span>${esc(s.name)}${s.isBoarding ? "（上車）" : s.isAlighting ? "（下車）" : ""}${s.status === "next" ? " ←" : ""}</span><span class="t">${clock(s.estMs)}</span></li>`).join("")}</ol>` : "";
   return `
     <div class="phase ${m.tone}">${esc(m.phase)}</div>
-    ${m.pos ? `<div class="pos">${esc(m.pos)}</div>` : ""}
+    ${m.pos ? `<div class="pos">${ICONS.pin}<span>${esc(m.pos)}</span></div>` : ""}
     <div class="count" data-i="${i}"></div>
     <div class="badges">${badges.join("")}</div>
     ${stops}
     ${m.note ? `<div class="note">${esc(m.note)}</div>` : ""}
-    ${m.alerts.map((a) => `<div class="alert">⚠️ ${esc(a.title)}</div>`).join("")}
+    ${m.alerts.map((a) => `<div class="alert">${ICONS.warn}<span>${esc(a.title)}</span></div>`).join("")}
     <div class="note">預定 ${clock(Date.parse(seg.departureTime))} 發車 → ${clock(Date.parse(seg.arrivalTime))} 抵達${m.depEst || m.arrEst ? `；預估 ${clock(m.dep)} 發車 → ${clock(m.arr)} 抵達` : ""}</div>
     ${m.arrived ? rateHtml(seg, i) : ""}`;
 }
@@ -225,9 +259,48 @@ function fmtSpan(ms) {
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
   return h ? `${h} 小時 ${m} 分` : m ? `${m} 分 ${String(sec).padStart(2, "0")} 秒` : `${sec} 秒`;
 }
+function fmtMeters(m) { return m >= 1000 ? `${(m / 1000).toFixed(1)} 公里` : `${Math.round(m)} 公尺`; }
+
+/* ---------- 分享行程（App 內導航）：只有距離/時間/下一個指示，從來沒有座標 ---------- */
+let navFurthestMeters = 0;   // "剩多少" 的分母：這趟看過最遠的剩餘距離，用來畫進度條
+function navShell() {
+  const [icon, label] = NAV_MODE[plan.nav.mode] || [ICONS.car, plan.nav.mode];
+  return `<div class="leg" id="nav-leg">
+    <div><span class="mode">${icon} ${esc(label)}</span></div>
+    <div class="nav-dest">${ICONS.flag}<span>前往 <b>${esc(plan.nav.destinationName)}</b></span></div>
+    <div id="nav-body"><div class="note">等待分享者的第一次更新中…</div></div>
+  </div>`;
+}
+function renderNav() {
+  const el = $("nav-body");
+  if (!el) return;
+  const n = live?.nav;
+  if (!n) {
+    el.innerHTML = `<div class="note">${live === null ? "等待分享者的第一次更新中…" : "分享者目前沒有在導航中（App 沒有在前景，或已經結束這趟行程）——這不代表已經到達，只是暫時看不到最新進度。"}</div>`;
+    return;
+  }
+  navFurthestMeters = Math.max(navFurthestMeters, n.remainingMeters);
+  const pct = n.arrived ? 100 : navFurthestMeters > 0 ? Math.max(2, Math.min(100, Math.round((1 - n.remainingMeters / navFurthestMeters) * 100))) : 0;
+  el.innerHTML = `
+    ${n.arrived
+      ? `<div class="phase nav-arrived">已經到達</div>`
+      : `<div class="nav-eta" data-eta="${n.etaSeconds}" data-at="${Date.parse(n.updatedAt)}">約 <span class="nav-eta-val">${fmtSpan(n.etaSeconds * 1000)}</span> 後到達<small>剩餘 ${fmtMeters(n.remainingMeters)}</small></div>`}
+    <div class="nav-bar"><div style="width:${pct}%"></div></div>
+    ${n.instruction ? `<div class="nav-instruction">${esc(n.instruction)}</div>` : ""}`;
+}
+function tickNav() {
+  const el = document.querySelector(".nav-eta");
+  if (!el) return;
+  const baseSeconds = Number(el.dataset.eta), at = Number(el.dataset.at);
+  const elapsedSeconds = (Date.now() - at) / 1000;
+  const left = Math.max(0, baseSeconds - elapsedSeconds);
+  const valEl = el.querySelector(".nav-eta-val");
+  if (valEl) valEl.textContent = fmtSpan(left * 1000);
+}
 function tickClock() {
   const now = Date.now();
-  document.querySelectorAll(".count").forEach((el) => {
+  if (plan?.kind === "nav") tickNav();
+  else document.querySelectorAll(".count").forEach((el) => {
     const i = Number(el.dataset.i), m = models[i], seg = plan?.segments[i];
     if (!m || !seg) return;
     let html = "";
@@ -239,10 +312,12 @@ function tickClock() {
   });
   const age = lastOkAt ? Math.round((now - lastOkAt) / 1000) : null;
   if (age != null) {
-    $("sub").textContent = `資料 ${age} 秒前更新（每 15 秒自動更新）`;
+    const every = plan?.kind === "nav" ? 8 : 15;
+    $("sub").textContent = `資料 ${age} 秒前更新（每 ${every} 秒自動更新）`;
     const stale = $("stale");
-    stale.hidden = age < 60;
-    if (age >= 60) stale.textContent = `已經 ${age} 秒沒有更新到最新資料（可能是連線或資料來源暫時有問題），下面是最後一次成功的內容，會自動重試。`;
+    const staleAfter = plan?.kind === "nav" ? 30 : 60;
+    stale.hidden = age < staleAfter;
+    if (age >= staleAfter) stale.textContent = `已經 ${age} 秒沒有更新到最新資料（可能是連線或資料來源暫時有問題），下面是最後一次成功的內容，會自動重試。`;
   }
 }
 
@@ -259,11 +334,16 @@ async function loadPlan() {
   plan = r.body;
   $("title").textContent = plan.title || "行程分享";
   document.title = (plan.title || "行程分享") + " · TransitGo";
-  $("legs").innerHTML = plan.segments.map(legShell).join("");
+  if (plan.kind === "nav") {
+    $("disclaimer").innerHTML = `這裡顯示的是分享者導航的<b>剩餘距離與預估時間</b>，<b>不是 GPS 即時定位</b>，不含分享者本人的座標位置。`;
+    $("legs").innerHTML = navShell();
+  } else {
+    $("legs").innerHTML = plan.segments.map(legShell).join("");
+  }
   $("refresh").hidden = false;
   await refreshLive(true);
   setInterval(tickClock, 1000);
-  setInterval(() => refreshLive(false), 15000);
+  setInterval(() => refreshLive(false), plan.kind === "nav" ? 8000 : 15000);
 }
 async function refreshLive(force) {
   if (!plan || polling || (document.hidden && !force)) return;
@@ -271,7 +351,9 @@ async function refreshLive(force) {
   try {
     const r = await tryFetch(API + "/shares/" + encodeURIComponent(token) + "/live");
     if (r.status === 404) return gone("這個分享連結已過期");
-    if (r.status === 200 && r.body) { live = r.body; lastOkAt = Date.now(); renderLegs(); }
+    if (r.status === 200 && r.body) { live = r.body; lastOkAt = Date.now(); }
+    if (plan.kind === "nav") renderNav();
+    else if (r.status === 200 && r.body) renderLegs();
     else if (!live) renderLegs();   // first attempt failed: show the schedule at least; the next tick retries
   } finally { polling = false; }
 }

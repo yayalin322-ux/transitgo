@@ -43,6 +43,42 @@ export function sanitizeTitle(v) {
   return str(t.trim(), 60);
 }
 
+/** Modes the App's own in-car/on-foot navigation screen can share — deliberately just these
+ * three; there is no vehicle to poll for a personal nav trip, only the sharer's own device. */
+export const NAV_MODES = Object.freeze(["automobile", "scooter", "walking"]);
+
+/** Whitelist copy of a 'nav' share's setup — what the destination IS, never where the sharer
+ * currently is (that only ever comes from sanitizeNavProgress, as a distance/time, not a
+ * coordinate). `null` when the input doesn't look like a real nav request. */
+export function sanitizeNav(input) {
+  if (!input || typeof input !== "object") return null;
+  if (!NAV_MODES.includes(input.mode)) return null;
+  const destinationName = str(input.destinationName, 60);
+  if (!destinationName) return null;
+  return { mode: input.mode, destinationName };
+}
+
+/** Whitelist copy of one progress update the sharer's own app pushes while navigating — never a
+ * coordinate, only what's needed to show "how much further / how long" (the same idea as a
+ * train's "3 stops left", not a live position on a map). */
+export function sanitizeNavProgress(input) {
+  if (!input || typeof input !== "object") return null;
+  const remainingMeters = Number(input.remainingMeters);
+  const etaSeconds = Number(input.etaSeconds);
+  if (!Number.isFinite(remainingMeters) || remainingMeters < 0) return null;
+  if (!Number.isFinite(etaSeconds) || etaSeconds < 0) return null;
+  return {
+    remainingMeters: Math.round(Math.min(2_000_000, remainingMeters)),
+    etaSeconds: Math.round(Math.min(172_800, etaSeconds)),
+    instruction: str(input.instruction, 120),
+    arrived: input.arrived === true,
+  };
+}
+
+/** A nav share is "live" only while the sharer's app is actually still pushing updates —
+ * further apart than this and the link honestly says so instead of showing a frozen number. */
+export const NAV_PROGRESS_STALE_MS = 45_000;
+
 /** How long the link lives, in ms. */
 export function ttlMs(hours) {
   const h = Number.isFinite(hours) ? Math.min(MAX_TTL_HOURS, Math.max(1, hours)) : DEFAULT_TTL_HOURS;

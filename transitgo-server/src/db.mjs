@@ -204,6 +204,12 @@ if (usingPg) {
       expires_at_ms BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_shares_expires ON shares (expires_at_ms);
+    -- 'trip'（公車/台鐵/高鐵…查 TDX）或 'nav'（App 內開車/走路導航，靠 App 自己回報進度）。
+    -- nav 沒有 segments，segments_json 存 '[]' 當佔位（欄位維持 NOT NULL，不改欄位定義）。
+    ALTER TABLE shares ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'trip';
+    ALTER TABLE shares ADD COLUMN IF NOT EXISTS nav_json TEXT;
+    ALTER TABLE shares ADD COLUMN IF NOT EXISTS nav_progress_json TEXT;
+    ALTER TABLE shares ADD COLUMN IF NOT EXISTS nav_progress_at_ms BIGINT;
 
     CREATE TABLE IF NOT EXISTS speedcam_cache (
       id         TEXT PRIMARY KEY DEFAULT 'all',
@@ -350,11 +356,15 @@ if (usingPg) {
     CREATE INDEX IF NOT EXISTS idx_user_landmark_reports_landmark ON user_landmark_reports (landmark_id);
 
     CREATE TABLE IF NOT EXISTS shares (
-      token         TEXT PRIMARY KEY,
-      title         TEXT,
-      segments_json TEXT NOT NULL,
-      created_at_ms BIGINT NOT NULL,
-      expires_at_ms BIGINT NOT NULL
+      token              TEXT PRIMARY KEY,
+      title              TEXT,
+      kind               TEXT NOT NULL DEFAULT 'trip',
+      segments_json      TEXT NOT NULL,
+      nav_json           TEXT,
+      nav_progress_json  TEXT,
+      nav_progress_at_ms INTEGER,
+      created_at_ms      BIGINT NOT NULL,
+      expires_at_ms      BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_shares_expires ON shares (expires_at_ms);
 
@@ -391,6 +401,11 @@ if (usingPg) {
   for (const [oldCat, newCat] of Object.entries(OLD_CATEGORY_REMAP)) {
     db.exec(`UPDATE user_landmarks SET category = '${newCat}' WHERE category = '${oldCat}'`);
   }
+  const shareCols = db.prepare(`PRAGMA table_info(shares)`).all().map((c) => c.name);
+  if (!shareCols.includes("kind")) db.exec(`ALTER TABLE shares ADD COLUMN kind TEXT NOT NULL DEFAULT 'trip'`);
+  if (!shareCols.includes("nav_json")) db.exec(`ALTER TABLE shares ADD COLUMN nav_json TEXT`);
+  if (!shareCols.includes("nav_progress_json")) db.exec(`ALTER TABLE shares ADD COLUMN nav_progress_json TEXT`);
+  if (!shareCols.includes("nav_progress_at_ms")) db.exec(`ALTER TABLE shares ADD COLUMN nav_progress_at_ms INTEGER`);
   // One review per (place, device) — without this, a single phone could post an
   // unlimited number of 5-star reviews for the same place. Existing duplicates (from
   // before this was enforced) keep only the most recent one so the unique index below
@@ -990,20 +1005,48 @@ function isoZ(value) {
 
 // ---- Shared trip links (see shares.mjs) -------------------------------------------------------
 
-export async function createShare({ token, title, segments, nowMs, expiresAtMs }) {
+/** `kind: 'trip'` (default) needs `segments`; `kind: 'nav'` needs `nav` instead (an in-app
+ * driving/walking navigation share — see shares.mjs's sanitizeNav) and no segments at all. */
+export async function createShare({ token, title, segments, kind = "trip", nav, nowMs, expiresAtMs }) {
   // Expired links are useless and hold nothing we need: sweep them on every create.
   await db.prepare(`DELETE FROM shares WHERE expires_at_ms <= :now`).run({ now: nowMs });
   await db.prepare(`
-    INSERT INTO shares (token, title, segments_json, created_at_ms, expires_at_ms)
-    VALUES (:token, :title, :segments_json, :created, :expires)
-  `).run({ token, title: title ?? null, segments_json: JSON.stringify(segments), created: nowMs, expires: expiresAtMs });
+    INSERT INTO shares (token, title, kind, segments_json, nav_json, created_at_ms, expires_at_ms)
+    VALUES (:token, :title, :kind, :segments_json, :nav_json, :created, :expires)
+  `).run({
+    token, title: title ?? null, kind,
+    segments_json: JSON.stringify(segments ?? []),
+    nav_json: nav ? JSON.stringify(nav) : null,
+    created: nowMs, expires: expiresAtMs,
+  });
 }
 
 /** The stored share, or null. Expiry is the caller's decision (shares.mjs isExpired). */
 export async function getShare(token) {
-  const r = await db.prepare(`SELECT token, title, segments_json, created_at_ms, expires_at_ms FROM shares WHERE token = :token`).get({ token });
+  const r = await db.prepare(`
+    SELECT token, title, kind, segments_json, nav_json, nav_progress_json, nav_progress_at_ms, created_at_ms, expires_at_ms
+    FROM shares WHERE token = :token
+  `).get({ token });
   if (!r) return null;
-  return { token: r.token, title: r.title, segments: JSON.parse(r.segments_json), created_at_ms: Number(r.created_at_ms), expires_at_ms: Number(r.expires_at_ms) };
+  return {
+    token: r.token, title: r.title, kind: r.kind || "trip",
+    segments: r.segments_json ? JSON.parse(r.segments_json) : [],
+    nav: r.nav_json ? JSON.parse(r.nav_json) : null,
+    navProgress: r.nav_progress_json ? JSON.parse(r.nav_progress_json) : null,
+    navProgressAtMs: r.nav_progress_at_ms != null ? Number(r.nav_progress_at_ms) : null,
+    created_at_ms: Number(r.created_at_ms), expires_at_ms: Number(r.expires_at_ms),
+  };
+}
+
+/** The sharer's own app pushes this every so often while navigating — replaces the previous
+ * snapshot outright, there is no history. Silently a no-op for a token that doesn't exist or
+ * isn't a 'nav' share, so a stale/foreign token can't be used to probe which tokens are real. */
+export async function updateShareProgress(token, progress, nowMs) {
+  const info = await db.prepare(`
+    UPDATE shares SET nav_progress_json = :progress, nav_progress_at_ms = :now
+    WHERE token = :token AND kind = 'nav' AND expires_at_ms > :now
+  `).run({ token, progress: JSON.stringify(progress), now: nowMs });
+  return info.changes > 0;
 }
 
 export async function deleteShare(token) {
