@@ -10,6 +10,17 @@ import { ensureGtfsSchema } from "./gtfs/schema.mjs";
 const usingPg = !!process.env.DATABASE_URL;
 export let db;
 
+// One-time remap for landmarks saved under the old, coarser 13-category taxonomy (used by the
+// schema-migration blocks below) — a representative fine category per old group, so existing
+// listings get *something specific* rather than every old row silently bucketing into "other".
+// Safe to run every boot: once a row's category is no longer one of these old keys, its WHERE
+// clause never matches again.
+const OLD_CATEGORY_REMAP = {
+  foodDrink: "restaurant", medical: "clinic", shopping: "marketplace", transportation: "parkingLot",
+  education: "school", finance: "bank", government: "cityHall", recreation: "park",
+  sports: "gym", lodging: "hotel", religion: "temple", personalServices: "repairShop",
+};
+
 if (usingPg) {
   const { PgDatabase } = await import("./pgdb.mjs");
   db = new PgDatabase(process.env.DATABASE_URL);
@@ -146,6 +157,7 @@ if (usingPg) {
       business_verified INTEGER NOT NULL DEFAULT 0,
       business_hours    TEXT,
       phone             TEXT,
+      business_status   TEXT NOT NULL DEFAULT 'open',
       app_version       TEXT,
       device            TEXT,
       email             TEXT,
@@ -157,6 +169,22 @@ if (usingPg) {
     CREATE INDEX IF NOT EXISTS idx_user_landmarks_approved ON user_landmarks (approved, created_at);
     -- 店家自己驗證信箱後留下的信箱（跟手動驗證並存：兩條路都能讓 business_verified 變 true）。
     ALTER TABLE user_landmarks ADD COLUMN IF NOT EXISTS email TEXT;
+    -- 'open' | 'temporarily_closed' | 'permanently_closed' —— 只有已驗證店家自己能改（見 updateMyUserLandmark）。
+    ALTER TABLE user_landmarks ADD COLUMN IF NOT EXISTS business_status TEXT NOT NULL DEFAULT 'open';
+    -- 舊的粗分類（這個功能改成 Google 地圖那樣細分類之前）換成細分類裡的代表值，
+    -- 不然舊地標全部會被 App 端當成無法辨識、退回顯示成「其他」。
+    UPDATE user_landmarks SET category = 'restaurant' WHERE category = 'foodDrink';
+    UPDATE user_landmarks SET category = 'clinic' WHERE category = 'medical';
+    UPDATE user_landmarks SET category = 'marketplace' WHERE category = 'shopping';
+    UPDATE user_landmarks SET category = 'parkingLot' WHERE category = 'transportation';
+    UPDATE user_landmarks SET category = 'school' WHERE category = 'education';
+    UPDATE user_landmarks SET category = 'bank' WHERE category = 'finance';
+    UPDATE user_landmarks SET category = 'cityHall' WHERE category = 'government';
+    UPDATE user_landmarks SET category = 'park' WHERE category = 'recreation';
+    UPDATE user_landmarks SET category = 'gym' WHERE category = 'sports';
+    UPDATE user_landmarks SET category = 'hotel' WHERE category = 'lodging';
+    UPDATE user_landmarks SET category = 'temple' WHERE category = 'religion';
+    UPDATE user_landmarks SET category = 'repairShop' WHERE category = 'personalServices';
 
     CREATE TABLE IF NOT EXISTS user_landmark_reports (
       id          SERIAL PRIMARY KEY,
@@ -300,6 +328,7 @@ if (usingPg) {
       business_verified INTEGER NOT NULL DEFAULT 0,
       business_hours    TEXT,
       phone             TEXT,
+      business_status   TEXT NOT NULL DEFAULT 'open',
       app_version       TEXT,
       device            TEXT,
       email             TEXT,
@@ -355,6 +384,12 @@ if (usingPg) {
   const landmarkCols = db.prepare(`PRAGMA table_info(user_landmarks)`).all().map((c) => c.name);
   if (!landmarkCols.includes("email")) {
     db.exec(`ALTER TABLE user_landmarks ADD COLUMN email TEXT`);
+  }
+  if (!landmarkCols.includes("business_status")) {
+    db.exec(`ALTER TABLE user_landmarks ADD COLUMN business_status TEXT NOT NULL DEFAULT 'open'`);
+  }
+  for (const [oldCat, newCat] of Object.entries(OLD_CATEGORY_REMAP)) {
+    db.exec(`UPDATE user_landmarks SET category = '${newCat}' WHERE category = '${oldCat}'`);
   }
   // One review per (place, device) — without this, a single phone could post an
   // unlimited number of 5-star reviews for the same place. Existing duplicates (from
@@ -610,11 +645,18 @@ export async function createPlaceReview(r) {
   }
 }
 
-/** Self-service delete: only the device that posted a review may remove it — same ownership
- * model the App already uses for "my landmarks", no separate token to manage. */
-export async function deletePlaceReviewByDevice(id, device) {
-  if (!device) return false;
-  const info = await db.prepare(`DELETE FROM place_reviews WHERE id = ? AND device = ?`).run(id, device);
+/** Self-service delete: the device that posted a review, OR the same verified email
+ * re-proven with a fresh code (the /v1/places/reviews/:id route re-verifies before calling
+ * this with `email` set) — same two-path ownership as "my landmarks", so switching phones
+ * doesn't strand you. `owner` can be a bare device string (old call shape) or `{device, email}`. */
+export async function deletePlaceReviewByDevice(id, owner) {
+  const { device = null, email = null } = typeof owner === "string" ? { device: owner } : (owner || {});
+  if (!device && !email) return false;
+  const row = await db.prepare(`SELECT device, email FROM place_reviews WHERE id = ?`).get(id);
+  if (!row) return false;
+  const isOwner = (device && row.device === device) || (email && row.email === email);
+  if (!isOwner) return false;
+  const info = await db.prepare(`DELETE FROM place_reviews WHERE id = ?`).run(id);
   if (info.changes === 0) return false;
   await db.prepare(`DELETE FROM place_review_reports WHERE review_id = ?`).run(id);
   return true;
@@ -630,15 +672,20 @@ export async function listPlaceReviews(placeKey, limit = 50) {
   }));
 }
 
-/** This device's own reviews (any place) — so the app can show "delete my review" without the
- * public listing ever exposing whose device posted what. */
-export async function listMyPlaceReviews(device) {
-  if (!device) return [];
-  const rows = await db.prepare(`
-    SELECT id, place_key, place_name, stars, comment, photo, created_at FROM place_reviews
-    WHERE device = ? ORDER BY created_at DESC LIMIT 200
-  `).all(device);
-  return rows.map((row) => ({
+/** This device's own reviews (any place), OR — once re-verified with a fresh code — the ones
+ * tied to a given Email, so a switch to a new phone doesn't lose access to your own reviews.
+ * The public listing never exposes whose device/email posted what; this is the only path in. */
+export async function listMyPlaceReviews(owner) {
+  const { device = null, email = null } = typeof owner === "string" ? { device: owner } : (owner || {});
+  if (!device && !email) return [];
+  const byId = new Map();
+  if (device) {
+    for (const row of await db.prepare(`SELECT id, place_key, place_name, stars, comment, photo, created_at FROM place_reviews WHERE device = ? ORDER BY created_at DESC LIMIT 200`).all(device)) byId.set(row.id, row);
+  }
+  if (email) {
+    for (const row of await db.prepare(`SELECT id, place_key, place_name, stars, comment, photo, created_at FROM place_reviews WHERE email = ? ORDER BY created_at DESC LIMIT 200`).all(email)) byId.set(row.id, row);
+  }
+  return [...byId.values()].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)).map((row) => ({
     id: row.id, placeKey: row.place_key, placeName: row.place_name,
     stars: row.stars, comment: row.comment, photo: row.photo, createdAt: isoZ(row.created_at),
   }));
@@ -683,12 +730,23 @@ export async function listAllPlaceReviews(limit = 200) {
 }
 
 // ---- user-submitted landmarks (real user content, held for admin approval) ----
-// Fixed taxonomy the app's picker uses — keep in sync with Swift's LandmarkCategory.
+// Google-Maps-style fine-grained taxonomy — keep in sync with Swift's LandmarkCategory
+// (same raw values; LandmarkCategoryGroup there is the old 13-case list, used for icon/color).
 export const LANDMARK_CATEGORIES = [
-  "foodDrink", "medical", "shopping", "transportation", "education", "finance",
-  "government", "recreation", "sports", "lodging", "religion", "personalServices", "other",
+  "restaurant", "cafe", "teaShop", "bakery", "dessertShop", "bar", "breakfastShop", "nightMarketStall", "buffet", "fastFood",
+  "groceryStore", "convenienceStore", "supermarket", "clothingStore", "bookstore", "electronicsStore", "giftShop", "marketplace",
+  "hospital", "clinic", "dentist", "pharmacy", "veterinary",
+  "gasStation", "evCharging", "parkingLot", "carRepair", "bikeShop",
+  "school", "kindergarten", "cramSchool", "library",
+  "bank", "atm", "insurance",
+  "policeStation", "fireStation", "postOffice", "cityHall",
+  "park", "cinema", "museum", "artGallery", "karaoke", "arcade",
+  "gym", "swimmingPool", "sportsField", "yogaStudio",
+  "hotel", "hostel", "bnb", "campground",
+  "temple", "church",
+  "hairSalon", "laundry", "petGrooming", "repairShop",
+  "other",
 ];
-
 export async function createUserLandmark(r) {
   const category = LANDMARK_CATEGORIES.includes(r.category) ? r.category : "other";
   await db.prepare(`
@@ -730,6 +788,9 @@ export async function listApprovedLandmarksNear(lat, lon, radiusMeters = 1000) {
     businessHours: r.business_verified ? r.business_hours : null,
     phone: r.business_verified ? r.phone : null,
     businessVerified: !!r.business_verified,
+    // Google-Maps-style: a closed place stays visible (with the status flagged) rather than
+    // vanishing — vanishing reads as "this data is broken", a flag reads as "closed today".
+    businessStatus: r.business_verified ? r.business_status : "open",
   }));
 }
 
@@ -747,7 +808,7 @@ export async function listAllUserLandmarks(limit = 200) {
   return rows.map((r) => ({
     id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
     isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified, businessHours: r.business_hours, phone: r.phone,
-    email: r.email, approved: !!r.approved, reported: r.reported, reportReasons: reasonsByLandmark.get(r.id) ?? {},
+    businessStatus: r.business_status, email: r.email, approved: !!r.approved, reported: r.reported, reportReasons: reasonsByLandmark.get(r.id) ?? {},
     appVersion: r.app_version, createdAt: isoZ(r.created_at),
   }));
 }
@@ -780,36 +841,58 @@ export async function reportUserLandmark(id, reason, ip) {
   return true;
 }
 
-/** This device's own submitted landmarks (any status) — so a submitter can see
- * "pending"/"approved"/"verified" and, once verified, actually edit their listing. */
-export async function listMyUserLandmarks(device) {
-  const rows = await db.prepare(`
-    SELECT * FROM user_landmarks WHERE device = ? ORDER BY created_at DESC
-  `).all(device);
-  return rows.map((r) => ({
+const BUSINESS_STATUSES = ["open", "temporarily_closed", "permanently_closed"];
+
+function mapMyLandmarkRow(r) {
+  return {
     id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
     isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified, businessHours: r.business_hours, phone: r.phone,
-    approved: !!r.approved, createdAt: isoZ(r.created_at),
-  }));
+    businessStatus: r.business_status, approved: !!r.approved, createdAt: isoZ(r.created_at),
+  };
+}
+
+/** This device's own submitted landmarks (any status) — so a submitter can see
+ * "pending"/"approved"/"verified" and, once verified, actually edit their listing.
+ * `owner` can be a bare device string (old call shape) or `{device, email}` — email
+ * matters for a verified business owner checking from a *different* phone than the one
+ * that originally submitted the claim (see /v1/landmarks/mine, which re-verifies the
+ * email with a fresh code before ever calling this). */
+export async function listMyUserLandmarks(owner) {
+  const { device = null, email = null } = typeof owner === "string" ? { device: owner } : (owner || {});
+  const byId = new Map();
+  if (device) {
+    for (const r of await db.prepare(`SELECT * FROM user_landmarks WHERE device = ?`).all(device)) byId.set(r.id, r);
+  }
+  if (email) {
+    for (const r of await db.prepare(`SELECT * FROM user_landmarks WHERE email = ?`).all(email)) byId.set(r.id, r);
+  }
+  return [...byId.values()].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)).map(mapMyLandmarkRow);
 }
 
 /**
- * A verified business owner editing their own real listing — the ONLY identity check
- * available without a real account system is "does the device id match the one that
- * originally submitted this", so that's what gates it, on top of requiring
- * business_verified (an admin's real, manual confirmation) — an unverified claimant
- * can't use this to rewrite their listing into something an admin never actually
- * checked. Only the provided fields are changed.
+ * A verified business owner editing their own real listing. Ownership is "the device that
+ * originally submitted it" OR "the same verified email, re-proven with a fresh code" — the
+ * second path is what makes this work after switching phones, since there's no real account
+ * system otherwise to carry that identity across devices. Either way `business_verified`
+ * (an admin's real confirmation, or the Email-verified-at-submission path) must already be
+ * true — an unverified claimant can't use this to rewrite a listing an admin never checked.
+ * Only the provided fields are changed.
  */
-export async function updateMyUserLandmark(id, device, fields) {
-  const row = await db.prepare(`SELECT device, business_verified FROM user_landmarks WHERE id = ?`).get(id);
-  if (!row || row.device !== device || !row.business_verified) return false;
+export async function updateMyUserLandmark(id, owner, fields) {
+  const { device = null, email = null } = typeof owner === "string" ? { device: owner } : (owner || {});
+  const row = await db.prepare(`SELECT device, email, business_verified FROM user_landmarks WHERE id = ?`).get(id);
+  if (!row || !row.business_verified) return false;
+  const isOwner = (device && row.device === device) || (email && row.email === email);
+  if (!isOwner) return false;
   const sets = [];
   const params = { id };
   if (typeof fields.description === "string") { sets.push("description = :description"); params.description = fields.description.slice(0, 500); }
   if (typeof fields.businessHours === "string") { sets.push("business_hours = :business_hours"); params.business_hours = fields.businessHours.slice(0, 500); }
   if (typeof fields.photo === "string") { sets.push("photo = :photo"); params.photo = fields.photo; }
   if (typeof fields.phone === "string") { sets.push("phone = :phone"); params.phone = fields.phone.slice(0, 50); }
+  if (typeof fields.businessStatus === "string" && BUSINESS_STATUSES.includes(fields.businessStatus)) {
+    sets.push("business_status = :business_status"); params.business_status = fields.businessStatus;
+  }
   if (typeof fields.lat === "number" && typeof fields.lon === "number") {
     sets.push("lat = :lat", "lon = :lon");
     params.lat = fields.lat; params.lon = fields.lon;
@@ -817,6 +900,43 @@ export async function updateMyUserLandmark(id, device, fields) {
   if (sets.length === 0) return false;
   await db.prepare(`UPDATE user_landmarks SET ${sets.join(", ")} WHERE id = :id`).run(params);
   return true;
+}
+
+/** Name search over already-approved landmarks — for the web business dashboard's "find my
+ * business to claim it" flow, and anything else that wants to search by name rather than by
+ * a radius (the app's own map search already has that). Substring match, case-insensitive;
+ * this table is small (see listApprovedLandmarksNear's own comment), so no FTS needed. */
+export async function searchApprovedLandmarks(query, limit = 20) {
+  const q = `%${query.replace(/[%_]/g, (c) => `\\${c}`)}%`;
+  const rows = await db.prepare(`
+    SELECT * FROM user_landmarks WHERE approved = 1 AND name ${usingPg ? "ILIKE" : "LIKE"} ? ESCAPE '\\'
+    ORDER BY name LIMIT ?
+  `).all(q, limit);
+  return rows.map((r) => ({
+    id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon,
+    isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified,
+  }));
+}
+
+/**
+ * A business owner claiming an EXISTING landmark (already approved, community-added or
+ * otherwise) that nobody has verified yet — as opposed to submitting a brand new one (see
+ * createUserLandmark). The Email is already verified by the caller (POST
+ * /v1/landmarks/:id/claim) before this runs. Refuses outright if someone else already holds
+ * a verified claim on it — this never lets a second claimant silently take over a real
+ * business's listing.
+ */
+export async function claimUserLandmark(id, { email, businessHours, phone }) {
+  const row = await db.prepare(`SELECT business_verified FROM user_landmarks WHERE id = ?`).get(id);
+  if (!row) return false;
+  if (row.business_verified) return false;
+  const info = await db.prepare(`
+    UPDATE user_landmarks
+    SET is_business_claim = 1, business_verified = 1, email = :email,
+        business_hours = COALESCE(:business_hours, business_hours), phone = COALESCE(:phone, phone)
+    WHERE id = :id AND business_verified = 0
+  `).run({ id, email, business_hours: businessHours || null, phone: phone || null });
+  return info.changes > 0;
 }
 
 export async function placeReviewStats(placeKey) {
