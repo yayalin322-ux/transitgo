@@ -2,7 +2,9 @@ import XCTest
 @testable import TransitGo
 
 /// "安全分享" (opt-in safety live-location): off by default on every share, and only ever turned
-/// on for one specific link when the sharer explicitly says so — see ShareLiveLocationConfirmSheet.
+/// on for one specific link when the sharer explicitly says so — an inline toggle right on the
+/// same share screen (TicketDetailView / TransferPlannerView / InAppNavigationView), never a
+/// separate confirm page.
 final class LiveLocationSharingTests: XCTestCase {
     func testATripShareDefaultsToLiveLocationOff() throws {
         let route = try Nav.walkBusMrtWalk()

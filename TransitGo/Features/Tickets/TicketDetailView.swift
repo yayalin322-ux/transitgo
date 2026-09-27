@@ -16,15 +16,16 @@ struct TicketDetailView: View {
         tracker.isTracking && tracker.trackedTrainNo == ticket.trainNo
     }
 
-    @State private var showShareLiveLocationPrompt = false
+    /// 安全分享: off by default, set right here on the same page — no separate confirm screen.
+    @State private var shareLiveLocationOn = false
     @State private var livePusher = LiveLocationPusher()
 
-    private func shareTicket(shareLiveLocation: Bool) {
-        let prepared = ShareTripService.prepare(ticket: ticket, shareLiveLocation: shareLiveLocation)
-        let locationNote = shareLiveLocation ? "，我也開啟了即時位置分享）：" : "，不含我的位置）："
+    private func shareTicket() {
+        let prepared = ShareTripService.prepare(ticket: ticket, shareLiveLocation: shareLiveLocationOn)
+        let locationNote = shareLiveLocationOn ? "，我也開啟了即時位置分享）：" : "，不含我的位置）："
         InstantShare.run(prepared,
                          message: "我搭 \(ticket.system.displayName) \(ticket.trainLabel)，\(ticket.fromName) → \(ticket.toName)，可以看班次狀態（12 小時內有效" + locationNote)
-        if shareLiveLocation, case .success(let p) = prepared { livePusher.start(token: p.token) }
+        if shareLiveLocationOn, case .success(let p) = prepared { livePusher.start(token: p.token) }
     }
 
     var body: some View {
@@ -36,13 +37,14 @@ struct TicketDetailView: View {
             }
 
             Section {
+                Toggle("分享即時位置（安全用途）", isOn: $shareLiveLocationOn)
                 Button {
-                    showShareLiveLocationPrompt = true
+                    shareTicket()
                 } label: {
                     Label("分享這班車給親友", systemImage: "square.and.arrow.up")
                 }
             } footer: {
-                Text("親友用連結（網頁，不用安裝 App）就能看這班車的車次、起訖站與誤點狀態。不含座位或任何個人資料；12 小時後失效。高鐵沒有即時資料來源，只會顯示班次時間。分享時可以另外選擇要不要順便分享你的即時位置（例如確認有沒有上車），預設不會分享。")
+                Text("親友用連結（網頁，不用安裝 App）就能看這班車的車次、起訖站與誤點狀態。不含座位或任何個人資料；12 小時後失效。高鐵沒有即時資料來源，只會顯示班次時間。上面的開關預設關閉；打開後分享出去的連結會額外顯示你的即時位置（例如讓對方確認你有沒有上車），直到連結過期或你自己關閉分享為止。")
             }
 
             Section("發車提醒") {
@@ -140,9 +142,6 @@ struct TicketDetailView: View {
         .onReceive(tick) { now = $0 }
         // 安全分享 never outlives this screen — leaving stops any live-location push in flight.
         .onDisappear { livePusher.stop() }
-        .sheet(isPresented: $showShareLiveLocationPrompt) {
-            ShareLiveLocationConfirmSheet { enabled in shareTicket(shareLiveLocation: enabled) }
-        }
     }
 
     // MARK: - Hero
