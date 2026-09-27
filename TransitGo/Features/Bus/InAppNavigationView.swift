@@ -226,6 +226,10 @@ struct InAppNavigationView: View {
     @State private var highwayWarningSpoken = false
     @State private var lastRerouteAt = Date.distantPast
     @State private var followUser = true
+    /// Non-nil once "分享行程" has been used this session — pushes coarse progress
+    /// (remaining distance/time, never a coordinate) to that share while navigating.
+    @State private var navShareToken: String?
+    @State private var lastNavShareProgressAt: Date = .distantPast
     @State private var activity: Activity<NavigationTripAttributes>?
     @State private var arrived = false
     @State private var announcedMilestones: Set<Int> = []
@@ -591,6 +595,12 @@ struct InAppNavigationView: View {
                                 metric(speedText, label: "目前時速")
                             }
                             Spacer()
+                            Button { shareTrip() } label: {
+                                Image(systemName: "square.and.arrow.up")
+                                    .frame(width: 36, height: 36)
+                                    .background(.gray.opacity(0.25), in: Circle())
+                                    .foregroundStyle(.primary)
+                            }
                             Menu {
                                 Picker("語音", selection: $voiceModeRaw) {
                                     ForEach(VoiceMode.allCases) { m in Label(m.label, systemImage: m.symbol).tag(m.rawValue) }
@@ -679,6 +689,7 @@ struct InAppNavigationView: View {
             checkManeuvers(newLoc)
             checkSpeedCams(newLoc)
             checkRoutePhotos(newLoc)
+            reportNavShareProgress(newLoc)
         }
         // Location fixes only arrive every `distanceFilter` (5m) of movement, so turning
         // in place — or moving slowly — left the compass/camera heading frozen until the
@@ -870,10 +881,52 @@ struct InAppNavigationView: View {
     }
 
     private func finish() {
+        if let navShareToken {
+            NavShareService.pushProgress(token: navShareToken, remainingMeters: 0, etaSeconds: 0, instruction: nil, arrived: true)
+        }
         speaker.stop()
         tracker.stop()
         endActivity()
         dismiss()
+    }
+
+    // MARK: - Sharing
+
+    /// Same "link exists the instant the button is pressed" flow as ShareTripService/InstantShare
+    /// — inlined rather than reused because this needs to hold on to the token afterwards, to push
+    /// progress updates to it while navigating (see reportNavShareProgress).
+    private func shareTrip() {
+        let mode: NavShareService.Mode = transportType == .walking ? .walking : (currentLeg.avoidsHighways ? .scooter : .automobile)
+        switch NavShareService.prepare(destinationName: destinationName, mode: mode) {
+        case .success(let prepared):
+            navShareToken = prepared.token
+            lastNavShareProgressAt = .distantPast   // send the first progress update right away, not after the usual gap
+            SharePresenter.present(items: ["我正在前往\(destinationName)，可以看剩餘距離與預估到達時間（6 小時內有效，不含我的位置）：", prepared.url])
+            Task {
+                if await ShareUploader.upload(prepared) == .failed {
+                    SharePresenter.alert(title: "分享連結沒有建立成功", message: "剛才送出的連結目前打不開：連不上伺服器。請稍後再重新分享一次。")
+                }
+            }
+        case .failure:
+            SharePresenter.alert(title: "無法分享", message: "App 沒有設定後端位址，無法建立分享連結。")
+        }
+    }
+
+    /// Called from the location tick — throttled to roughly the share page's own poll interval,
+    /// there is no point pushing more often than that gets read.
+    private func reportNavShareProgress(_ loc: CLLocation) {
+        guard let navShareToken else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastNavShareProgressAt) >= 8 else { return }
+        lastNavShareProgressAt = now
+        guard let remaining = remainingMeters, let eta = etaSeconds else { return }
+        let instruction: String? = {
+            let steps = route?.steps ?? []
+            let nextIndex = currentStepIndex + 1
+            guard nextIndex < steps.count, !steps[nextIndex].instructions.isEmpty else { return nil }
+            return steps[nextIndex].instructions
+        }()
+        NavShareService.pushProgress(token: navShareToken, remainingMeters: remaining, etaSeconds: eta, instruction: instruction, arrived: false)
     }
 
     /// Same in-app navigation as the primary trip — our own drawn route, live tracking,

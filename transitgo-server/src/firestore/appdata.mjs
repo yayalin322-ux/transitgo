@@ -336,13 +336,31 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
   }
 
   // ---- shared trip links ----
-  async function createShare({ token, title, segments, nowMs, expiresAtMs }) {
+  async function createShare({ token, title, segments, kind = "trip", nav, nowMs, expiresAtMs }) {
     await store.removeWhere("shares", [["expires_at_ms", "<=", nowMs]], 100);   // sweep expired ones on every create
-    await store.set("shares", token, { token, title: title ?? null, segments_json: JSON.stringify(segments), created_at_ms: nowMs, expires_at_ms: expiresAtMs });
+    await store.set("shares", token, {
+      token, title: title ?? null, kind, segments_json: JSON.stringify(segments ?? []),
+      nav_json: nav ? JSON.stringify(nav) : null, nav_progress_json: null, nav_progress_at_ms: null,
+      created_at_ms: nowMs, expires_at_ms: expiresAtMs,
+    });
   }
   async function getShare(token) {
     const r = await store.get("shares", token);
-    return r ? { token: r.token, title: r.title, segments: JSON.parse(r.segments_json), created_at_ms: Number(r.created_at_ms), expires_at_ms: Number(r.expires_at_ms) } : null;
+    if (!r) return null;
+    return {
+      token: r.token, title: r.title, kind: r.kind || "trip",
+      segments: r.segments_json ? JSON.parse(r.segments_json) : [],
+      nav: r.nav_json ? JSON.parse(r.nav_json) : null,
+      navProgress: r.nav_progress_json ? JSON.parse(r.nav_progress_json) : null,
+      navProgressAtMs: r.nav_progress_at_ms != null ? Number(r.nav_progress_at_ms) : null,
+      created_at_ms: Number(r.created_at_ms), expires_at_ms: Number(r.expires_at_ms),
+    };
+  }
+  async function updateShareProgress(token, progress, nowMs) {
+    const r = await store.get("shares", token);
+    if (!r || r.kind !== "nav" || Number(r.expires_at_ms) <= nowMs) return false;
+    await store.update("shares", token, { nav_progress_json: JSON.stringify(progress), nav_progress_at_ms: nowMs });
+    return true;
   }
   const deleteShare = async (token) => { await store.remove("shares", token); };
 
@@ -357,6 +375,6 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     deleteUserLandmark, reportUserLandmark, listMyUserLandmarks, updateMyUserLandmark,
     searchApprovedLandmarks, claimUserLandmark,
     getAlertState, setAlertState,
-    createShare, getShare, deleteShare,
+    createShare, getShare, updateShareProgress, deleteShare,
   };
 }
