@@ -606,9 +606,6 @@ struct InAppNavigationView: View {
                                     .background(.gray.opacity(0.25), in: Circle())
                                     .foregroundStyle(.primary)
                             }
-                            .sheet(isPresented: $showShareLiveLocationPrompt) {
-                                ShareLiveLocationConfirmSheet { enabled in shareTrip(shareLiveLocation: enabled) }
-                            }
                             Menu {
                                 Picker("語音", selection: $voiceModeRaw) {
                                     ForEach(VoiceMode.allCases) { m in Label(m.label, systemImage: m.symbol).tag(m.rawValue) }
@@ -719,6 +716,9 @@ struct InAppNavigationView: View {
         }
         .sheet(item: $parkingDetailTarget) { target in
             PlaceDetailView(name: target.name, coordinate: target.coordinate, subtitle: target.subtitle)
+        }
+        .sheet(isPresented: $showShareLiveLocationPrompt) {
+            ShareLiveLocationConfirmSheet { enabled in shareTrip(shareLiveLocation: enabled) }
         }
     }
 
