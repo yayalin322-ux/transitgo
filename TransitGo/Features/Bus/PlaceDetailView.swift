@@ -77,20 +77,23 @@ struct PlaceDetailView: View {
                     }
                 }
 
-                if let landmarkID {
-                    Section {
-                        if businessVerified {
-                            Button { showEditLandmark = true } label: {
-                                Label("編輯店家資訊", systemImage: "pencil")
-                            }
-                        } else {
-                            // Not yet a verified business — either nobody's claimed it, or someone
-                            // claimed it but hasn't verified their Email. Either way, claiming it now
-                            // (with a verified Email) is what actually unlocks hours/phone/editing.
-                            Button { showClaim = true } label: {
-                                Label("這是我的店家", systemImage: "checkmark.seal")
-                            }
+                Section {
+                    if businessVerified, let landmarkID {
+                        Button { showEditLandmark = true } label: {
+                            Label("編輯店家資訊", systemImage: "pencil")
                         }
+                    } else {
+                        // Not yet a verified business — either nobody's claimed it, someone claimed
+                        // it but never verified their Email, or this place only ever existed as an
+                        // Apple Maps result (landmarkID is nil — it isn't in our own landmarks table
+                        // at all yet). All three end up here: claiming with a verified Email is what
+                        // actually unlocks hours/phone/editing, whether that's an instant claim on an
+                        // existing row or, for the Apple-only case, submitting it as a new one.
+                        Button { showClaim = true } label: {
+                            Label("這是我的店家", systemImage: "checkmark.seal")
+                        }
+                    }
+                    if let landmarkID {
                         if landmarkReported {
                             Text("已檢舉").font(.caption).foregroundStyle(.secondary)
                         } else {
@@ -220,10 +223,8 @@ struct PlaceDetailView: View {
                 }
             }
             .sheet(isPresented: $showClaim) {
-                if let landmarkID {
-                    ClaimLandmarkView(landmarkID: landmarkID, placeName: name) {
-                        showClaim = false
-                    }
+                ClaimLandmarkView(landmarkID: landmarkID, placeName: name, coordinate: coordinate) {
+                    showClaim = false
                 }
             }
         }
@@ -328,20 +329,27 @@ private struct AddPlaceReviewView: View {
     }
 }
 
-/// Claiming an existing, already-approved landmark that isn't a verified business yet — either
-/// nobody's claimed it, or someone did without ever verifying their Email. A verified Email is
-/// the only proof of ownership there is; the server refuses outright if someone else already
-/// holds a verified claim (see claimUserLandmark), so this can't silently take over a real
-/// business's listing out from under them.
+/// Claiming a place as a verified business. Two different things happen underneath depending on
+/// whether this place is already one of our own landmarks:
+/// - `landmarkID` set: it's an existing, already-approved row — a verified Email claims it
+///   instantly (see `claimUserLandmark`; refused outright if someone else already holds a
+///   verified claim, so this can't silently take over a real business's listing).
+/// - `landmarkID` nil: this place only ever existed as an Apple Maps result — it isn't in our
+///   landmarks table at all yet, so there is nothing to "claim" until it's submitted as a new
+///   business-claim landmark (same moderation queue as any other new landmark, see
+///   `createUserLandmark` — a verified Email alone doesn't skip review for a brand-new place,
+///   only for claiming one that already passed review).
 private struct ClaimLandmarkView: View {
-    let landmarkID: Int
+    let landmarkID: Int?
     let placeName: String
+    let coordinate: CLLocationCoordinate2D
     var onDone: () -> Void
 
     @State private var email = ""
     @State private var code = ""
     @State private var businessHours = ""
     @State private var phone = ""
+    @State private var category: LandmarkCategory = .other
     @State private var isSubmitting = false
     @State private var errorText: String?
 
@@ -350,8 +358,19 @@ private struct ClaimLandmarkView: View {
             Form {
                 Section {
                     Text(placeName).font(.headline)
-                    Text("驗證信箱之後就會標示為已驗證店家，之後可以自己編輯營業時間、電話、營業狀態。")
+                    Text(landmarkID != nil
+                         ? "驗證信箱之後就會標示為已驗證店家，之後可以自己編輯營業時間、電話、營業狀態。"
+                         : "這個地點目前不在我們自己的地標資料裡（來自 Apple 地圖），驗證信箱後會送出審核；通過後就會標示為已驗證店家，可以自己編輯營業時間、電話、營業狀態。")
                         .font(.footnote).foregroundStyle(.secondary)
+                }
+                if landmarkID == nil {
+                    Section("類型") {
+                        Picker("類型", selection: $category) {
+                            ForEach(LandmarkCategory.allCases) { c in
+                                Label(c.label, systemImage: c.icon).tag(c)
+                            }
+                        }
+                    }
                 }
                 Section("營業時間（選填）") {
                     TextField("例如：週一至週日 11:00–21:00", text: $businessHours, axis: .vertical).lineLimit(2...4)
@@ -366,7 +385,7 @@ private struct ClaimLandmarkView: View {
                     Text(errorText).font(.footnote).foregroundStyle(.red)
                 }
             }
-            .navigationTitle("認領這個地標")
+            .navigationTitle(landmarkID != nil ? "認領這個地標" : "認領為新地標")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消", action: onDone) }
@@ -374,19 +393,30 @@ private struct ClaimLandmarkView: View {
                     if isSubmitting {
                         ProgressView()
                     } else {
-                        Button("認領") {
+                        Button(landmarkID != nil ? "認領" : "送出審核") {
                             Task {
                                 isSubmitting = true
                                 errorText = nil
-                                let result = await UserLandmarkService.claim(
-                                    id: landmarkID, email: email, code: code,
-                                    businessHours: businessHours, phone: phone
-                                )
+                                let result: UserLandmarkService.SubmitResult
+                                if let landmarkID {
+                                    result = await UserLandmarkService.claim(
+                                        id: landmarkID, email: email, code: code,
+                                        businessHours: businessHours, phone: phone
+                                    )
+                                } else {
+                                    result = await UserLandmarkService.submit(
+                                        name: placeName, description: "", category: category, coordinate: coordinate,
+                                        photo: nil, isBusinessClaim: true, businessHours: businessHours, phone: phone,
+                                        email: email, code: code
+                                    )
+                                }
                                 isSubmitting = false
                                 switch result {
                                 case .ok: onDone()
-                                case .invalidCode: errorText = "驗證碼不正確／已過期，或這個地標已經被別人認領了。"
-                                case .failed: errorText = "認領失敗，請稍後再試一次。"
+                                case .invalidCode: errorText = landmarkID != nil
+                                    ? "驗證碼不正確／已過期，或這個地標已經被別人認領了。"
+                                    : "驗證碼不正確／已過期。"
+                                case .failed: errorText = landmarkID != nil ? "認領失敗，請稍後再試一次。" : "送出失敗，請稍後再試一次。"
                                 }
                             }
                         }
