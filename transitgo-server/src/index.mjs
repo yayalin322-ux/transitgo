@@ -45,7 +45,7 @@ import {
   updateShareLocation,
   deleteShare,
 } from "./appdata.mjs";
-import { sanitizeSegments, sanitizeTitle, ttlMs, newToken, isToken, isExpired, isVehicle, parseTrainTrip, canRate, createRatingLedger, sanitizeNav, sanitizeNavProgress, NAV_PROGRESS_STALE_MS, sanitizeLiveLocation, LIVE_LOCATION_STALE_MS } from "./shares.mjs";
+import { sanitizeSegments, sanitizeTitle, ttlMs, newToken, isToken, isExpired, isVehicle, parseTrainTrip, canRate, createRatingLedger, sanitizeNav, sanitizeNavProgress, NAV_PROGRESS_STALE_MS, sanitizeLiveLocation, LIVE_LOCATION_STALE_MS, SHARE_PAGE_CSP } from "./shares.mjs";
 import { pushAnnouncement } from "./push.mjs";
 import { clampReport } from "./reports.mjs";
 import { buildStatus, allowedOrigin } from "./status.mjs";
@@ -840,7 +840,7 @@ app.get("/s/:token", (req, res) => {
     "Cache-Control": "no-store",
     "X-Robots-Tag": "noindex, nofollow",
     "Referrer-Policy": "no-referrer",
-    "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'",
+    "Content-Security-Policy": SHARE_PAGE_CSP,
   });
   res.sendFile(join(__dirname, "..", "public", "share.html"));
 });
