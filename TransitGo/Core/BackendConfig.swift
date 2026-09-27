@@ -46,6 +46,16 @@ enum BackendConfig {
         return false
     }
 
+    /// A verified business's public page — yayalin.com/shop/:id — built from ShareBaseHost's own
+    /// host (`yayalin.com`), not its `/app` path: the shop pages live at the site's root, a
+    /// sibling of `/app`, not underneath it.
+    static func shopURL(id: Int) -> URL? { shopURL(id: id, host: shareBaseURL?.host) }
+
+    static func shopURL(id: Int, host: String?) -> URL? {
+        guard let host, !host.isEmpty else { return nil }
+        return URL(string: "https://\(host)/shop/\(id)")
+    }
+
     static var isConfigured: Bool { baseURL != nil }
 
     static var appVersion: String {

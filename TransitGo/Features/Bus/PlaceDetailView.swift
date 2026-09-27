@@ -75,6 +75,13 @@ struct PlaceDetailView: View {
                     if mapItem == nil, !loading {
                         Text("沒有更多 Apple 地圖資訊").font(.footnote).foregroundStyle(.secondary)
                     }
+                    // Only our own (approved) landmarks have a page there at all — an Apple-only
+                    // place (landmarkID nil) has nothing to link to yet.
+                    if let landmarkID, let shopURL = BackendConfig.shopURL(id: landmarkID) {
+                        Link(destination: shopURL) {
+                            Label("在網頁上查看", systemImage: "globe")
+                        }
+                    }
                 }
 
                 Section {
