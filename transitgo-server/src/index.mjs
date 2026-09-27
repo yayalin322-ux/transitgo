@@ -31,6 +31,8 @@ import {
   reportUserLandmark,
   listMyUserLandmarks,
   updateMyUserLandmark,
+  searchApprovedLandmarks,
+  claimUserLandmark,
   createObservation,
   listObservations,
   getBikeCache,
@@ -254,13 +256,29 @@ app.get("/v1/places/reviews/mine", async (req, res) => {
   res.json({ reviews: await listMyPlaceReviews(device) });
 });
 
-/** Self-service delete — the poster's own device, no admin needed. Same ownership check as
- * "my landmarks" below; a wrong/missing device id looks identical to "not found" on purpose. */
+/** Cross-device: on a *different* phone than the one that posted a review, the device id is
+ * gone — a freshly-verified Email is the only thing left to prove "this is still me". */
+app.post("/v1/places/reviews/mine", async (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const code = String(req.body?.code || "");
+  if (!EMAIL_RE.test(email)) return res.status(400).json({ error: "invalid email" });
+  if (!(await verifySiteEmailCode(email, code))) return res.status(400).json({ error: "invalid code" });
+  res.json({ reviews: await listMyPlaceReviews({ email }) });
+});
+
+/** Self-service delete — the poster's own device (no verification needed, the device id
+ * itself is the proof), OR a freshly-verified Email for the cross-device case. A wrong/missing
+ * owner looks identical to "not found" on purpose. */
 app.delete("/v1/places/reviews/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
   const device = typeof req.body?.device === "string" ? req.body.device : null;
-  const ok = await deletePlaceReviewByDevice(id, device);
+  let email = null;
+  if (!device && req.body?.email && req.body?.code) {
+    const candidate = String(req.body.email).trim().toLowerCase();
+    if (EMAIL_RE.test(candidate) && (await verifySiteEmailCode(candidate, String(req.body.code)))) email = candidate;
+  }
+  const ok = await deletePlaceReviewByDevice(id, { device, email });
   if (!ok) return res.status(404).json({ error: "not found" });
   res.json({ ok: true });
 });
@@ -370,14 +388,62 @@ app.get("/v1/landmarks/mine", async (req, res) => {
   res.json({ landmarks: await listMyUserLandmarks(device) });
 });
 
-/** A verified business owner editing their own real listing — see updateMyUserLandmark for the ownership+verification gate. */
+/** Cross-device / the web business dashboard: no device id there at all — a freshly-verified
+ * Email is what proves "this is the same business owner" (see also POST /v1/places/reviews/mine). */
+app.post("/v1/landmarks/mine", async (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const code = String(req.body?.code || "");
+  if (!EMAIL_RE.test(email)) return res.status(400).json({ error: "invalid email" });
+  if (!(await verifySiteEmailCode(email, code))) return res.status(400).json({ error: "invalid code" });
+  res.json({ landmarks: await listMyUserLandmarks({ email }) });
+});
+
+/** Name search over approved landmarks — the web business dashboard's "find my business to
+ * claim it" flow; the app's own map search already has its own nearby-based one. */
+app.get("/v1/landmarks/search", async (req, res) => {
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  if (q.length < 2) return res.status(400).json({ error: "q too short" });
+  res.json({ landmarks: await searchApprovedLandmarks(q.slice(0, 100)) });
+});
+
+/** A business owner claiming an EXISTING (already-approved) landmark nobody has verified yet
+ * — as opposed to submitting a brand new one via POST /v1/landmarks. Refuses if someone else
+ * already holds a verified claim on it. */
+const landmarkClaimBucket = new Map();
+app.post("/v1/landmarks/:id/claim", async (req, res) => {
+  const now = Date.now();
+  const hist = (landmarkClaimBucket.get(req.clientIp) || []).filter((t) => now - t < 60_000);
+  if (hist.length >= 5) return res.status(429).json({ error: "rate limited" });
+  hist.push(now);
+  landmarkClaimBucket.set(req.clientIp, hist);
+
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const code = String(req.body?.code || "");
+  if (!EMAIL_RE.test(email)) return res.status(400).json({ error: "invalid email" });
+  if (!(await verifySiteEmailCode(email, code))) return res.status(400).json({ error: "invalid code" });
+  const { businessHours, phone } = req.body || {};
+  const ok = await claimUserLandmark(id, { email, businessHours, phone });
+  if (!ok) return res.status(409).json({ error: "already claimed or not found" });
+  res.json({ ok: true });
+});
+
+/** A verified business owner editing their own real listing — device (the app) OR a
+ * freshly-verified email (the web dashboard / a different phone); see updateMyUserLandmark
+ * for the ownership+verification gate. */
 app.put("/v1/landmarks/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
-  const { device, description, businessHours, phone, photo, lat, lon } = req.body || {};
-  if (!device) return res.status(400).json({ error: "device required" });
+  const { device, description, businessHours, phone, businessStatus, photo, lat, lon } = req.body || {};
   if (photo !== undefined && !validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
-  const ok = await updateMyUserLandmark(id, device, { description, businessHours, phone, photo, lat, lon });
+  let email = null;
+  if (!device && req.body?.email && req.body?.code) {
+    const candidate = String(req.body.email).trim().toLowerCase();
+    if (EMAIL_RE.test(candidate) && (await verifySiteEmailCode(candidate, String(req.body.code)))) email = candidate;
+  }
+  if (!device && !email) return res.status(400).json({ error: "device or verified email required" });
+  const ok = await updateMyUserLandmark(id, { device, email }, { description, businessHours, phone, businessStatus, photo, lat, lon });
   if (!ok) return res.status(403).json({ error: "not authorized to edit this listing" });
   res.json({ ok: true });
 });

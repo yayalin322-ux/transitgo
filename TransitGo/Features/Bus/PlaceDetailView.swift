@@ -15,6 +15,7 @@ struct PlaceDetailView: View {
     var businessHours: String?
     var businessPhone: String?
     var businessVerified = false
+    var businessStatus: BusinessStatus = .open
 
     @Environment(\.dismiss) private var dismiss
     @State private var mapItem: MKMapItem?
@@ -54,6 +55,10 @@ struct PlaceDetailView: View {
                         Link(destination: url) {
                             Label(url.host ?? url.absoluteString, systemImage: "safari.fill")
                         }
+                    }
+                    if businessVerified, businessStatus != .open {
+                        Label(businessStatus.label, systemImage: "exclamationmark.circle.fill")
+                            .foregroundStyle(businessStatus == .permanentlyClosed ? .red : .orange)
                     }
                     if let hours = businessHours {
                         Label(hours, systemImage: "clock.fill")
@@ -200,7 +205,7 @@ struct PlaceDetailView: View {
                 if let landmarkID {
                     EditLandmarkView(
                         landmarkID: landmarkID, description: subtitle ?? "", businessHours: businessHours ?? "",
-                        phone: businessPhone ?? "", coordinate: coordinate
+                        phone: businessPhone ?? "", businessStatus: businessStatus, coordinate: coordinate
                     ) {
                         showEditLandmark = false
                     }
@@ -317,6 +322,7 @@ private struct EditLandmarkView: View {
     @State var description: String
     @State var businessHours: String
     @State var phone: String
+    @State var businessStatus: BusinessStatus
     let coordinate: CLLocationCoordinate2D
     var onDone: () -> Void
 
@@ -326,11 +332,15 @@ private struct EditLandmarkView: View {
     @State private var errorText: String?
     @State private var pinCoordinate: CLLocationCoordinate2D
 
-    init(landmarkID: Int, description: String, businessHours: String, phone: String, coordinate: CLLocationCoordinate2D, onDone: @escaping () -> Void) {
+    init(
+        landmarkID: Int, description: String, businessHours: String, phone: String,
+        businessStatus: BusinessStatus, coordinate: CLLocationCoordinate2D, onDone: @escaping () -> Void
+    ) {
         self.landmarkID = landmarkID
         self._description = State(initialValue: description)
         self._businessHours = State(initialValue: businessHours)
         self._phone = State(initialValue: phone)
+        self._businessStatus = State(initialValue: businessStatus)
         self.coordinate = coordinate
         self.onDone = onDone
         self._pinCoordinate = State(initialValue: coordinate)
@@ -339,6 +349,11 @@ private struct EditLandmarkView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("營業狀態") {
+                    Picker("營業狀態", selection: $businessStatus) {
+                        ForEach(BusinessStatus.allCases) { s in Text(s.label).tag(s) }
+                    }
+                }
                 Section("簡介") {
                     TextField("簡介", text: $description, axis: .vertical).lineLimit(2...5)
                 }
@@ -387,7 +402,7 @@ private struct EditLandmarkView: View {
                                 let photo = photoImage.flatMap { PhotoUpload.encode($0) }
                                 let ok = await UserLandmarkService.update(
                                     id: landmarkID, description: description, businessHours: businessHours,
-                                    phone: phone, photo: photo, coordinate: pinCoordinate
+                                    phone: phone, businessStatus: businessStatus, photo: photo, coordinate: pinCoordinate
                                 )
                                 if ok {
                                     onDone()

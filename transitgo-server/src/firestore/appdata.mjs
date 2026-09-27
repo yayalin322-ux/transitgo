@@ -14,9 +14,23 @@
  */
 
 export const REPORT_REASONS = ["spam", "offensive", "sexual", "harassment", "other"];
+// Google-Maps-style fine-grained taxonomy — keep this in sync with db.mjs's own copy AND
+// Swift's LandmarkCategory (same raw values). Duplicated rather than imported from db.mjs to
+// avoid pulling in that module's SQL connection setup as a side effect of importing this one.
 export const LANDMARK_CATEGORIES = [
-  "foodDrink", "medical", "shopping", "transportation", "education", "finance",
-  "government", "recreation", "sports", "lodging", "religion", "personalServices", "other",
+  "restaurant", "cafe", "teaShop", "bakery", "dessertShop", "bar", "breakfastShop", "nightMarketStall", "buffet", "fastFood",
+  "groceryStore", "convenienceStore", "supermarket", "clothingStore", "bookstore", "electronicsStore", "giftShop", "marketplace",
+  "hospital", "clinic", "dentist", "pharmacy", "veterinary",
+  "gasStation", "evCharging", "parkingLot", "carRepair", "bikeShop",
+  "school", "kindergarten", "cramSchool", "library",
+  "bank", "atm", "insurance",
+  "policeStation", "fireStation", "postOffice", "cityHall",
+  "park", "cinema", "museum", "artGallery", "karaoke", "arcade",
+  "gym", "swimmingPool", "sportsField", "yogaStudio",
+  "hotel", "hostel", "bnb", "campground",
+  "temple", "church",
+  "hairSalon", "laundry", "petGrooming", "repairShop",
+  "other",
 ];
 
 const clampStars = (v) => Math.max(1, Math.min(5, parseInt(v, 10) || 0));
@@ -141,11 +155,14 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
       photo: r.photo ?? null, app_version: r.appVersion ?? null, device: r.device ?? null, email: r.email ?? null, ip: r.ip ?? null, reported: 0, created_at: iso(),
     });
   }
-  /** Self-service delete: only the device that posted a review may remove it. */
-  async function deletePlaceReviewByDevice(id, device) {
-    if (!device) return false;
+  /** Self-service delete: the device that posted a review, or the same verified email. */
+  async function deletePlaceReviewByDevice(id, owner) {
+    const { device = null, email = null } = typeof owner === "string" ? { device: owner } : (owner || {});
+    if (!device && !email) return false;
     const row = await store.get("place_reviews", id);
-    if (!row || row.device !== device) return false;
+    if (!row) return false;
+    const isOwner = (device && row.device === device) || (email && row.email === email);
+    if (!isOwner) return false;
     const existed = await store.remove("place_reviews", id);
     await store.removeWhere("place_review_reports", [["review_id", "==", Number(id)]]);
     return existed;
@@ -154,10 +171,13 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     const rows = await store.list("place_reviews", { where: [["place_key", "==", placeKey]], orderBy: [["created_at", "desc"]], limit });
     return rows.map((r) => ({ id: r.id, stars: r.stars, comment: r.comment, photo: r.photo, createdAt: r.created_at }));
   }
-  async function listMyPlaceReviews(device) {
-    if (!device) return [];
-    const rows = await store.list("place_reviews", { where: [["device", "==", device]], orderBy: [["created_at", "desc"]], limit: 200 });
-    return rows.map((r) => ({
+  async function listMyPlaceReviews(owner) {
+    const { device = null, email = null } = typeof owner === "string" ? { device: owner } : (owner || {});
+    if (!device && !email) return [];
+    const byId = new Map();
+    if (device) for (const r of await store.list("place_reviews", { where: [["device", "==", device]] })) byId.set(r.id, r);
+    if (email) for (const r of await store.list("place_reviews", { where: [["email", "==", email]] })) byId.set(r.id, r);
+    return [...byId.values()].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)).map((r) => ({
       id: r.id, placeKey: r.place_key, placeName: r.place_name,
       stars: r.stars, comment: r.comment, photo: r.photo, createdAt: r.created_at,
     }));
@@ -199,7 +219,8 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
       id, name: r.name, description: (r.description ?? "").slice(0, 500),
       category: LANDMARK_CATEGORIES.includes(r.category) ? r.category : "other", lat: r.lat, lon: r.lon, photo: r.photo ?? null,
       is_business_claim: r.isBusinessClaim ? 1 : 0, business_verified: r.businessVerified ? 1 : 0, business_hours: (r.businessHours ?? "").slice(0, 500) || null,
-      phone: (r.phone ?? "").slice(0, 50) || null, app_version: r.appVersion ?? null, device: r.device ?? null, email: r.email ?? null, ip: r.ip ?? null,
+      phone: (r.phone ?? "").slice(0, 50) || null, business_status: "open",
+      app_version: r.appVersion ?? null, device: r.device ?? null, email: r.email ?? null, ip: r.ip ?? null,
       approved: 0, reported: 0, created_at: iso(),
     });
     dropLandmarkCache();
@@ -218,7 +239,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     }).map((r) => ({
       id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
       businessHours: r.business_verified ? r.business_hours : null, phone: r.business_verified ? r.phone : null,
-      businessVerified: !!r.business_verified,
+      businessVerified: !!r.business_verified, businessStatus: r.business_verified ? (r.business_status || "open") : "open",
     }));
   }
   async function listAllUserLandmarks(limit = 200) {
@@ -226,7 +247,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     return Promise.all(rows.map(async (r) => ({
       id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
       isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified, businessHours: r.business_hours, phone: r.phone,
-      email: r.email, approved: !!r.approved, reported: r.reported,
+      businessStatus: r.business_status, email: r.email, approved: !!r.approved, reported: r.reported,
       reportReasons: r.reported > 0 ? await reasonBreakdown("user_landmark_reports", "landmark_id", r.id) : {},
       appVersion: r.app_version, createdAt: r.created_at,
     })));
@@ -246,25 +267,55 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     });
     return true;
   }
-  async function listMyUserLandmarks(device) {
-    const rows = await store.list("user_landmarks", { where: [["device", "==", device]], orderBy: [["created_at", "desc"]] });
-    return rows.map((r) => ({
+  async function listMyUserLandmarks(owner) {
+    const { device = null, email = null } = typeof owner === "string" ? { device: owner } : (owner || {});
+    const byId = new Map();
+    if (device) for (const r of await store.list("user_landmarks", { where: [["device", "==", device]] })) byId.set(r.id, r);
+    if (email) for (const r of await store.list("user_landmarks", { where: [["email", "==", email]] })) byId.set(r.id, r);
+    return [...byId.values()].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)).map((r) => ({
       id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
       isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified, businessHours: r.business_hours, phone: r.phone,
-      approved: !!r.approved, createdAt: r.created_at,
+      businessStatus: r.business_status, approved: !!r.approved, createdAt: r.created_at,
     }));
   }
-  async function updateMyUserLandmark(id, device, fields) {
+  async function updateMyUserLandmark(id, owner, fields) {
+    const { device = null, email = null } = typeof owner === "string" ? { device: owner } : (owner || {});
     const row = await store.get("user_landmarks", id);
-    if (!row || row.device !== device || !row.business_verified) return false;
+    if (!row || !row.business_verified) return false;
+    const isOwner = (device && row.device === device) || (email && row.email === email);
+    if (!isOwner) return false;
     const patch = {};
     if (typeof fields.description === "string") patch.description = fields.description.slice(0, 500);
     if (typeof fields.businessHours === "string") patch.business_hours = fields.businessHours.slice(0, 500);
     if (typeof fields.photo === "string") patch.photo = fields.photo;
     if (typeof fields.phone === "string") patch.phone = fields.phone.slice(0, 50);
+    if (typeof fields.businessStatus === "string" && ["open", "temporarily_closed", "permanently_closed"].includes(fields.businessStatus)) {
+      patch.business_status = fields.businessStatus;
+    }
     if (typeof fields.lat === "number" && typeof fields.lon === "number") { patch.lat = fields.lat; patch.lon = fields.lon; }
     if (Object.keys(patch).length === 0) return false;
     await store.update("user_landmarks", id, patch);
+    dropLandmarkCache();
+    return true;
+  }
+  async function searchApprovedLandmarks(query, limit = 20) {
+    const q = query.toLowerCase();
+    return (await approvedLandmarks())
+      .filter((r) => r.name.toLowerCase().includes(q))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .slice(0, limit)
+      .map((r) => ({
+        id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon,
+        isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified,
+      }));
+  }
+  async function claimUserLandmark(id, { email, businessHours, phone }) {
+    const row = await store.get("user_landmarks", id);
+    if (!row || row.business_verified) return false;
+    await store.update("user_landmarks", id, {
+      is_business_claim: 1, business_verified: 1, email,
+      business_hours: businessHours || row.business_hours, phone: phone || row.phone,
+    });
     dropLandmarkCache();
     return true;
   }
@@ -295,6 +346,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     createPlaceReview, listPlaceReviews, listMyPlaceReviews, reportPlaceReview, deletePlaceReview, deletePlaceReviewByDevice, listAllPlaceReviews, placeReviewStats,
     createUserLandmark, listApprovedLandmarksNear, listAllUserLandmarks, approveUserLandmark, verifyUserLandmarkBusiness,
     deleteUserLandmark, reportUserLandmark, listMyUserLandmarks, updateMyUserLandmark,
+    searchApprovedLandmarks, claimUserLandmark,
     getAlertState, setAlertState,
     createShare, getShare, deleteShare,
   };

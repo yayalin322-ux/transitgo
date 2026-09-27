@@ -56,6 +56,7 @@ struct NearbyLandmark: Identifiable {
     var businessHours: String?
     var businessPhone: String?
     var businessVerified = false
+    var businessStatus: BusinessStatus = .open
 }
 
 /// Real nearby points of interest (Apple's own POI index, via the dedicated
@@ -93,7 +94,8 @@ final class LandmarkNearbyViewModel {
                                coordinate: $0.coordinate,
                                distance: CLLocation(latitude: $0.lat, longitude: $0.lon).distance(from: location),
                                category: $0.category, landmarkID: $0.id,
-                               businessHours: $0.businessHours, businessPhone: $0.phone, businessVerified: $0.businessVerified)
+                               businessHours: $0.businessHours, businessPhone: $0.phone, businessVerified: $0.businessVerified,
+                               businessStatus: $0.effectiveBusinessStatus)
             }
         }()
         let (apple, own) = await (appleTask, ownTask)
@@ -498,7 +500,8 @@ struct NearbyStopsView: View {
             .sheet(item: $placeDetailTarget) { landmark in
                 PlaceDetailView(name: landmark.name, coordinate: landmark.coordinate, subtitle: landmark.subtitle,
                                  landmarkID: landmark.landmarkID, businessHours: landmark.businessHours,
-                                 businessPhone: landmark.businessPhone, businessVerified: landmark.businessVerified)
+                                 businessPhone: landmark.businessPhone, businessVerified: landmark.businessVerified,
+                                 businessStatus: landmark.businessStatus)
             }
         }
     }

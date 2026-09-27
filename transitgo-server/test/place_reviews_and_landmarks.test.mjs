@@ -9,6 +9,8 @@ delete process.env.DATABASE_URL;
 const {
   createPlaceReview, listPlaceReviews, listMyPlaceReviews, deletePlaceReviewByDevice,
   createUserLandmark, listApprovedLandmarksNear, listAllUserLandmarks,
+  listMyUserLandmarks, updateMyUserLandmark, searchApprovedLandmarks, claimUserLandmark,
+  approveUserLandmark, LANDMARK_CATEGORIES,
 } = await import("../src/db.mjs");
 const { requestSiteEmailCode, verifySiteEmailCode } = await import("../src/siteEmailCode.mjs");
 
@@ -92,6 +94,74 @@ await createUserLandmark({
 
   // Neither is approved yet — verification alone never bypasses the moderation queue.
   check("neither shows up in the public 'approved near' list before an admin approves it", (await listApprovedLandmarksNear(24.83, 121.0, 500)).length === 0);
+}
+
+// ---- cross-device: the same verified email finds/deletes content a *different* device posted ----
+await createPlaceReview({ placeKey: "cafe_2", placeName: "另一家咖啡", stars: 4, comment: "不錯", device: "phone-old", email: "person@b.com", ip: "1.1.1.1" });
+{
+  check("device-only lookup finds nothing for a device that never posted", (await listMyPlaceReviews("phone-new")).length === 0);
+  const byEmail = await listMyPlaceReviews({ email: "person@b.com" });
+  check("the same email finds it even from a 'different phone' (no device given)", byEmail.length === 1 && byEmail[0].placeKey === "cafe_2");
+  check("a stranger's email finds nothing", (await listMyPlaceReviews({ email: "nobody@b.com" })).length === 0);
+  const id = byEmail[0].id;
+  check("the wrong device AND no email can't delete it", (await deletePlaceReviewByDevice(id, { device: "phone-new" })) === false);
+  check("the verified email alone (no device) can delete it", (await deletePlaceReviewByDevice(id, { email: "person@b.com" })) === true);
+  check("it's gone", (await listPlaceReviews("cafe_2")).length === 0);
+}
+check("neither device nor email at all is refused outright", (await deletePlaceReviewByDevice(123456, {})) === false);
+
+// ---- landmarks: cross-device ownership, editing, and business status ----
+await createUserLandmark({
+  name: "小林牙醫", description: "", category: "dentist", lat: 24.85, lon: 121.02,
+  isBusinessClaim: true, businessVerified: true, businessHours: "9-6", phone: "03-1234567",
+  device: "shop-phone-1", email: "dentist@b.com", ip: "1.1.1.1",
+});
+{
+  const mineByDevice = await listMyUserLandmarks("shop-phone-1");
+  const id = mineByDevice[0].id;
+  await approveUserLandmark(id);
+
+  check("a different device can't edit it", (await updateMyUserLandmark(id, { device: "shop-phone-2" }, { businessHours: "0-0" })) === false);
+  check("the verified email (no device — a new phone) CAN edit it", (await updateMyUserLandmark(id, { email: "dentist@b.com" }, { businessStatus: "temporarily_closed" })) === true);
+
+  const mineByEmail = await listMyUserLandmarks({ email: "dentist@b.com" });
+  check("the new phone finds the listing by email and sees the status change", mineByEmail.length === 1 && mineByEmail[0].businessStatus === "temporarily_closed");
+
+  const near = (await listApprovedLandmarksNear(24.85, 121.02, 500))[0];
+  check("a temporarily-closed place STAYS in the public listing (flagged, not hidden — Google-Maps style)", near?.id === id && near?.businessStatus === "temporarily_closed");
+
+  check("an unrecognised businessStatus value is rejected, not silently stored", (await updateMyUserLandmark(id, { email: "dentist@b.com" }, { businessStatus: "on_fire" })) === false);
+}
+
+// ---- claiming an EXISTING (plain, unverified) landmark ----
+await createUserLandmark({ name: "巷口五金行", description: "", category: "other", lat: 24.86, lon: 121.03, device: "passerby-phone", ip: "1.1.1.1" });
+{
+  const [unclaimed] = await listAllUserLandmarks().then((all) => all.filter((l) => l.name === "巷口五金行"));
+  check("a plain landmark starts with no business claim at all", unclaimed.isBusinessClaim === false && unclaimed.businessVerified === false);
+
+  check("claiming it (email already verified by the caller) succeeds", (await claimUserLandmark(unclaimed.id, { email: "owner@b.com", businessHours: "8-8", phone: "03-9999999" })) === true);
+  const [claimed] = await listAllUserLandmarks().then((all) => all.filter((l) => l.id === unclaimed.id));
+  check("it's now a verified business claim with the claimant's email and details", claimed.isBusinessClaim === true && claimed.businessVerified === true && claimed.email === "owner@b.com" && claimed.businessHours === "8-8");
+
+  check("a SECOND claim attempt is refused — already verified, no silent takeover", (await claimUserLandmark(unclaimed.id, { email: "someone-else@b.com" })) === false);
+  check("claiming a landmark that doesn't exist is a plain false", (await claimUserLandmark(999999, { email: "x@b.com" })) === false);
+  await approveUserLandmark(unclaimed.id);   // search only ever covers approved landmarks
+}
+
+// ---- name search (the web business dashboard's "find my business" flow) ----
+await createUserLandmark({ name: "另一家五金行（還沒審核）", description: "", category: "other", lat: 24.861, lon: 121.031, device: "x", ip: "1.1.1.1" });
+{
+  const hits = await searchApprovedLandmarks("五金");
+  check("name search finds the approved landmark by a substring of its name", hits.some((l) => l.name === "巷口五金行"));
+  check("name search never returns an unapproved landmark, even with a matching name", !hits.some((l) => l.name === "另一家五金行（還沒審核）"));
+}
+
+// ---- category taxonomy: fine-grained, and the old coarse strings never end up stored again ----
+check("the taxonomy is the new fine-grained one, not the old 13-group one", LANDMARK_CATEGORIES.includes("restaurant") && !LANDMARK_CATEGORIES.includes("foodDrink"));
+await createUserLandmark({ name: "測試舊分類", description: "", category: "foodDrink", lat: 24.87, lon: 121.04, device: "x", ip: "1.1.1.1" });
+{
+  const [row] = await listAllUserLandmarks().then((all) => all.filter((l) => l.name === "測試舊分類"));
+  check("an old, no-longer-recognised category falls back to 'other' on a fresh insert (not silently accepted)", row.category === "other");
 }
 
 process.exit(failed ? 1 : 0);

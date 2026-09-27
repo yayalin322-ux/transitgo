@@ -42,6 +42,7 @@ const names = [
   "createPlaceReview", "listPlaceReviews", "listMyPlaceReviews", "reportPlaceReview", "deletePlaceReview", "deletePlaceReviewByDevice", "listAllPlaceReviews", "placeReviewStats",
   "createUserLandmark", "listApprovedLandmarksNear", "listAllUserLandmarks", "approveUserLandmark", "verifyUserLandmarkBusiness",
   "deleteUserLandmark", "reportUserLandmark", "listMyUserLandmarks", "updateMyUserLandmark",
+  "searchApprovedLandmarks", "claimUserLandmark",
   "getAlertState", "setAlertState",
   "createShare", "getShare", "deleteShare",
 ];
@@ -84,6 +85,8 @@ export const deleteUserLandmark = (...a) => impl.deleteUserLandmark(...a);
 export const reportUserLandmark = (...a) => impl.reportUserLandmark(...a);
 export const listMyUserLandmarks = (...a) => impl.listMyUserLandmarks(...a);
 export const updateMyUserLandmark = (...a) => impl.updateMyUserLandmark(...a);
+export const searchApprovedLandmarks = (...a) => impl.searchApprovedLandmarks(...a);
+export const claimUserLandmark = (...a) => impl.claimUserLandmark(...a);
 export const getAlertState = (...a) => impl.getAlertState(...a);
 export const setAlertState = (...a) => impl.setAlertState(...a);
 export const createShare = (...a) => impl.createShare(...a);

@@ -42,7 +42,8 @@ struct MyLandmarksView: View {
             .sheet(item: $detailTarget) { l in
                 PlaceDetailView(name: l.name, coordinate: l.coordinate, subtitle: l.description,
                                  landmarkID: l.id, businessHours: l.businessVerified ? l.businessHours : nil,
-                                 businessPhone: l.businessVerified ? l.phone : nil, businessVerified: l.businessVerified)
+                                 businessPhone: l.businessVerified ? l.phone : nil, businessVerified: l.businessVerified,
+                                 businessStatus: l.effectiveBusinessStatus)
             }
         }
     }

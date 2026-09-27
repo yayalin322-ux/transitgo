@@ -114,6 +114,34 @@ enum PlaceReviewService {
         return decoded.reviews
     }
 
+    /// Cross-device: on a different phone, there's no device id to match, only a freshly
+    /// verified Email — get a code first with `EmailVerificationService.requestCode(email:)`.
+    static func mine(email: String, code: String) async -> [MyPlaceReview] {
+        guard let base = BackendConfig.baseURL else { return [] }
+        var req = URLRequest(url: base.appendingPathComponent("v1/places/reviews/mine"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["email": email, "code": code])
+        struct Response: Decodable { let reviews: [MyPlaceReview] }
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let decoded = try? JSONDecoder().decode(Response.self, from: data) else { return [] }
+        return decoded.reviews
+    }
+
+    /// Self-service delete via a freshly-verified Email (the cross-device case) — same as
+    /// `deleteMine(id:)` but without a device id to prove ownership.
+    @discardableResult
+    static func deleteMine(id: Int, email: String, code: String) async -> Bool {
+        guard let base = BackendConfig.baseURL else { return false }
+        var req = URLRequest(url: base.appendingPathComponent("v1/places/reviews/\(id)"))
+        req.httpMethod = "DELETE"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["email": email, "code": code])
+        guard let (_, resp) = try? await URLSession.shared.data(for: req) else { return false }
+        return (resp as? HTTPURLResponse)?.statusCode == 200
+    }
+
     /// Flags a review as inappropriate — visible to admins as a categorized report
     /// (not just a bare count), so they can triage quickly. Not an automatic takedown
     /// (see transitgo-server's /v1/admin/place-reviews).
