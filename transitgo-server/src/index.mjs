@@ -80,6 +80,14 @@ try {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.PORT || "8787", 10);
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
+// yayalin.com's business dashboard (Supabase-Auth-gated, so the caller's email is already
+// verified there) — lets its Pages Functions skip the email+code round trip for the handful of
+// routes below, without transitgo-server having to know anything about Supabase Auth itself.
+// Empty by default: unset means the trusted-proxy path is simply never taken (see isTrustedProxy).
+const TRUSTED_PROXY_SECRET = process.env.TRUSTED_PROXY_SECRET || "";
+function isTrustedProxy(req) {
+  return !!TRUSTED_PROXY_SECRET && req.headers["x-trusted-proxy-secret"] === TRUSTED_PROXY_SECRET;
+}
 
 const app = guardAsyncRoutes(express());
 // Raised from 64kb — place-review/landmark submissions can carry a base64-encoded photo.
@@ -393,12 +401,14 @@ app.get("/v1/landmarks/mine", async (req, res) => {
 });
 
 /** Cross-device / the web business dashboard: no device id there at all — a freshly-verified
- * Email is what proves "this is the same business owner" (see also POST /v1/places/reviews/mine). */
+ * Email is what proves "this is the same business owner" (see also POST /v1/places/reviews/mine).
+ * The trusted proxy (yayalin.com's business dashboard, already gated by its own Supabase Auth
+ * login) skips the code — see isTrustedProxy. */
 app.post("/v1/landmarks/mine", async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   const code = String(req.body?.code || "");
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: "invalid email" });
-  if (!(await verifySiteEmailCode(email, code))) return res.status(400).json({ error: "invalid code" });
+  if (!isTrustedProxy(req) && !(await verifySiteEmailCode(email, code))) return res.status(400).json({ error: "invalid code" });
   res.json({ landmarks: await listMyUserLandmarks({ email }) });
 });
 
@@ -445,7 +455,7 @@ app.post("/v1/landmarks/:id/claim", async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   const code = String(req.body?.code || "");
   if (!EMAIL_RE.test(email)) return res.status(400).json({ error: "invalid email" });
-  if (!(await verifySiteEmailCode(email, code))) return res.status(400).json({ error: "invalid code" });
+  if (!isTrustedProxy(req) && !(await verifySiteEmailCode(email, code))) return res.status(400).json({ error: "invalid code" });
   const { businessHours, phone } = req.body || {};
   const ok = await claimUserLandmark(id, { email, businessHours, phone });
   if (!ok) return res.status(409).json({ error: "already claimed or not found" });
@@ -461,9 +471,9 @@ app.put("/v1/landmarks/:id", async (req, res) => {
   const { device, description, businessHours, phone, businessStatus, photo, lat, lon } = req.body || {};
   if (photo !== undefined && !validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
   let email = null;
-  if (!device && req.body?.email && req.body?.code) {
+  if (!device && req.body?.email && (req.body?.code || isTrustedProxy(req))) {
     const candidate = String(req.body.email).trim().toLowerCase();
-    if (EMAIL_RE.test(candidate) && (await verifySiteEmailCode(candidate, String(req.body.code)))) email = candidate;
+    if (EMAIL_RE.test(candidate) && (isTrustedProxy(req) || (await verifySiteEmailCode(candidate, String(req.body.code))))) email = candidate;
   }
   if (!device && !email) return res.status(400).json({ error: "device or verified email required" });
   const ok = await updateMyUserLandmark(id, { device, email }, { description, businessHours, phone, businessStatus, photo, lat, lon });
