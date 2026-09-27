@@ -318,6 +318,20 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
         isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified,
       }));
   }
+  /** Verified businesses, browsable — mirrors db.mjs's listVerifiedBusinesses exactly. */
+  async function listVerifiedBusinesses({ category, limit = 60, offset = 0 } = {}) {
+    const cappedLimit = Math.min(200, Math.max(1, limit));
+    let all = (await approvedLandmarks()).filter((r) => r.business_verified);
+    if (category) all = all.filter((r) => r.category === category);
+    all.sort((a, b) => a.name.localeCompare(b.name));
+    return {
+      businesses: all.slice(offset, offset + cappedLimit).map((r) => ({
+        id: r.id, name: r.name, description: r.description, category: r.category,
+        businessHours: r.business_hours, businessStatus: r.business_status ?? "open",
+      })),
+      total: all.length,
+    };
+  }
   async function claimUserLandmark(id, { email, businessHours, phone }) {
     const row = await store.get("user_landmarks", id);
     if (!row || row.business_verified) return false;
@@ -384,7 +398,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     createPlaceReview, listPlaceReviews, listMyPlaceReviews, reportPlaceReview, deletePlaceReview, deletePlaceReviewByDevice, listAllPlaceReviews, placeReviewStats,
     createUserLandmark, listApprovedLandmarksNear, getApprovedLandmark, listAllUserLandmarks, approveUserLandmark, verifyUserLandmarkBusiness,
     deleteUserLandmark, reportUserLandmark, listMyUserLandmarks, updateMyUserLandmark,
-    searchApprovedLandmarks, claimUserLandmark,
+    searchApprovedLandmarks, claimUserLandmark, listVerifiedBusinesses,
     getAlertState, setAlertState,
     createShare, getShare, updateShareProgress, updateShareLocation, deleteShare,
   };

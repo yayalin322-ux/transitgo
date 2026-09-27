@@ -118,6 +118,10 @@ async function scenario(api) {
   r.nearWide = byId(await api.listApprovedLandmarksNear(24.84, 121.01, 200000)).map((x) => x.name);
   r.verify = await api.verifyUserLandmarkBusiness(all0[0].id);
   r.nearVerified = byId(await api.listApprovedLandmarksNear(24.84, 121.01, 1000)).find((x) => x.id === all0[0].id);
+  r.directory = byId((await api.listVerifiedBusinesses()).businesses);
+  r.directoryTotal = (await api.listVerifiedBusinesses()).total;
+  r.directoryCategory = (await api.listVerifiedBusinesses({ category: "not-a-category" })).businesses.length;
+  r.directoryPage = (await api.listVerifiedBusinesses({ limit: 1, offset: 0 })).businesses.map((x) => x.id);
   r.lmReport = await api.reportUserLandmark(all0[1].id, "offensive", "1");
   await api.reportUserLandmark(all0[1].id, "offensive", "2");
   await api.reportUserLandmark(all0[1].id, "weird", "3");

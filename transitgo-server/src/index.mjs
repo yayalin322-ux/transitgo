@@ -34,6 +34,7 @@ import {
   updateMyUserLandmark,
   searchApprovedLandmarks,
   claimUserLandmark,
+  listVerifiedBusinesses,
   createObservation,
   listObservations,
   getBikeCache,
@@ -407,6 +408,15 @@ app.get("/v1/landmarks/search", async (req, res) => {
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
   if (q.length < 2) return res.status(400).json({ error: "q too short" });
   res.json({ landmarks: await searchApprovedLandmarks(q.slice(0, 100)) });
+});
+
+/** Browsable directory of verified businesses — yayalin.com/shop (the index page, as opposed to
+ * /shop/:id which needs the id already). Registered before ":id" so it's never shadowed. */
+app.get("/v1/landmarks/directory", async (req, res) => {
+  const limit = Number.isFinite(parseInt(req.query.limit, 10)) ? parseInt(req.query.limit, 10) : 60;
+  const offset = Number.isFinite(parseInt(req.query.offset, 10)) ? parseInt(req.query.offset, 10) : 0;
+  const category = typeof req.query.category === "string" && req.query.category ? req.query.category : undefined;
+  res.json({ ok: true, ...(await listVerifiedBusinesses({ category, limit, offset })) });
 });
 
 /** A single approved landmark — yayalin.com/shop/:id's data source. Registered after the
