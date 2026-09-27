@@ -589,6 +589,11 @@ struct InAppNavigationView: View {
                             ProgressView(value: fraction)
                                 .tint(.blue)
                         }
+                        // Two separate rows, not one packed row: with all three metrics (once
+                        // moving fast enough to show speed) plus three 36pt buttons, a single
+                        // HStack didn't have enough width and squeezed the numbers into
+                        // one-character-per-line wrapping ("4.5" → "4" / "." / "5"). Metrics get
+                        // their own row so they're never fighting the buttons for space.
                         HStack(spacing: 20) {
                             metric(distanceText, label: "剩餘距離")
                             Divider().frame(height: 34)
@@ -597,7 +602,10 @@ struct InAppNavigationView: View {
                                 Divider().frame(height: 34)
                                 metric(speedText, label: "目前時速")
                             }
-                            Spacer()
+                            Spacer(minLength: 0)
+                        }
+                        HStack(spacing: 12) {
+                            Spacer(minLength: 0)
                             Menu {
                                 Toggle(isOn: $navShareLiveLocationEnabled) {
                                     Label("分享即時位置（安全用途）", systemImage: "location.fill")
@@ -745,9 +753,12 @@ struct InAppNavigationView: View {
     }
 
     private func metric(_ value: String, label: String) -> some View {
+        // .fixedSize so a tight row shrinks the Spacer, never the numbers themselves — without
+        // it, too little width turned "4.5" into "4" / "." / "5" stacked vertically instead of
+        // just running the row a little tighter.
         VStack(alignment: .leading, spacing: 1) {
-            Text(value).font(.title3.bold()).monospacedDigit()
-            Text(label).font(.caption2).foregroundStyle(.secondary)
+            Text(value).font(.title3.bold()).monospacedDigit().lineLimit(1).fixedSize()
+            Text(label).font(.caption2).foregroundStyle(.secondary).lineLimit(1).fixedSize()
         }
     }
 
