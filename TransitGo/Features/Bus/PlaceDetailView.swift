@@ -23,6 +23,7 @@ struct PlaceDetailView: View {
     @State private var reviews: [PlaceReview] = []
     @State private var showAddReview = false
     @State private var showEditLandmark = false
+    @State private var showClaim = false
     @State private var loading = true
     @State private var reportedReviewIDs: Set<Int> = []
     @State private var landmarkReported = false
@@ -81,6 +82,13 @@ struct PlaceDetailView: View {
                         if businessVerified {
                             Button { showEditLandmark = true } label: {
                                 Label("編輯店家資訊", systemImage: "pencil")
+                            }
+                        } else {
+                            // Not yet a verified business — either nobody's claimed it, or someone
+                            // claimed it but hasn't verified their Email. Either way, claiming it now
+                            // (with a verified Email) is what actually unlocks hours/phone/editing.
+                            Button { showClaim = true } label: {
+                                Label("這是我的店家", systemImage: "checkmark.seal")
                             }
                         }
                         if landmarkReported {
@@ -211,6 +219,13 @@ struct PlaceDetailView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showClaim) {
+                if let landmarkID {
+                    ClaimLandmarkView(landmarkID: landmarkID, placeName: name) {
+                        showClaim = false
+                    }
+                }
+            }
         }
     }
 
@@ -310,6 +325,76 @@ private struct AddPlaceReviewView: View {
             }
         }
         .presentationDetents([.medium, .large])
+    }
+}
+
+/// Claiming an existing, already-approved landmark that isn't a verified business yet — either
+/// nobody's claimed it, or someone did without ever verifying their Email. A verified Email is
+/// the only proof of ownership there is; the server refuses outright if someone else already
+/// holds a verified claim (see claimUserLandmark), so this can't silently take over a real
+/// business's listing out from under them.
+private struct ClaimLandmarkView: View {
+    let landmarkID: Int
+    let placeName: String
+    var onDone: () -> Void
+
+    @State private var email = ""
+    @State private var code = ""
+    @State private var businessHours = ""
+    @State private var phone = ""
+    @State private var isSubmitting = false
+    @State private var errorText: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text(placeName).font(.headline)
+                    Text("驗證信箱之後就會標示為已驗證店家，之後可以自己編輯營業時間、電話、營業狀態。")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("營業時間（選填）") {
+                    TextField("例如：週一至週日 11:00–21:00", text: $businessHours, axis: .vertical).lineLimit(2...4)
+                }
+                Section("電話（選填）") {
+                    TextField("電話", text: $phone).keyboardType(.phonePad)
+                }
+                Section("驗證信箱") {
+                    EmailCodeField(email: $email, code: $code)
+                }
+                if let errorText {
+                    Text(errorText).font(.footnote).foregroundStyle(.red)
+                }
+            }
+            .navigationTitle("認領這個地標")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消", action: onDone) }
+                ToolbarItem(placement: .confirmationAction) {
+                    if isSubmitting {
+                        ProgressView()
+                    } else {
+                        Button("認領") {
+                            Task {
+                                isSubmitting = true
+                                errorText = nil
+                                let result = await UserLandmarkService.claim(
+                                    id: landmarkID, email: email, code: code,
+                                    businessHours: businessHours, phone: phone
+                                )
+                                isSubmitting = false
+                                switch result {
+                                case .ok: onDone()
+                                case .invalidCode: errorText = "驗證碼不正確／已過期，或這個地標已經被別人認領了。"
+                                case .failed: errorText = "認領失敗，請稍後再試一次。"
+                                }
+                            }
+                        }
+                        .disabled(code.count != 6 || isSubmitting)
+                    }
+                }
+            }
+        }
     }
 }
 

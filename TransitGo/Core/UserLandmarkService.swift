@@ -386,6 +386,26 @@ enum UserLandmarkService {
 
     enum SubmitResult { case ok, invalidCode, failed }
 
+    /// Claiming an EXISTING (already-approved) landmark — as opposed to submitting a brand new
+    /// one — e.g. a customer added it, or it was never a business claim to begin with. Refuses
+    /// if someone else already holds a verified claim on it (server-side check, this call just
+    /// surfaces that as `.invalidCode` too since the wording — "not authorized" — reads the same
+    /// to the user either way: this isn't yours to claim).
+    static func claim(id: Int, email: String, code: String, businessHours: String?, phone: String?) async -> SubmitResult {
+        guard let base = BackendConfig.baseURL else { return .failed }
+        var payload: [String: Any] = ["email": email, "code": code]
+        if let businessHours, !businessHours.isEmpty { payload["businessHours"] = businessHours }
+        if let phone, !phone.isEmpty { payload["phone"] = phone }
+        var req = URLRequest(url: base.appendingPathComponent("v1/landmarks/\(id)/claim"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        guard let (_, resp) = try? await URLSession.shared.data(for: req),
+              let status = (resp as? HTTPURLResponse)?.statusCode else { return .failed }
+        if status == 200 { return .ok }
+        return status == 400 ? .invalidCode : .failed
+    }
+
     /// `email`/`code` only matter (and are only required server-side) when `isBusinessClaim` is
     /// true — a plain community landmark suggestion needs no verification. Get a code first with
     /// `EmailVerificationService.requestCode(email:)`.

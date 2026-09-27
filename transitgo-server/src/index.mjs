@@ -24,6 +24,7 @@ import {
   listAllPlaceReviews,
   createUserLandmark,
   listApprovedLandmarksNear,
+  getApprovedLandmark,
   listAllUserLandmarks,
   approveUserLandmark,
   verifyUserLandmarkBusiness,
@@ -404,6 +405,16 @@ app.get("/v1/landmarks/search", async (req, res) => {
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
   if (q.length < 2) return res.status(400).json({ error: "q too short" });
   res.json({ landmarks: await searchApprovedLandmarks(q.slice(0, 100)) });
+});
+
+/** A single approved landmark — yayalin.com/shop/:id's data source. Registered after the
+ * literal /mine and /search routes above so ":id" never shadows them. */
+app.get("/v1/landmarks/:id", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
+  const landmark = await getApprovedLandmark(id);
+  if (!landmark) return res.status(404).json({ error: "not found" });
+  res.json({ landmark });
 });
 
 /** A business owner claiming an EXISTING (already-approved) landmark nobody has verified yet

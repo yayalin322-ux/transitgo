@@ -40,7 +40,7 @@ const names = [
   "createObservation", "listObservations",
   "setBikeCache", "getBikeCache", "allBikeCaches", "setSpeedcamCache", "getSpeedcamCache",
   "createPlaceReview", "listPlaceReviews", "listMyPlaceReviews", "reportPlaceReview", "deletePlaceReview", "deletePlaceReviewByDevice", "listAllPlaceReviews", "placeReviewStats",
-  "createUserLandmark", "listApprovedLandmarksNear", "listAllUserLandmarks", "approveUserLandmark", "verifyUserLandmarkBusiness",
+  "createUserLandmark", "listApprovedLandmarksNear", "getApprovedLandmark", "listAllUserLandmarks", "approveUserLandmark", "verifyUserLandmarkBusiness",
   "deleteUserLandmark", "reportUserLandmark", "listMyUserLandmarks", "updateMyUserLandmark",
   "searchApprovedLandmarks", "claimUserLandmark",
   "getAlertState", "setAlertState",
@@ -78,6 +78,7 @@ export const listAllPlaceReviews = (...a) => impl.listAllPlaceReviews(...a);
 export const placeReviewStats = (...a) => impl.placeReviewStats(...a);
 export const createUserLandmark = (...a) => impl.createUserLandmark(...a);
 export const listApprovedLandmarksNear = (...a) => impl.listApprovedLandmarksNear(...a);
+export const getApprovedLandmark = (...a) => impl.getApprovedLandmark(...a);
 export const listAllUserLandmarks = (...a) => impl.listAllUserLandmarks(...a);
 export const approveUserLandmark = (...a) => impl.approveUserLandmark(...a);
 export const verifyUserLandmarkBusiness = (...a) => impl.verifyUserLandmarkBusiness(...a);

@@ -794,6 +794,21 @@ export async function listApprovedLandmarksNear(lat, lon, radiusMeters = 1000) {
   }));
 }
 
+/** A single approved landmark, public-facing — the yayalin.com/shop/:id page. `null` for
+ * anything not approved (never leak an unapproved submission's existence this way) or
+ * missing. Same field-hiding rule as listApprovedLandmarksNear: hours/phone only once verified. */
+export async function getApprovedLandmark(id) {
+  const r = await db.prepare(`SELECT * FROM user_landmarks WHERE id = ? AND approved = 1`).get(id);
+  if (!r) return null;
+  return {
+    id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
+    businessHours: r.business_verified ? r.business_hours : null,
+    phone: r.business_verified ? r.phone : null,
+    businessVerified: !!r.business_verified,
+    businessStatus: r.business_verified ? r.business_status : "open",
+  };
+}
+
 /** Admin moderation queue — pending ones first, since those need a decision. */
 export async function listAllUserLandmarks(limit = 200) {
   const rows = await db.prepare(`
