@@ -424,21 +424,30 @@ struct TransferPlannerView: View {
 
     private var effectiveOrigin: CLLocationCoordinate2D { model.originOverride?.coordinate ?? origin }
     @State private var previewTarget: RoutePreviewTarget?
+    @State private var shareLiveLocationPromptRoute: MultimodalRoute?
+    @State private var livePusher = LiveLocationPusher()
     /// Sharing goes through InstantShare: the link exists at once and the share sheet is presented from UIKit, so the row
     /// this button is in being rebuilt by a realtime refresh can no longer dismiss it.
-    private func share(_ route: MultimodalRoute) {
+    private func share(_ route: MultimodalRoute, shareLiveLocation: Bool) {
         let name = model.destination?.name ?? "目的地"
-        InstantShare.run(ShareTripService.prepare(route: route, title: "前往\(name)"),
-                         message: "我搭這趟前往\(name)，可以看班次狀態（6 小時內有效，不含我的位置）：")
+        let prepared = ShareTripService.prepare(route: route, title: "前往\(name)", shareLiveLocation: shareLiveLocation)
+        InstantShare.run(prepared,
+                         message: "我搭這趟前往\(name)，可以看班次狀態（6 小時內有效" + (shareLiveLocation ? "，我也開啟了即時位置分享）：" : "，不含我的位置）："))
+        // Only start pushing coordinates once the link actually exists AND the sharer opted in —
+        // never for the default (off) share.
+        if shareLiveLocation, case .success(let p) = prepared { livePusher.start(token: p.token) }
     }
 
     @ViewBuilder
     private func shareButton(_ route: MultimodalRoute) -> some View {
         if ShareTripService.isShareable(route) {
-            Button { share(route) } label: {
+            Button { shareLiveLocationPromptRoute = route } label: {
                 Label("分享行程給親友", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
+            .sheet(item: $shareLiveLocationPromptRoute) { r in
+                ShareLiveLocationConfirmSheet { shareLiveLocation in share(r, shareLiveLocation: shareLiveLocation) }
+            }
         }
     }
     @State private var editingSavedPlaceRole: SavedPlaceRole?
@@ -782,6 +791,8 @@ struct TransferPlannerView: View {
             .sheet(item: $placeDetailTarget) { candidate in
                 PlaceDetailView(name: candidate.name, coordinate: candidate.coordinate, subtitle: candidate.subtitle)
             }
+            // 安全分享 never outlives this screen — leaving stops any live-location push in flight.
+            .onDisappear { livePusher.stop() }
         }
     }
 

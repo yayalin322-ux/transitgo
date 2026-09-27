@@ -76,6 +76,12 @@
   .nav-bar > div { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 99px; transition: width 1s linear; }
   .nav-instruction { margin-top: 12px; padding: 10px 12px; border-radius: 12px; background: var(--accent-soft); font-size: 14px; font-weight: 600; }
   .nav-arrived { color: var(--accent2); }
+  /* ---- 安全分享（選用）：分享者自己選擇要傳送即時位置 ---- */
+  .banner.live { background: var(--accent2-soft); color: var(--accent2); font-weight: 600; }
+  .live-map { margin: 14px 0; border-radius: 18px; overflow: hidden; border: 1px solid var(--line); box-shadow: var(--shadow); }
+  .live-map iframe { display: block; width: 100%; height: 260px; border: 0; }
+  .live-map .foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 14px; background: var(--card); font-size: 13px; color: var(--muted); }
+  .live-map .foot a { color: var(--accent); font-weight: 600; text-decoration: none; }
 </style>
 </head>
 <body>
@@ -85,6 +91,8 @@
 <div id="wake" class="banner wake" hidden></div>
 <div id="stale" class="banner warn" hidden></div>
 <div class="banner" id="disclaimer">這裡顯示的是<b>班次狀態與列車最後回報的位置</b>（台鐵才有），<b>不是 GPS 即時定位</b>，也不含分享者本人的位置。</div>
+<div id="liveLocBanner" class="banner live" hidden>分享者已選擇在這個連結<b>額外分享自己的即時位置</b>，任何拿到這個連結的人都能看到。</div>
+<div id="liveLoc" class="live-map" hidden></div>
 <div id="legs"></div>
 <div id="err" hidden></div>
 <footer>資料來源：交通部 TDX。連結到期後自動失效。 · <a href="https://yayalin.com/app">交通即時查 TransitGo</a></footer>
@@ -340,6 +348,7 @@ async function loadPlan() {
   } else {
     $("legs").innerHTML = plan.segments.map(legShell).join("");
   }
+  $("liveLocBanner").hidden = !plan.liveLocationEnabled;
   $("refresh").hidden = false;
   await refreshLive(true);
   setInterval(tickClock, 1000);
@@ -355,7 +364,27 @@ async function refreshLive(force) {
     if (plan.kind === "nav") renderNav();
     else if (r.status === 200 && r.body) renderLegs();
     else if (!live) renderLegs();   // first attempt failed: show the schedule at least; the next tick retries
+    renderLiveLocation();
   } finally { polling = false; }
+}
+
+/* ---------- 安全分享（選用）：分享者自己選擇要不要傳送即時座標，預設是不傳 ---------- */
+let lastLiveLocAt = null;
+function renderLiveLocation() {
+  const box = $("liveLoc");
+  const loc = plan?.liveLocationEnabled ? live?.liveLocation : null;
+  if (!loc) { box.hidden = true; return; }
+  // Rebuild the iframe only when the coordinate actually moved — reloading it every poll would
+  // restart the embed and could flicker/reset the user's zoom.
+  if (lastLiveLocAt === loc.updatedAt) { box.hidden = false; return; }
+  lastLiveLocAt = loc.updatedAt;
+  const d = 0.004;   // ~a few hundred metres of context around the pin
+  const bbox = [loc.lon - d, loc.lat - d, loc.lon + d, loc.lat + d].join("%2C");
+  const src = `https://www.openstreetmap.org/export/embed.html?bbox=${bbox}&layer=mapnik&marker=${loc.lat}%2C${loc.lon}`;
+  const appleUrl = `https://maps.apple.com/?ll=${loc.lat},${loc.lon}&q=分享者位置`;
+  box.innerHTML = `<iframe src="${src}" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+    <div class="foot"><span>位置更新於 ${clock(Date.parse(loc.updatedAt))}</span><a href="${appleUrl}" target="_blank" rel="noopener">在地圖 App 開啟</a></div>`;
+  box.hidden = false;
 }
 $("refresh").addEventListener("click", () => refreshLive(true));
 document.addEventListener("visibilitychange", () => refreshLive(false));

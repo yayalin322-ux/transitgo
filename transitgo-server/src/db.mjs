@@ -210,6 +210,12 @@ if (usingPg) {
     ALTER TABLE shares ADD COLUMN IF NOT EXISTS nav_json TEXT;
     ALTER TABLE shares ADD COLUMN IF NOT EXISTS nav_progress_json TEXT;
     ALTER TABLE shares ADD COLUMN IF NOT EXISTS nav_progress_at_ms BIGINT;
+    -- 安全分享（選用，預設關閉）：分享者建立連結時自己決定要不要「順便」傳即時座標——
+    -- 一般分享連結完全不含座標；只有這個欄位是 true 的連結，App 才會開始回報座標。
+    ALTER TABLE shares ADD COLUMN IF NOT EXISTS live_location_enabled INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE shares ADD COLUMN IF NOT EXISTS live_lat DOUBLE PRECISION;
+    ALTER TABLE shares ADD COLUMN IF NOT EXISTS live_lon DOUBLE PRECISION;
+    ALTER TABLE shares ADD COLUMN IF NOT EXISTS live_location_at_ms BIGINT;
 
     CREATE TABLE IF NOT EXISTS speedcam_cache (
       id         TEXT PRIMARY KEY DEFAULT 'all',
@@ -356,15 +362,19 @@ if (usingPg) {
     CREATE INDEX IF NOT EXISTS idx_user_landmark_reports_landmark ON user_landmark_reports (landmark_id);
 
     CREATE TABLE IF NOT EXISTS shares (
-      token              TEXT PRIMARY KEY,
-      title              TEXT,
-      kind               TEXT NOT NULL DEFAULT 'trip',
-      segments_json      TEXT NOT NULL,
-      nav_json           TEXT,
-      nav_progress_json  TEXT,
-      nav_progress_at_ms INTEGER,
-      created_at_ms      BIGINT NOT NULL,
-      expires_at_ms      BIGINT NOT NULL
+      token                TEXT PRIMARY KEY,
+      title                TEXT,
+      kind                 TEXT NOT NULL DEFAULT 'trip',
+      segments_json        TEXT NOT NULL,
+      nav_json             TEXT,
+      nav_progress_json    TEXT,
+      nav_progress_at_ms   INTEGER,
+      live_location_enabled INTEGER NOT NULL DEFAULT 0,
+      live_lat             REAL,
+      live_lon             REAL,
+      live_location_at_ms  INTEGER,
+      created_at_ms        BIGINT NOT NULL,
+      expires_at_ms        BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_shares_expires ON shares (expires_at_ms);
 
@@ -406,6 +416,10 @@ if (usingPg) {
   if (!shareCols.includes("nav_json")) db.exec(`ALTER TABLE shares ADD COLUMN nav_json TEXT`);
   if (!shareCols.includes("nav_progress_json")) db.exec(`ALTER TABLE shares ADD COLUMN nav_progress_json TEXT`);
   if (!shareCols.includes("nav_progress_at_ms")) db.exec(`ALTER TABLE shares ADD COLUMN nav_progress_at_ms INTEGER`);
+  if (!shareCols.includes("live_location_enabled")) db.exec(`ALTER TABLE shares ADD COLUMN live_location_enabled INTEGER NOT NULL DEFAULT 0`);
+  if (!shareCols.includes("live_lat")) db.exec(`ALTER TABLE shares ADD COLUMN live_lat REAL`);
+  if (!shareCols.includes("live_lon")) db.exec(`ALTER TABLE shares ADD COLUMN live_lon REAL`);
+  if (!shareCols.includes("live_location_at_ms")) db.exec(`ALTER TABLE shares ADD COLUMN live_location_at_ms INTEGER`);
   // One review per (place, device) — without this, a single phone could post an
   // unlimited number of 5-star reviews for the same place. Existing duplicates (from
   // before this was enforced) keep only the most recent one so the unique index below
@@ -1007,16 +1021,17 @@ function isoZ(value) {
 
 /** `kind: 'trip'` (default) needs `segments`; `kind: 'nav'` needs `nav` instead (an in-app
  * driving/walking navigation share — see shares.mjs's sanitizeNav) and no segments at all. */
-export async function createShare({ token, title, segments, kind = "trip", nav, nowMs, expiresAtMs }) {
+export async function createShare({ token, title, segments, kind = "trip", nav, liveLocationEnabled = false, nowMs, expiresAtMs }) {
   // Expired links are useless and hold nothing we need: sweep them on every create.
   await db.prepare(`DELETE FROM shares WHERE expires_at_ms <= :now`).run({ now: nowMs });
   await db.prepare(`
-    INSERT INTO shares (token, title, kind, segments_json, nav_json, created_at_ms, expires_at_ms)
-    VALUES (:token, :title, :kind, :segments_json, :nav_json, :created, :expires)
+    INSERT INTO shares (token, title, kind, segments_json, nav_json, live_location_enabled, created_at_ms, expires_at_ms)
+    VALUES (:token, :title, :kind, :segments_json, :nav_json, :live_location_enabled, :created, :expires)
   `).run({
     token, title: title ?? null, kind,
     segments_json: JSON.stringify(segments ?? []),
     nav_json: nav ? JSON.stringify(nav) : null,
+    live_location_enabled: liveLocationEnabled ? 1 : 0,
     created: nowMs, expires: expiresAtMs,
   });
 }
@@ -1024,7 +1039,8 @@ export async function createShare({ token, title, segments, kind = "trip", nav, 
 /** The stored share, or null. Expiry is the caller's decision (shares.mjs isExpired). */
 export async function getShare(token) {
   const r = await db.prepare(`
-    SELECT token, title, kind, segments_json, nav_json, nav_progress_json, nav_progress_at_ms, created_at_ms, expires_at_ms
+    SELECT token, title, kind, segments_json, nav_json, nav_progress_json, nav_progress_at_ms,
+           live_location_enabled, live_lat, live_lon, live_location_at_ms, created_at_ms, expires_at_ms
     FROM shares WHERE token = :token
   `).get({ token });
   if (!r) return null;
@@ -1034,6 +1050,10 @@ export async function getShare(token) {
     nav: r.nav_json ? JSON.parse(r.nav_json) : null,
     navProgress: r.nav_progress_json ? JSON.parse(r.nav_progress_json) : null,
     navProgressAtMs: r.nav_progress_at_ms != null ? Number(r.nav_progress_at_ms) : null,
+    liveLocationEnabled: !!(r.live_location_enabled && Number(r.live_location_enabled) !== 0),
+    liveLat: r.live_lat != null ? Number(r.live_lat) : null,
+    liveLon: r.live_lon != null ? Number(r.live_lon) : null,
+    liveLocationAtMs: r.live_location_at_ms != null ? Number(r.live_location_at_ms) : null,
     created_at_ms: Number(r.created_at_ms), expires_at_ms: Number(r.expires_at_ms),
   };
 }
@@ -1046,6 +1066,18 @@ export async function updateShareProgress(token, progress, nowMs) {
     UPDATE shares SET nav_progress_json = :progress, nav_progress_at_ms = :now
     WHERE token = :token AND kind = 'nav' AND expires_at_ms > :now
   `).run({ token, progress: JSON.stringify(progress), now: nowMs });
+  return info.changes > 0;
+}
+
+/** The sharer's own app pushes this while "安全分享" (opt-in live-location) is on — for either
+ * kind of share (trip or nav). Silently a no-op unless the sharer explicitly enabled
+ * live_location_enabled on this exact token, so a stale/foreign token can't be used to start
+ * broadcasting a coordinate that wasn't opted into. */
+export async function updateShareLocation(token, { lat, lon }, nowMs) {
+  const info = await db.prepare(`
+    UPDATE shares SET live_lat = :lat, live_lon = :lon, live_location_at_ms = :now
+    WHERE token = :token AND live_location_enabled = 1 AND expires_at_ms > :now
+  `).run({ token, lat, lon, now: nowMs });
   return info.changes > 0;
 }
 
