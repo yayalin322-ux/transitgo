@@ -186,10 +186,24 @@ struct OffRouteDetector {
     }
 
     /// Feed one fix. Returns true once the user should be considered off route.
-    mutating func update(distanceFromRoute: Double, accuracy: Double, mode: Mode) -> Bool {
+    ///
+    /// `headingDiffDegrees` is the gap between where the driver is actually pointed and the
+    /// planned route's own direction at the nearest point on it — pass `nil` when there is no
+    /// trustworthy heading (stopped, walking, or a poor fix). On Taiwan's dense city grids, a
+    /// wrong turn very often lands on a street that runs parallel (or crosses back) just 20–40 m
+    /// from the planned one — close enough that pure distance-from-route never crosses the
+    /// threshold, so the app kept giving directions for a road the driver had already left. A car
+    /// that is genuinely on the planned road points roughly the way that road goes; one pointed
+    /// 90°+ away from it, even while still "close" by distance, is on a different street. That
+    /// case gets a tighter effective threshold instead of a new independent trigger, so ordinary
+    /// GPS heading noise (which is worse at low speed) cannot flag off-route on its own.
+    mutating func update(distanceFromRoute: Double, accuracy: Double, mode: Mode, headingDiffDegrees: Double? = nil) -> Bool {
         // A fix this poor says nothing either way — keep the streak, do not add to it.
         guard accuracy >= 0, accuracy <= 50 else { return streak >= 2 }
-        let limit = Self.threshold(mode: mode, accuracy: accuracy)
+        var limit = Self.threshold(mode: mode, accuracy: accuracy)
+        if let headingDiffDegrees, headingDiffDegrees > 50 {
+            limit *= 0.5
+        }
         if distanceFromRoute > limit {
             // Far beyond the limit on a good fix is unmistakable: one fix is enough.
             streak += distanceFromRoute > limit * 2.5 && accuracy <= 25 ? 2 : 1
@@ -247,6 +261,7 @@ struct SpeechGate {
     private var lastText: String?
     private var lastAt = Date.distantPast
     private var speaking: SpeechPriority?
+    var isSpeaking: Bool { speaking != nil }
 
     mutating func decide(_ text: String, priority: SpeechPriority, now: Date) -> Action {
         if text == lastText, now.timeIntervalSince(lastAt) < Self.repeatWindow { return .skip }

@@ -8,6 +8,12 @@ final class NavSpeaker: NSObject, AVSpeechSynthesizerDelegate {
     private let synthesizer = AVSpeechSynthesizer()
     private var gate = SpeechGate()
     private var pending: (text: String, priority: SpeechPriority, at: Date)?
+    /// True while something is being read aloud (including the brief gap before the synthesizer
+    /// actually starts). Lets callers hold off on a lower-urgency heads-up rather than queue it to
+    /// fire the instant the current line ends — see `checkManeuvers`'s use for the "far" maneuver
+    /// cue, which used to queue behind the *previous* corner's "此路口右轉" and then fire immediately
+    /// after it, reading as "talking about the next junction while still at this one".
+    var isSpeaking: Bool { gate.isSpeaking }
 
     override init() {
         super.init()
