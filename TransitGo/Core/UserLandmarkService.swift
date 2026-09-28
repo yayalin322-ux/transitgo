@@ -266,6 +266,132 @@ enum BusinessStatus: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// Fixed vocabulary, Google-Maps-style small feature chips — matches transitgo-server's
+/// landmarks.mjs LANDMARK_FEATURES exactly (same raw values). Not free text, so it always
+/// renders as a recognisable icon+label chip instead of an arbitrary string.
+enum LandmarkFeature: String, CaseIterable, Identifiable, Codable {
+    case reservations, parking, petFriendly, outdoorSeating, wifi, creditCard
+    case delivery, takeout, wheelchairAccessible, kidsFriendly, airConditioning, groupFriendly
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .reservations: return "接受訂位"
+        case .parking: return "有停車位"
+        case .petFriendly: return "寵物友善"
+        case .outdoorSeating: return "戶外座位"
+        case .wifi: return "提供 Wi-Fi"
+        case .creditCard: return "可刷卡"
+        case .delivery: return "提供外送"
+        case .takeout: return "可外帶"
+        case .wheelchairAccessible: return "無障礙設施"
+        case .kidsFriendly: return "適合親子"
+        case .airConditioning: return "有冷氣"
+        case .groupFriendly: return "適合聚會"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .reservations: return "calendar.badge.checkmark"
+        case .parking: return "parkingsign"
+        case .petFriendly: return "pawprint.fill"
+        case .outdoorSeating: return "sun.max.fill"
+        case .wifi: return "wifi"
+        case .creditCard: return "creditcard.fill"
+        case .delivery: return "bicycle"
+        case .takeout: return "bag.fill"
+        case .wheelchairAccessible: return "figure.roll"
+        case .kidsFriendly: return "figure.2.and.child.holdinghands"
+        case .airConditioning: return "snowflake"
+        case .groupFriendly: return "person.3.fill"
+        }
+    }
+}
+
+/// One day's opening hours — `nil` for closed all day. `close` may read earlier than `open` for
+/// a place that crosses midnight (e.g. a bar open 18:00–02:00): a real case, not a decode error.
+struct DayHours: Codable, Equatable {
+    var open: String
+    var close: String
+}
+
+/// Structured weekly hours — exactly the 7 named days, matching transitgo-server's hours_json
+/// shape ({mon:{...}|null, tue:..., ...}) field for field.
+struct LandmarkHours: Codable, Equatable {
+    var mon: DayHours?
+    var tue: DayHours?
+    var wed: DayHours?
+    var thu: DayHours?
+    var fri: DayHours?
+    var sat: DayHours?
+    var sun: DayHours?
+
+    private enum CodingKeys: String, CodingKey { case mon, tue, wed, thu, fri, sat, sun }
+
+    init() {}
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        mon = try c.decodeIfPresent(DayHours.self, forKey: .mon)
+        tue = try c.decodeIfPresent(DayHours.self, forKey: .tue)
+        wed = try c.decodeIfPresent(DayHours.self, forKey: .wed)
+        thu = try c.decodeIfPresent(DayHours.self, forKey: .thu)
+        fri = try c.decodeIfPresent(DayHours.self, forKey: .fri)
+        sat = try c.decodeIfPresent(DayHours.self, forKey: .sat)
+        sun = try c.decodeIfPresent(DayHours.self, forKey: .sun)
+    }
+
+    /// The default synthesized encoder would use `encodeIfPresent` for these Optional properties
+    /// and simply OMIT a closed day's key when nil — but the server's sanitizeHours requires
+    /// exactly these 7 keys present every time (a missing one is rejected outright, not defaulted).
+    /// Encoding explicitly (not IfPresent) makes a closed day come out as a real JSON `null`.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(mon, forKey: .mon)
+        try c.encode(tue, forKey: .tue)
+        try c.encode(wed, forKey: .wed)
+        try c.encode(thu, forKey: .thu)
+        try c.encode(fri, forKey: .fri)
+        try c.encode(sat, forKey: .sat)
+        try c.encode(sun, forKey: .sun)
+    }
+
+    /// In declaration order, Monday first — the order every day-by-day picker/table in the UI
+    /// iterates in.
+    var days: [(key: String, label: String, hours: DayHours?)] {
+        [("mon", "週一", mon), ("tue", "週二", tue), ("wed", "週三", wed), ("thu", "週四", thu),
+         ("fri", "週五", fri), ("sat", "週六", sat), ("sun", "週日", sun)]
+    }
+
+    /// Writes back a day's hours by key (from `days` above) — the picker UI works off that
+    /// key/label/hours list rather than 7 separate bound properties.
+    mutating func setHours(_ hours: DayHours?, forKey key: String) {
+        switch key {
+        case "mon": mon = hours
+        case "tue": tue = hours
+        case "wed": wed = hours
+        case "thu": thu = hours
+        case "fri": fri = hours
+        case "sat": sat = hours
+        case "sun": sun = hours
+        default: break
+        }
+    }
+
+    static let allClosed = LandmarkHours()
+}
+
+/// "Is this place open right now?" — computed server-side (see transitgo-server's isOpenNow) from
+/// structured hours, since that's the one place that already knows "now" without trusting the
+/// phone's own clock/timezone. `nil` on the landmark itself means no structured hours to compute
+/// from — the UI falls back to the free-text `businessHours` in that case.
+struct OpenNowStatus: Decodable, Equatable {
+    let open: Bool
+    let changesAt: String?
+    let changesLabel: String
+}
+
 struct UserLandmark: Decodable, Identifiable {
     let id: Int
     let name: String
@@ -288,8 +414,23 @@ struct UserLandmark: Decodable, Identifiable {
     /// already-approved, non-business-claim-specific entries.
     let approved: Bool?
     let isBusinessClaim: Bool?
+    /// Google-Maps-style extras — empty/nil for anything not yet a verified business, same gate
+    /// as businessHours/phone above. `photos` falls back to a one-item array from the legacy
+    /// `photo` field server-side, so this is never empty for a landmark that has any photo at all.
+    let photos: [String]?
+    let hours: LandmarkHours?
+    /// Raw strings, not `[LandmarkFeature]` directly — an array of a String-backed enum fails to
+    /// decode AT ALL the moment one element carries a raw value this build doesn't recognize yet
+    /// (a future tag from a newer server), which would silently break the *entire* landmark's
+    /// decode over one unrecognized chip. `featureTags` below is the safe, filtered view.
+    let features: [String]?
+    let openNow: OpenNowStatus?
 
     var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: lat, longitude: lon) }
+    /// Never empty when there's at least the single legacy `photo` — decoding old cached
+    /// responses (or a server that hasn't deployed this feature yet) never leaves this nil.
+    var effectivePhotos: [String] { photos ?? (photo.map { [$0] } ?? []) }
+    var featureTags: [LandmarkFeature] { (features ?? []).compactMap(LandmarkFeature.init(rawValue:)) }
 }
 
 /// User-submitted landmarks (real content, e.g. a small shop/spot Apple's POI index
@@ -344,6 +485,7 @@ enum UserLandmarkService {
     static func update(
         id: Int, description: String?, businessHours: String?, phone: String? = nil,
         businessStatus: BusinessStatus? = nil, photo: String?, coordinate: CLLocationCoordinate2D? = nil,
+        photos: [String]? = nil, hours: LandmarkHours? = nil, features: [LandmarkFeature]? = nil,
         email: String? = nil, code: String? = nil
     ) async -> Bool {
         guard let base = BackendConfig.baseURL else { return false }
@@ -360,6 +502,9 @@ enum UserLandmarkService {
         if let businessStatus { payload["businessStatus"] = businessStatus.rawValue }
         if let photo { payload["photo"] = photo }
         if let coordinate { payload["lat"] = coordinate.latitude; payload["lon"] = coordinate.longitude }
+        if let photos { payload["photos"] = photos }
+        if let hours, let data = try? JSONEncoder().encode(hours), let obj = try? JSONSerialization.jsonObject(with: data) { payload["hours"] = obj }
+        if let features { payload["features"] = features.map(\.rawValue) }
         var req = URLRequest(url: base.appendingPathComponent("v1/landmarks/\(id)"))
         req.httpMethod = "PUT"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
