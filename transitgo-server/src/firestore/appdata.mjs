@@ -13,7 +13,7 @@
  *    any landmark write, so a busy map does not spend the free read quota.
  */
 
-import { isOpenNow } from "../landmarks.mjs";
+import { isOpenNow, normalizePhotos } from "../landmarks.mjs";
 
 export const REPORT_REASONS = ["spam", "offensive", "sexual", "harassment", "other"];
 // Google-Maps-style fine-grained taxonomy — keep this in sync with db.mjs's own copy AND
@@ -219,10 +219,11 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
    * stores them as native fields (arrays/objects) rather than JSON text, but the shape and the
    * legacy-photo fallback are identical. */
   function landmarkExtras(r) {
-    const photos = r.photos ?? (r.photo ? [r.photo] : []);
+    const photos = r.photos ? normalizePhotos(r.photos) : (r.photo ? [{ url: r.photo, category: "other" }] : []);
     const hours = r.hours ?? null;
     const features = r.features ?? [];
-    return { photos, hours, features, openNow: isOpenNow(hours) };
+    const links = r.links ?? null;
+    return { photos, hours, features, links, priceRange: r.price_range ?? null, openNow: isOpenNow(hours) };
   }
   async function createUserLandmark(r) {
     const id = await store.nextId("user_landmarks");
@@ -234,6 +235,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
       app_version: r.appVersion ?? null, device: r.device ?? null, email: r.email ?? null, ip: r.ip ?? null,
       approved: 0, reported: 0, created_at: iso(),
       photos: r.photos ?? null, hours: r.hours ?? null, features: r.features ?? null,
+      links: r.links ?? null, price_range: r.priceRange ?? null,
     });
     dropLandmarkCache();
   }
@@ -252,7 +254,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
       id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
       businessHours: r.business_verified ? r.business_hours : null, phone: r.business_verified ? r.phone : null,
       businessVerified: !!r.business_verified, businessStatus: r.business_verified ? (r.business_status || "open") : "open",
-      ...(r.business_verified ? landmarkExtras(r) : { photos: r.photo ? [r.photo] : [], hours: null, features: [], openNow: null }),
+      ...(r.business_verified ? landmarkExtras(r) : { photos: r.photo ? [{ url: r.photo, category: "other" }] : [], hours: null, features: [], links: null, priceRange: null, openNow: null }),
     }));
   }
   async function getApprovedLandmark(id) {
@@ -262,7 +264,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
       id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
       businessHours: r.business_verified ? r.business_hours : null, phone: r.business_verified ? r.phone : null,
       businessVerified: !!r.business_verified, businessStatus: r.business_verified ? (r.business_status || "open") : "open",
-      ...(r.business_verified ? landmarkExtras(r) : { photos: r.photo ? [r.photo] : [], hours: null, features: [], openNow: null }),
+      ...(r.business_verified ? landmarkExtras(r) : { photos: r.photo ? [{ url: r.photo, category: "other" }] : [], hours: null, features: [], links: null, priceRange: null, openNow: null }),
     };
   }
   async function listAllUserLandmarks(limit = 200) {
@@ -321,6 +323,8 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     if (fields.photos !== undefined) patch.photos = fields.photos;
     if (fields.hours !== undefined) patch.hours = fields.hours;
     if (fields.features !== undefined) patch.features = fields.features;
+    if (fields.links !== undefined) patch.links = fields.links;
+    if (fields.priceRange !== undefined) patch.price_range = fields.priceRange;
     if (Object.keys(patch).length === 0) return false;
     await store.update("user_landmarks", id, patch);
     dropLandmarkCache();
@@ -349,7 +353,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
         return {
           id: r.id, name: r.name, description: r.description, category: r.category,
           businessHours: r.business_hours, businessStatus: r.business_status ?? "open",
-          coverPhoto: photos[0] ?? null, openNow,
+          coverPhoto: photos[0]?.url ?? null, openNow,
         };
       }),
       total: all.length,

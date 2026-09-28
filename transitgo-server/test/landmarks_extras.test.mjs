@@ -1,6 +1,10 @@
-// Google-Maps-style business info: photo gallery, structured weekly hours (+ "open now"), and
-// fixed-vocabulary feature tags. Pure functions, no DB.
-import { sanitizePhotos, sanitizeHours, sanitizeFeatures, isOpenNow, LANDMARK_FEATURES, WEEKDAYS, MAX_PHOTOS } from "../src/landmarks.mjs";
+// Google-Maps-style business info: categorized photo gallery, structured weekly hours (+ "open
+// now"), fixed-vocabulary feature tags, external links, and self-reported price range. Pure
+// functions, no DB.
+import {
+  sanitizePhotos, normalizePhotos, PHOTO_CATEGORIES, sanitizeHours, sanitizeFeatures, isOpenNow,
+  sanitizeLinks, sanitizePriceRange, LANDMARK_FEATURES, WEEKDAYS, MAX_PHOTOS, MAX_PRICE_RANGE,
+} from "../src/landmarks.mjs";
 
 let failed = false;
 function check(label, cond) { console.log(`${cond ? "PASS" : "FAIL"} - ${label}`); if (!cond) failed = true; }
@@ -8,7 +12,9 @@ function check(label, cond) { console.log(`${cond ? "PASS" : "FAIL"} - ${label}`
 // ---- sanitizePhotos ----
 const dataPhoto = (n = 100) => "data:image/jpeg;base64," + "A".repeat(n);
 check("null (no gallery submitted) is accepted as null, not an error", sanitizePhotos(null) === null);
-check("a real gallery of data: URIs is accepted as-is", JSON.stringify(sanitizePhotos([dataPhoto(), dataPhoto()])) === JSON.stringify([dataPhoto(), dataPhoto()]));
+check("a plain string is normalized to {url, category: 'other'}", JSON.stringify(sanitizePhotos([dataPhoto()])) === JSON.stringify([{ url: dataPhoto(), category: "other" }]));
+check("an object with a real category is kept as-is", JSON.stringify(sanitizePhotos([{ url: dataPhoto(), category: "menu" }])) === JSON.stringify([{ url: dataPhoto(), category: "menu" }]));
+check("an object with no/unknown category defaults to 'other'", sanitizePhotos([{ url: dataPhoto(), category: "not-a-real-category" }])?.[0].category === "other");
 check("an already-uploaded https URL is accepted too", sanitizePhotos(["https://cdn.example.com/a.jpg"])?.length === 1);
 check("an empty array is rejected, not stored as 'no photos'", sanitizePhotos([]) === null);
 check(`more than ${MAX_PHOTOS} photos is rejected`, sanitizePhotos(Array.from({ length: MAX_PHOTOS + 1 }, () => dataPhoto())) === null);
@@ -17,6 +23,28 @@ check("an oversized photo is rejected", sanitizePhotos([dataPhoto(2_000_000)]) =
 check("an http:// (not https) URL is rejected", sanitizePhotos(["http://cdn.example.com/a.jpg"]) === null);
 check("one bad photo rejects the whole gallery, not a silently shorter one", sanitizePhotos([dataPhoto(), "not a photo"]) === null);
 check("a non-array is rejected", sanitizePhotos("x") === null);
+check("every real category is accepted as-is", PHOTO_CATEGORIES.every((c) => sanitizePhotos([{ url: dataPhoto(), category: c }])?.[0].category === c));
+
+// ---- normalizePhotos: reading back whatever shape ended up stored ----
+check("the current {url, category} shape reads back untouched", JSON.stringify(normalizePhotos([{ url: "https://x/a.jpg", category: "food" }])) === JSON.stringify([{ url: "https://x/a.jpg", category: "food" }]));
+check("the older plain-string array (from before categories existed) upgrades to 'other'", JSON.stringify(normalizePhotos(["https://x/a.jpg"])) === JSON.stringify([{ url: "https://x/a.jpg", category: "other" }]));
+check("nothing stored at all → an empty gallery, not an error", JSON.stringify(normalizePhotos(undefined)) === "[]" && JSON.stringify(normalizePhotos(null)) === "[]");
+
+// ---- sanitizeLinks ----
+check("null (no links submitted) is accepted as null", sanitizeLinks(null) === null);
+check("a real set of links is accepted as-is", JSON.stringify(sanitizeLinks({ menu: "https://x/menu", website: "https://x" })) === JSON.stringify({ menu: "https://x/menu", website: "https://x" }));
+check("every known kind is individually accepted", ["menu", "order", "website", "delivery"].every((k) => sanitizeLinks({ [k]: "https://x" })?.[k] === "https://x"));
+check("an unknown link kind is rejected outright, not dropped", sanitizeLinks({ menu: "https://x/menu", instagram: "https://x" }) === null);
+check("a non-https URL is rejected", sanitizeLinks({ menu: "http://x/menu" }) === null);
+check("an empty object is rejected (nothing worth storing)", sanitizeLinks({}) === null);
+check("not an object is rejected", sanitizeLinks("x") === null && sanitizeLinks([]) === null);
+
+// ---- sanitizePriceRange ----
+check("null (not set) is accepted as null", sanitizePriceRange(null) === null);
+check(`every value 1..${MAX_PRICE_RANGE} is accepted`, [1, 2, 3, 4].every((n) => sanitizePriceRange(n) === n));
+check("0 is rejected (the scale starts at 1)", sanitizePriceRange(0) === null);
+check(`${MAX_PRICE_RANGE + 1} is rejected`, sanitizePriceRange(MAX_PRICE_RANGE + 1) === null);
+check("a non-integer is rejected", sanitizePriceRange(2.5) === null && sanitizePriceRange("2") === null);
 
 // ---- sanitizeHours ----
 const fullWeek = (day) => Object.fromEntries(WEEKDAYS.map((d) => [d, day]));
