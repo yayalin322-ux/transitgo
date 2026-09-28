@@ -100,6 +100,22 @@ await approveUserLandmark(plain.id);
   check("...and it's normalized to {url, category: 'other'}", JSON.stringify(seen.photos) === JSON.stringify([{ url: photoAUrl, category: "other" }]));
 }
 {
+  // The web business dashboard's two-step category picker needs to be able to change category
+  // after the fact too (a business claiming something Apple mis-typed as, say, "cafe" but is
+  // really a "teaShop") — this only just started being editable, previously only settable at
+  // creation.
+  const ok = await updateMyUserLandmark(fullBiz.id, { device: "biz-phone-1" }, { category: "teaShop" });
+  check("the owner can edit the category too", ok === true);
+  const seen = await getApprovedLandmark(fullBiz.id);
+  check("...and it actually changed", seen.category === "teaShop");
+}
+{
+  const ok = await updateMyUserLandmark(fullBiz.id, { device: "biz-phone-1" }, { category: "not-a-real-category" });
+  check("an unrecognized category is silently ignored, not stored as garbage", ok === false);
+  const seen = await getApprovedLandmark(fullBiz.id);
+  check("...the category from the previous edit is untouched", seen.category === "teaShop");
+}
+{
   const ok = await updateMyUserLandmark(fullBiz.id, { device: "someone-elses-phone" }, { features: ["wifi"] });
   check("a different device can't edit these fields either (same ownership gate as everything else)", ok === false);
 }

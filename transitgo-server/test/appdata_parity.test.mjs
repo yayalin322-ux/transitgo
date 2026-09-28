@@ -131,7 +131,7 @@ async function scenario(api) {
   r.mine = byId(await api.listMyUserLandmarks("devA"));
   r.mineNone = await api.listMyUserLandmarks("nobody");
   r.editOk = await api.updateMyUserLandmark(all0[0].id, "devA", {
-    description: "新描述", businessHours: "10-6", phone: "0911", lat: 24.842, lon: 121.012,
+    description: "新描述", businessHours: "10-6", phone: "0911", category: "teaShop", lat: 24.842, lon: 121.012,
     photos: [{ url: "data:image/jpeg;base64,AAAA", category: "food" }, { url: "data:image/jpeg;base64,BBBB", category: "menu" }],
     hours: Object.fromEntries(["mon", "tue", "wed", "thu", "fri", "sat", "sun"].map((d) => [d, { open: "09:00", close: "18:00" }])),
     features: ["parking", "wifi"],
