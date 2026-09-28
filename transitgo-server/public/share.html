@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="robots" content="noindex,nofollow" />
 <title>行程分享 · TransitGo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;700;800&display=swap" rel="stylesheet" />
 <style>
   :root {
     color-scheme: light dark;
@@ -20,11 +23,26 @@
       --shadow: 0 1px 2px #00000040, 0 12px 32px -16px #00000066; }
   }
   * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
   html, body { background: var(--bg); }
-  body { font: 16px/1.55 -apple-system, "PingFang TC", system-ui, sans-serif; color: var(--text); max-width: 560px; margin: 0 auto; padding: 0 16px 48px; -webkit-font-smoothing: antialiased; }
+  body {
+    position: relative; overflow-x: hidden;
+    font: 16px/1.55 -apple-system, "PingFang TC", system-ui, sans-serif; color: var(--text);
+    max-width: 560px; margin: 0 auto; padding: 0 16px 48px; -webkit-font-smoothing: antialiased;
+  }
+  h1, .brand, .name { font-family: "Plus Jakarta Sans", -apple-system, "PingFang TC", system-ui, sans-serif; letter-spacing: -0.01em; }
+  /* 呼應 App 首頁的柔和光暈，分享頁不再是一片死板的純色卡片 */
+  .glow {
+    position: absolute; top: -140px; left: 50%; transform: translateX(-50%);
+    width: 700px; height: 380px; pointer-events: none; z-index: 0;
+    background: radial-gradient(closest-side, var(--accent-soft), transparent 70%),
+                radial-gradient(closest-side at 75% 30%, var(--accent2-soft), transparent 65%);
+    opacity: 0.9;
+  }
+  .brand, h1, .sub, .overview, .banner, #legs, #err, footer { position: relative; z-index: 1; }
   .brand { display: flex; align-items: center; gap: 9px; padding: 20px 0 6px; text-decoration: none; color: var(--text); font-weight: 800; font-size: 15px; }
   .brand img { width: 26px; height: 26px; display: block; }
-  h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.01em; margin: 10px 0 4px; }
+  h1 { font-size: 23px; font-weight: 800; letter-spacing: -0.015em; margin: 10px 0 4px; }
   .sub { font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .sub button { font: inherit; font-size: 12px; font-weight: 600; padding: 5px 13px; border-radius: 99px; border: 1px solid var(--line); background: var(--card); color: var(--accent); cursor: pointer; transition: opacity .15s; }
   .sub button:active { opacity: .6; }
@@ -57,6 +75,11 @@
   ol.stops li.edge { font-weight: 600; }
   ol.stops li .t { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 13px; }
   .note { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+  .sched { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); display: grid; grid-template-columns: auto 1fr 1fr; gap: 5px 12px; align-items: baseline; }
+  .sched .sched-label { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+  .sched .sched-val { font-size: 14px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .sched .sched-val small { display: block; font-size: 10px; font-weight: 600; color: var(--muted); text-transform: none; letter-spacing: 0; }
+  .sched .sched-val.est { color: var(--accent); }
   .alert { font-size: 13px; color: var(--red); margin-top: 8px; font-weight: 600; display: flex; align-items: flex-start; gap: 6px; }
   .alert svg { width: 14px; height: 14px; flex: none; margin-top: 2px; }
   .rate { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); text-align: center; }
@@ -82,12 +105,38 @@
   .live-map iframe { display: block; width: 100%; height: 260px; border: 0; }
   .live-map .foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 14px; background: var(--card); font-size: 13px; color: var(--muted); }
   .live-map .foot a { color: var(--accent); font-weight: 600; text-decoration: none; }
+  /* ---- 行程總覽：出發/抵達/總時長 + 每一段的圖示時間軸，一眼看到整趟行程的結構 ---- */
+  /* [hidden] alone loses to any same-specificity class rule that sets display — without this,
+     "hidden" stopped actually hiding these once they got their own display:flex. */
+  .overview[hidden], .timeline[hidden] { display: none; }
+  .overview { display: flex; align-items: stretch; background: var(--card); box-shadow: var(--shadow); border: 1px solid var(--line); border-radius: 16px; margin: 14px 0 10px; overflow: hidden; }
+  .overview-stat { flex: 1; min-width: 0; padding: 12px 6px; text-align: center; }
+  .overview-stat .ov-label { display: block; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .overview-stat .ov-value { display: block; margin-top: 3px; font-size: 13px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .overview-div { width: 1px; background: var(--line); }
+  .timeline { display: flex; align-items: center; margin: 0 0 14px; padding: 2px 2px; }
+  .timeline .tl-step { display: flex; align-items: center; flex: none; }
+  .timeline .tl-icon { width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--accent-soft); color: var(--accent); flex: none; }
+  .timeline .tl-icon svg { width: 13px; height: 13px; }
+  .timeline .tl-icon.walk { background: var(--line); color: var(--muted); width: 8px; height: 8px; }
+  .timeline .tl-link { width: 18px; height: 2px; background: var(--line); flex: none; }
 </style>
 </head>
 <body>
+<div class="glow" aria-hidden="true"></div>
 <a class="brand" href="https://yayalin.com/app"><img src="https://yayalin.com/app-assets/logo-icon.png" alt="" /><span>交通即時查 TransitGo</span></a>
 <h1 id="title">行程分享</h1>
 <div class="sub"><span id="sub">讀取中…</span><button id="refresh" type="button" hidden>重新整理</button></div>
+<div class="overview" id="overview" hidden>
+  <div class="overview-stat"><span class="ov-label">出發</span><span class="ov-value" id="ov-dep">—</span></div>
+  <div class="overview-div"></div>
+  <div class="overview-stat"><span class="ov-label">抵達</span><span class="ov-value" id="ov-arr">—</span></div>
+  <div class="overview-div"></div>
+  <div class="overview-stat"><span class="ov-label">總時長</span><span class="ov-value" id="ov-duration">—</span></div>
+  <div class="overview-div"></div>
+  <div class="overview-stat"><span class="ov-label">段數</span><span class="ov-value" id="ov-legs">—</span></div>
+</div>
+<div class="timeline" id="timeline" hidden></div>
 <div id="wake" class="banner wake" hidden></div>
 <div id="stale" class="banner warn" hidden></div>
 <div class="banner" id="disclaimer">這裡顯示的是<b>班次狀態與列車最後回報的位置</b>（台鐵才有），<b>不是 GPS 即時定位</b>，也不含分享者本人的位置。</div>
@@ -172,6 +221,30 @@ function legShell(seg, i) {
   </div>`;
 }
 
+/** A "trip" share's整趟 summary strip (出發/抵達/總時長/段數) + a compact icon timeline — one
+ * glance at the whole journey's shape before reading into any one leg's live status. Static
+ * (scheduled) times only: the per-leg cards below already own the live countdown/estimate, this
+ * is deliberately not a second thing to keep in sync with realtime updates. */
+function renderOverview() {
+  const segs = plan.segments;
+  if (!segs.length) return;
+  const dep = Date.parse(segs[0].departureTime), arr = Date.parse(segs[segs.length - 1].arrivalTime);
+  $("ov-dep").textContent = clock(dep);
+  $("ov-arr").textContent = clock(arr);
+  $("ov-duration").textContent = fmtSpan(arr - dep);
+  const legCount = segs.filter(isVehicle).length;
+  $("ov-legs").textContent = `${legCount} 段`;
+  $("overview").hidden = false;
+
+  const steps = segs.map((seg, i) => {
+    if (!isVehicle(seg)) return `<span class="tl-step"><span class="tl-icon walk"></span></span>`;
+    const [icon] = MODE[seg.mode] || [""];
+    return `<span class="tl-step"><span class="tl-icon">${icon}</span></span>`;
+  });
+  $("timeline").innerHTML = steps.join('<span class="tl-link"></span>');
+  $("timeline").hidden = false;
+}
+
 /** What the family cares about, in order: where is it, how long until it leaves / arrives, how many stops. */
 function legModel(seg, train, ov) {
   const sched = { dep: Date.parse(seg.departureTime), arr: Date.parse(seg.arrivalTime) };
@@ -235,7 +308,10 @@ function legHtml(seg, i, m) {
     ${stops}
     ${m.note ? `<div class="note">${esc(m.note)}</div>` : ""}
     ${m.alerts.map((a) => `<div class="alert">${ICONS.warn}<span>${esc(a.title)}</span></div>`).join("")}
-    <div class="note">預定 ${clock(Date.parse(seg.departureTime))} 發車 → ${clock(Date.parse(seg.arrivalTime))} 抵達${m.depEst || m.arrEst ? `；預估 ${clock(m.dep)} 發車 → ${clock(m.arr)} 抵達` : ""}</div>
+    <div class="sched">
+      <span class="sched-label">班表</span><span class="sched-val">${clock(Date.parse(seg.departureTime))}<small>發車</small></span><span class="sched-val">${clock(Date.parse(seg.arrivalTime))}<small>抵達</small></span>
+      ${m.depEst || m.arrEst ? `<span class="sched-label">預估</span><span class="sched-val est">${clock(m.dep)}<small>發車</small></span><span class="sched-val est">${clock(m.arr)}<small>抵達</small></span>` : ""}
+    </div>
     ${m.arrived ? rateHtml(seg, i) : ""}`;
 }
 
@@ -347,6 +423,7 @@ async function loadPlan() {
     $("legs").innerHTML = navShell();
   } else {
     $("legs").innerHTML = plan.segments.map(legShell).join("");
+    renderOverview();
   }
   $("liveLocBanner").hidden = !plan.liveLocationEnabled;
   $("refresh").hidden = false;
