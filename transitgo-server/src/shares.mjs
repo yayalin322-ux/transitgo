@@ -114,8 +114,11 @@ export const isToken = (t) => typeof t === "string" && /^[A-Za-z0-9_-]{22}$/.tes
  * wherever the page's own logo `<img>` is hosted (yayalin.com). Missed once already: the logo
  * was added to the page without updating this policy, so it silently never rendered (no img-src
  * meant `default-src 'none'` blocked every image outright) — a regression test pins this.
+ * Same lesson applied here in advance for the Google Fonts stylesheet/font files the page loads
+ * (style-src for the CSS, font-src for the actual font binary — missing either one silently
+ * fails closed under default-src 'none', same as the logo did).
  */
-export const SHARE_PAGE_CSP = "default-src 'none'; img-src 'self' https://yayalin.com; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'";
+export const SHARE_PAGE_CSP = "default-src 'none'; img-src 'self' https://yayalin.com; script-src 'unsafe-inline'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self'";
 
 /** True when there is no such share or its time has run out — a viewer never sees the stored trip then. */
 export function isExpired(row, nowMs = Date.now()) { return !row || Number(row.expires_at_ms) <= nowMs; }
