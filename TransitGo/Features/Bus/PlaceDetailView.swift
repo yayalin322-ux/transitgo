@@ -18,10 +18,12 @@ struct PlaceDetailView: View {
     var businessStatus: BusinessStatus = .open
     /// Google-Maps-style extras — empty/nil the same way businessHours/businessPhone are for
     /// anything not yet a verified business.
-    var photos: [String] = []
+    var photos: [LandmarkPhoto] = []
     var hours: LandmarkHours?
     var features: [LandmarkFeature] = []
     var openNow: OpenNowStatus?
+    var links: LandmarkLinks?
+    var priceRange: Int?
 
     @Environment(\.dismiss) private var dismiss
     @State private var mapItem: MKMapItem?
@@ -33,6 +35,10 @@ struct PlaceDetailView: View {
     @State private var loading = true
     @State private var reportedReviewIDs: Set<Int> = []
     @State private var landmarkReported = false
+    @State private var navTarget: PlaceNavTarget?
+    /// `nil` = show every photo. Only offered when the gallery actually spans more than one
+    /// category — a single-category (or uncategorized) gallery has nothing worth filtering.
+    @State private var photoCategoryFilter: PhotoCategory?
     /// Which review (if any) in `reviews` this device itself posted — enables a "delete my
     /// review" button in place of the report menu on that one row.
     @State private var myReviewID: Int?
@@ -42,8 +48,19 @@ struct PlaceDetailView: View {
             List {
                 if !photos.isEmpty {
                     Section {
+                        if photoCategories.count > 1 {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    photoCategoryChip(nil, label: "全部")
+                                    ForEach(photoCategories) { category in
+                                        photoCategoryChip(category, label: category.label)
+                                    }
+                                }
+                                .padding(.horizontal, 16).padding(.top, 8)
+                            }
+                        }
                         TabView {
-                            ForEach(photos, id: \.self) { photo in
+                            ForEach(filteredPhotos, id: \.url) { photo in
                                 LandmarkPhotoView(photo: photo)
                             }
                         }
@@ -120,6 +137,20 @@ struct PlaceDetailView: View {
                     } else if let hoursText = businessHours {
                         Label(hoursText, systemImage: "clock.fill")
                     }
+                    if let priceRange {
+                        Label(priceRangeLabel(priceRange), systemImage: "dollarsign.circle")
+                    }
+                    if let links, !links.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                linkButton(links.menu, label: "菜單", icon: "menucard")
+                                linkButton(links.order, label: "線上點餐", icon: "cart.fill")
+                                linkButton(links.website, label: "官網", icon: "safari.fill")
+                                linkButton(links.delivery, label: "外送", icon: "bicycle")
+                            }
+                        }
+                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 4, trailing: 16))
+                    }
                     if let bPhone = businessPhone {
                         Link(destination: URL(string: "tel:\(bPhone.filter { $0.isNumber })") ?? URL(string: "tel:")!) {
                             Label(bPhone, systemImage: "phone.fill")
@@ -137,6 +168,22 @@ struct PlaceDetailView: View {
                         Link(destination: shopURL) {
                             Label("在網頁上查看", systemImage: "globe")
                         }
+                    }
+                }
+
+                Section {
+                    Menu {
+                        Button { navTarget = PlaceNavTarget(coordinate: coordinate, name: name, transportType: .walking) } label: {
+                            Label("走路", systemImage: "figure.walk")
+                        }
+                        Button { navTarget = PlaceNavTarget(coordinate: coordinate, name: name, transportType: .automobile) } label: {
+                            Label("開車", systemImage: "car.fill")
+                        }
+                        Button { navTarget = PlaceNavTarget(coordinate: coordinate, name: name, transportType: .automobile, avoidsHighways: true) } label: {
+                            Label("騎機車", systemImage: "figure.outdoor.cycle")
+                        }
+                    } label: {
+                        Label("導航到這裡", systemImage: "location.fill")
                     }
                 }
 
@@ -280,7 +327,7 @@ struct PlaceDetailView: View {
                     EditLandmarkView(
                         landmarkID: landmarkID, description: subtitle ?? "", businessHours: businessHours ?? "",
                         phone: businessPhone ?? "", businessStatus: businessStatus, coordinate: coordinate,
-                        photos: photos, hours: hours, features: features
+                        photos: photos, hours: hours, features: features, links: links ?? LandmarkLinks(), priceRange: priceRange
                     ) {
                         showEditLandmark = false
                     }
@@ -291,7 +338,51 @@ struct PlaceDetailView: View {
                     showClaim = false
                 }
             }
+            .fullScreenCover(item: $navTarget) { target in
+                InAppNavigationView(destination: target.coordinate, destinationName: target.name, transportType: target.transportType, avoidsHighways: target.avoidsHighways)
+            }
         }
+    }
+
+    private var photoCategories: [PhotoCategory] {
+        var seen: [PhotoCategory] = []
+        for photo in photos where !seen.contains(photo.category) { seen.append(photo.category) }
+        return seen
+    }
+
+    private var filteredPhotos: [LandmarkPhoto] {
+        guard let photoCategoryFilter else { return photos }
+        return photos.filter { $0.category == photoCategoryFilter }
+    }
+
+    @ViewBuilder
+    private func photoCategoryChip(_ category: PhotoCategory?, label: String) -> some View {
+        let isOn = photoCategoryFilter == category
+        Button { photoCategoryFilter = category } label: {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(isOn ? .blue : Color(.secondarySystemBackground), in: Capsule())
+                .foregroundStyle(isOn ? .white : .primary)
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func linkButton(_ urlString: String?, label: String, icon: String) -> some View {
+        if let urlString, let url = URL(string: urlString) {
+            Link(destination: url) {
+                Label(label, systemImage: icon)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(.blue.opacity(0.12), in: Capsule())
+                    .foregroundStyle(.blue)
+            }
+        }
+    }
+
+    private func priceRangeLabel(_ level: Int) -> String {
+        String(repeating: "$", count: max(1, min(4, level)))
     }
 
     private func loadMapItem() async -> MKMapItem? {
@@ -307,17 +398,27 @@ struct PlaceDetailView: View {
     }
 }
 
+/// Drives PlaceDetailView's own "導航到這裡" — a single-leg `fullScreenCover(item:)`
+/// target, same pattern as TransferPlannerView's `NavTarget`/RoutePreviewView's target.
+private struct PlaceNavTarget: Identifiable {
+    let id = UUID()
+    let coordinate: CLLocationCoordinate2D
+    let name: String
+    let transportType: MKDirectionsTransportType
+    var avoidsHighways: Bool? = nil
+}
+
 /// One photo in a landmark's gallery — `data:` URIs (what the app itself uploads) decode
 /// locally; a plain https URL (room for a future non-app upload path) loads over the network.
 /// Either way, filling the whole page-view frame so the gallery reads as a real photo carousel.
 private struct LandmarkPhotoView: View {
-    let photo: String
+    let photo: LandmarkPhoto
 
     var body: some View {
         Group {
-            if photo.hasPrefix("data:"), let image = DataURIImage.decode(photo) {
+            if photo.url.hasPrefix("data:"), let image = DataURIImage.decode(photo.url) {
                 Image(uiImage: image).resizable().scaledToFill()
-            } else if let url = URL(string: photo) {
+            } else if let url = URL(string: photo.url) {
                 AsyncImage(url: url) { phase in
                     if let image = phase.image { image.resizable().scaledToFill() }
                     else { Color.gray.opacity(0.2) }
@@ -328,6 +429,16 @@ private struct LandmarkPhotoView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
+        .overlay(alignment: .bottomLeading) {
+            if photo.category != .other {
+                Text(photo.category.label)
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(.black.opacity(0.5), in: Capsule())
+                    .foregroundStyle(.white)
+                    .padding(10)
+            }
+        }
     }
 }
 
@@ -530,18 +641,32 @@ private struct EditLandmarkView: View {
     var onDone: () -> Void
 
     @State private var photoItems: [PhotosPickerItem] = []
-    @State private var photoImages: [UIImage]
+    @State private var editablePhotos: [EditablePhoto]
     @State private var useStructuredHours: Bool
     @State private var hours: LandmarkHours
     @State private var features: Set<LandmarkFeature>
+    @State private var linkMenu: String
+    @State private var linkOrder: String
+    @State private var linkWebsite: String
+    @State private var linkDelivery: String
+    @State private var priceRange: Int?
     @State private var isSubmitting = false
     @State private var errorText: String?
     @State private var pinCoordinate: CLLocationCoordinate2D
 
+    /// One selected/existing photo plus the category the owner assigns it — the picker only
+    /// hands back plain UIImages, so this is what pairs a category onto each one for editing.
+    private struct EditablePhoto: Identifiable {
+        let id = UUID()
+        var image: UIImage
+        var category: PhotoCategory
+    }
+
     init(
         landmarkID: Int, description: String, businessHours: String, phone: String,
         businessStatus: BusinessStatus, coordinate: CLLocationCoordinate2D,
-        photos: [String], hours: LandmarkHours?, features: [LandmarkFeature], onDone: @escaping () -> Void
+        photos: [LandmarkPhoto], hours: LandmarkHours?, features: [LandmarkFeature],
+        links: LandmarkLinks, priceRange: Int?, onDone: @escaping () -> Void
     ) {
         self.landmarkID = landmarkID
         self._description = State(initialValue: description)
@@ -551,10 +676,17 @@ private struct EditLandmarkView: View {
         self.coordinate = coordinate
         self.onDone = onDone
         self._pinCoordinate = State(initialValue: coordinate)
-        self._photoImages = State(initialValue: photos.compactMap(DataURIImage.decode))
+        self._editablePhotos = State(initialValue: photos.compactMap { photo in
+            DataURIImage.decode(photo.url).map { EditablePhoto(image: $0, category: photo.category) }
+        })
         self._useStructuredHours = State(initialValue: hours != nil)
         self._hours = State(initialValue: hours ?? LandmarkHours())
         self._features = State(initialValue: Set(features))
+        self._linkMenu = State(initialValue: links.menu ?? "")
+        self._linkOrder = State(initialValue: links.order ?? "")
+        self._linkWebsite = State(initialValue: links.website ?? "")
+        self._linkDelivery = State(initialValue: links.delivery ?? "")
+        self._priceRange = State(initialValue: priceRange)
     }
 
     var body: some View {
@@ -589,37 +721,52 @@ private struct EditLandmarkView: View {
                 Section("地址") {
                     AddressPickerMap(coordinate: $pinCoordinate)
                 }
-                Section("相簿（最多 \(MAX_LANDMARK_PHOTOS) 張）") {
+                Section {
                     PhotosPicker(selection: $photoItems, maxSelectionCount: MAX_LANDMARK_PHOTOS, matching: .images) {
-                        if photoImages.isEmpty {
-                            Label("選擇相簿", systemImage: "photo.on.rectangle")
-                        } else {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
-                                    ForEach(Array(photoImages.enumerated()), id: \.offset) { _, img in
-                                        Image(uiImage: img).resizable().scaledToFill()
-                                            .frame(width: 88, height: 88)
-                                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                                    }
-                                }
-                            }
-                            Text("重新選擇會取代整本相簿").font(.caption2).foregroundStyle(.secondary)
-                        }
+                        Label(editablePhotos.isEmpty ? "選擇相簿" : "重新選擇（會取代整本相簿）", systemImage: "photo.on.rectangle")
                     }
                     .onChange(of: photoItems) { _, items in
                         Task {
-                            var images: [UIImage] = []
+                            var loaded: [EditablePhoto] = []
                             for item in items {
                                 if let data = try? await item.loadTransferable(type: Data.self), let img = UIImage(data: data) {
-                                    images.append(img)
+                                    loaded.append(EditablePhoto(image: img, category: .other))
                                 }
                             }
-                            photoImages = images
+                            editablePhotos = loaded
                         }
                     }
+                    ForEach($editablePhotos) { $photo in
+                        HStack(spacing: 12) {
+                            Image(uiImage: photo.image).resizable().scaledToFill()
+                                .frame(width: 60, height: 60)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                            Picker("分類", selection: $photo.category) {
+                                ForEach(PhotoCategory.allCases) { c in Text(c.label).tag(c) }
+                            }
+                            .labelsHidden()
+                        }
+                    }
+                } header: {
+                    Text("相簿（最多 \(MAX_LANDMARK_PHOTOS) 張，可分別標分類）")
                 }
                 Section("特色標籤") {
                     FeatureChipPicker(selected: $features)
+                }
+                Section("價位（選填）") {
+                    Picker("價位", selection: $priceRange) {
+                        Text("未提供").tag(Int?.none)
+                        ForEach(1...4, id: \.self) { level in
+                            Text(String(repeating: "$", count: level)).tag(Int?.some(level))
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                Section("外部連結（選填）") {
+                    TextField("菜單連結", text: $linkMenu).keyboardType(.URL).textInputAutocapitalization(.never)
+                    TextField("線上點餐連結", text: $linkOrder).keyboardType(.URL).textInputAutocapitalization(.never)
+                    TextField("官網連結", text: $linkWebsite).keyboardType(.URL).textInputAutocapitalization(.never)
+                    TextField("外送連結", text: $linkDelivery).keyboardType(.URL).textInputAutocapitalization(.never)
                 }
                 if let errorText {
                     Text(errorText).font(.footnote).foregroundStyle(.red)
@@ -636,13 +783,23 @@ private struct EditLandmarkView: View {
                         Button("儲存") {
                             isSubmitting = true
                             Task {
-                                let photos = photoImages.compactMap { PhotoUpload.encode($0) }
+                                let photos: [LandmarkPhoto] = editablePhotos.compactMap { ep in
+                                    PhotoUpload.encode(ep.image).map { LandmarkPhoto(url: $0, category: ep.category) }
+                                }
+                                let links = LandmarkLinks(
+                                    menu: linkMenu.trimmingCharacters(in: .whitespaces).isEmpty ? nil : linkMenu,
+                                    order: linkOrder.trimmingCharacters(in: .whitespaces).isEmpty ? nil : linkOrder,
+                                    website: linkWebsite.trimmingCharacters(in: .whitespaces).isEmpty ? nil : linkWebsite,
+                                    delivery: linkDelivery.trimmingCharacters(in: .whitespaces).isEmpty ? nil : linkDelivery
+                                )
                                 let ok = await UserLandmarkService.update(
                                     id: landmarkID, description: description, businessHours: businessHours,
                                     phone: phone, businessStatus: businessStatus, photo: nil, coordinate: pinCoordinate,
                                     photos: photos.isEmpty ? nil : photos,
                                     hours: useStructuredHours ? hours : nil,
-                                    features: features.isEmpty ? nil : Array(features)
+                                    features: features.isEmpty ? nil : Array(features),
+                                    links: links.isEmpty ? nil : links,
+                                    priceRange: .some(priceRange)
                                 )
                                 if ok {
                                     onDone()

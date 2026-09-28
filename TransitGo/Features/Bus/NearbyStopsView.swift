@@ -57,10 +57,12 @@ struct NearbyLandmark: Identifiable {
     var businessPhone: String?
     var businessVerified = false
     var businessStatus: BusinessStatus = .open
-    var photos: [String] = []
+    var photos: [LandmarkPhoto] = []
     var hours: LandmarkHours?
     var features: [LandmarkFeature] = []
     var openNow: OpenNowStatus?
+    var links: LandmarkLinks?
+    var priceRange: Int?
 }
 
 /// Real nearby points of interest (Apple's own POI index, via the dedicated
@@ -100,7 +102,8 @@ final class LandmarkNearbyViewModel {
                                category: $0.category, landmarkID: $0.id,
                                businessHours: $0.businessHours, businessPhone: $0.phone, businessVerified: $0.businessVerified,
                                businessStatus: $0.effectiveBusinessStatus,
-                               photos: $0.effectivePhotos, hours: $0.hours, features: $0.featureTags, openNow: $0.openNow)
+                               photos: $0.effectivePhotos, hours: $0.hours, features: $0.featureTags, openNow: $0.openNow,
+                               links: $0.links, priceRange: $0.priceRange)
             }
         }()
         let (apple, own) = await (appleTask, ownTask)
@@ -507,7 +510,8 @@ struct NearbyStopsView: View {
                                  landmarkID: landmark.landmarkID, businessHours: landmark.businessHours,
                                  businessPhone: landmark.businessPhone, businessVerified: landmark.businessVerified,
                                  businessStatus: landmark.businessStatus,
-                                 photos: landmark.photos, hours: landmark.hours, features: landmark.features, openNow: landmark.openNow)
+                                 photos: landmark.photos, hours: landmark.hours, features: landmark.features, openNow: landmark.openNow,
+                                 links: landmark.links, priceRange: landmark.priceRange)
             }
         }
     }

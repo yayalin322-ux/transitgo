@@ -310,6 +310,69 @@ enum LandmarkFeature: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// Which kind of shot a gallery photo is — matches transitgo-server's landmarks.mjs
+/// PHOTO_CATEGORIES exactly (same raw values). Falls back to `.other` for an unrecognized
+/// value, same reasoning as `LandmarkCategory`'s decode — one odd tag shouldn't fail the
+/// whole photo (or the landmark it belongs to).
+enum PhotoCategory: String, CaseIterable, Identifiable, Codable {
+    case food, menu, interior, exterior, other
+
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = PhotoCategory(rawValue: raw) ?? .other
+    }
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .food: return "餐點"
+        case .menu: return "菜單"
+        case .interior: return "店內"
+        case .exterior: return "店外"
+        case .other: return "其他"
+        }
+    }
+}
+
+/// One gallery photo — matches the server's `{url, category}` shape. Decoding also accepts
+/// a bare string (the shape this app itself sent before photo categories existed, and what
+/// a not-yet-upgraded cached response might still hold) as a photo with category `.other`.
+struct LandmarkPhoto: Codable, Equatable, Hashable {
+    var url: String
+    var category: PhotoCategory
+
+    init(url: String, category: PhotoCategory = .other) {
+        self.url = url
+        self.category = category
+    }
+
+    init(from decoder: Decoder) throws {
+        if let s = try? decoder.singleValueContainer().decode(String.self) {
+            url = s
+            category = .other
+            return
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        url = try c.decode(String.self, forKey: .url)
+        category = try c.decodeIfPresent(PhotoCategory.self, forKey: .category) ?? .other
+    }
+
+    private enum CodingKeys: String, CodingKey { case url, category }
+}
+
+/// External links a business can offer — matches transitgo-server's landmarks.mjs
+/// LANDMARK_LINK_KINDS exactly (menu/order/website/delivery), each an optional https URL.
+struct LandmarkLinks: Codable, Equatable {
+    var menu: String?
+    var order: String?
+    var website: String?
+    var delivery: String?
+
+    /// `true` once at least one link is actually set — lets a view skip the whole
+    /// links section when there's nothing to show, without every caller re-deriving it.
+    var isEmpty: Bool { menu == nil && order == nil && website == nil && delivery == nil }
+}
+
 /// One day's opening hours — `nil` for closed all day. `close` may read earlier than `open` for
 /// a place that crosses midnight (e.g. a bar open 18:00–02:00): a real case, not a decode error.
 struct DayHours: Codable, Equatable {
@@ -417,7 +480,7 @@ struct UserLandmark: Decodable, Identifiable {
     /// Google-Maps-style extras — empty/nil for anything not yet a verified business, same gate
     /// as businessHours/phone above. `photos` falls back to a one-item array from the legacy
     /// `photo` field server-side, so this is never empty for a landmark that has any photo at all.
-    let photos: [String]?
+    let photos: [LandmarkPhoto]?
     let hours: LandmarkHours?
     /// Raw strings, not `[LandmarkFeature]` directly — an array of a String-backed enum fails to
     /// decode AT ALL the moment one element carries a raw value this build doesn't recognize yet
@@ -425,11 +488,16 @@ struct UserLandmark: Decodable, Identifiable {
     /// decode over one unrecognized chip. `featureTags` below is the safe, filtered view.
     let features: [String]?
     let openNow: OpenNowStatus?
+    /// External links (menu/線上點餐/官網/外送) — same verified-business-only gate as
+    /// businessHours/photos/hours above.
+    let links: LandmarkLinks?
+    /// Self-reported by the business, 1（$）~4（$$$$）— same gate, `nil` when not set.
+    let priceRange: Int?
 
     var coordinate: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: lat, longitude: lon) }
     /// Never empty when there's at least the single legacy `photo` — decoding old cached
     /// responses (or a server that hasn't deployed this feature yet) never leaves this nil.
-    var effectivePhotos: [String] { photos ?? (photo.map { [$0] } ?? []) }
+    var effectivePhotos: [LandmarkPhoto] { photos ?? (photo.map { [LandmarkPhoto(url: $0)] } ?? []) }
     var featureTags: [LandmarkFeature] { (features ?? []).compactMap(LandmarkFeature.init(rawValue:)) }
 }
 
@@ -482,10 +550,15 @@ enum UserLandmarkService {
     /// updateMyUserLandmark), this call can't bypass that from the client.
     /// `email`/`code` let a verified owner edit from a phone OTHER than the one that
     /// originally submitted the claim — omit them to edit as this device (the normal case).
+    /// `priceRange` is a rare double-optional on purpose: leaving it out (the default `.none`)
+    /// means "don't touch", `.some(nil)` explicitly clears a previously-set price range, and
+    /// `.some(n)` sets it — the server itself makes the same "not sent" vs "sent null" distinction
+    /// (see sanitizePriceRange), so this mirrors that instead of collapsing it to two states.
     static func update(
         id: Int, description: String?, businessHours: String?, phone: String? = nil,
         businessStatus: BusinessStatus? = nil, photo: String?, coordinate: CLLocationCoordinate2D? = nil,
-        photos: [String]? = nil, hours: LandmarkHours? = nil, features: [LandmarkFeature]? = nil,
+        photos: [LandmarkPhoto]? = nil, hours: LandmarkHours? = nil, features: [LandmarkFeature]? = nil,
+        links: LandmarkLinks? = nil, priceRange: Int?? = .none,
         email: String? = nil, code: String? = nil
     ) async -> Bool {
         guard let base = BackendConfig.baseURL else { return false }
@@ -502,9 +575,11 @@ enum UserLandmarkService {
         if let businessStatus { payload["businessStatus"] = businessStatus.rawValue }
         if let photo { payload["photo"] = photo }
         if let coordinate { payload["lat"] = coordinate.latitude; payload["lon"] = coordinate.longitude }
-        if let photos { payload["photos"] = photos }
+        if let photos, let data = try? JSONEncoder().encode(photos), let arr = try? JSONSerialization.jsonObject(with: data) { payload["photos"] = arr }
         if let hours, let data = try? JSONEncoder().encode(hours), let obj = try? JSONSerialization.jsonObject(with: data) { payload["hours"] = obj }
         if let features { payload["features"] = features.map(\.rawValue) }
+        if let links, let data = try? JSONEncoder().encode(links), let obj = try? JSONSerialization.jsonObject(with: data) { payload["links"] = obj }
+        if case .some(let value) = priceRange { payload["priceRange"] = value.map { $0 as Any } ?? NSNull() }
         var req = URLRequest(url: base.appendingPathComponent("v1/landmarks/\(id)"))
         req.httpMethod = "PUT"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")

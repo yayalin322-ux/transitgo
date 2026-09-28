@@ -44,7 +44,8 @@ struct MyLandmarksView: View {
                                  landmarkID: l.id, businessHours: l.businessVerified ? l.businessHours : nil,
                                  businessPhone: l.businessVerified ? l.phone : nil, businessVerified: l.businessVerified,
                                  businessStatus: l.effectiveBusinessStatus,
-                                 photos: l.effectivePhotos, hours: l.hours, features: l.featureTags, openNow: l.openNow)
+                                 photos: l.effectivePhotos, hours: l.hours, features: l.featureTags, openNow: l.openNow,
+                                 links: l.links, priceRange: l.priceRange)
             }
         }
     }
