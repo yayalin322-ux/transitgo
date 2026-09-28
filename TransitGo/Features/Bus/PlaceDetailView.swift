@@ -16,6 +16,12 @@ struct PlaceDetailView: View {
     var businessPhone: String?
     var businessVerified = false
     var businessStatus: BusinessStatus = .open
+    /// Google-Maps-style extras — empty/nil the same way businessHours/businessPhone are for
+    /// anything not yet a verified business.
+    var photos: [String] = []
+    var hours: LandmarkHours?
+    var features: [LandmarkFeature] = []
+    var openNow: OpenNowStatus?
 
     @Environment(\.dismiss) private var dismiss
     @State private var mapItem: MKMapItem?
@@ -34,6 +40,19 @@ struct PlaceDetailView: View {
     var body: some View {
         NavigationStack {
             List {
+                if !photos.isEmpty {
+                    Section {
+                        TabView {
+                            ForEach(photos, id: \.self) { photo in
+                                LandmarkPhotoView(photo: photo)
+                            }
+                        }
+                        .tabViewStyle(.page)
+                        .frame(height: 220)
+                        .listRowInsets(EdgeInsets())
+                    }
+                }
+
                 Section {
                     Map(initialPosition: .region(MKCoordinateRegion(center: coordinate, span: MKCoordinateSpan(latitudeDelta: 0.005, longitudeDelta: 0.005)))) {
                         Marker(name, coordinate: coordinate).tint(.red)
@@ -60,9 +79,46 @@ struct PlaceDetailView: View {
                     if businessVerified, businessStatus != .open {
                         Label(businessStatus.label, systemImage: "exclamationmark.circle.fill")
                             .foregroundStyle(businessStatus == .permanentlyClosed ? .red : .orange)
+                    } else if businessVerified, let openNow {
+                        // business_status (a long-term thing the owner sets, e.g. renovating)
+                        // always wins over the computed schedule — this branch only ever shows
+                        // once that's not in play.
+                        Label(openNow.changesLabel, systemImage: "clock.fill")
+                            .foregroundStyle(openNow.open ? .green : .secondary)
                     }
-                    if let hours = businessHours {
-                        Label(hours, systemImage: "clock.fill")
+                    if !features.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(features) { feature in
+                                    Label(feature.label, systemImage: feature.icon)
+                                        .font(.caption.weight(.semibold))
+                                        .padding(.horizontal, 10).padding(.vertical, 5)
+                                        .background(.blue.opacity(0.12), in: Capsule())
+                                        .foregroundStyle(.blue)
+                                }
+                            }
+                        }
+                        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 4, trailing: 16))
+                    }
+                    if let hours {
+                        DisclosureGroup {
+                            ForEach(hours.days, id: \.key) { day in
+                                HStack {
+                                    Text(day.label).foregroundStyle(.secondary)
+                                    Spacer()
+                                    if let h = day.hours {
+                                        Text("\(h.open)–\(h.close)")
+                                    } else {
+                                        Text("公休").foregroundStyle(.secondary)
+                                    }
+                                }
+                                .font(.subheadline)
+                            }
+                        } label: {
+                            Label(openNow?.changesLabel ?? "營業時間", systemImage: "clock.fill")
+                        }
+                    } else if let hoursText = businessHours {
+                        Label(hoursText, systemImage: "clock.fill")
                     }
                     if let bPhone = businessPhone {
                         Link(destination: URL(string: "tel:\(bPhone.filter { $0.isNumber })") ?? URL(string: "tel:")!) {
@@ -223,7 +279,8 @@ struct PlaceDetailView: View {
                 if let landmarkID {
                     EditLandmarkView(
                         landmarkID: landmarkID, description: subtitle ?? "", businessHours: businessHours ?? "",
-                        phone: businessPhone ?? "", businessStatus: businessStatus, coordinate: coordinate
+                        phone: businessPhone ?? "", businessStatus: businessStatus, coordinate: coordinate,
+                        photos: photos, hours: hours, features: features
                     ) {
                         showEditLandmark = false
                     }
@@ -247,6 +304,30 @@ struct PlaceDetailView: View {
             CLLocation(latitude: $0.placemark.coordinate.latitude, longitude: $0.placemark.coordinate.longitude).distance(from: here)
                 < CLLocation(latitude: $1.placemark.coordinate.latitude, longitude: $1.placemark.coordinate.longitude).distance(from: here)
         }
+    }
+}
+
+/// One photo in a landmark's gallery — `data:` URIs (what the app itself uploads) decode
+/// locally; a plain https URL (room for a future non-app upload path) loads over the network.
+/// Either way, filling the whole page-view frame so the gallery reads as a real photo carousel.
+private struct LandmarkPhotoView: View {
+    let photo: String
+
+    var body: some View {
+        Group {
+            if photo.hasPrefix("data:"), let image = DataURIImage.decode(photo) {
+                Image(uiImage: image).resizable().scaledToFill()
+            } else if let url = URL(string: photo) {
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image { image.resizable().scaledToFill() }
+                    else { Color.gray.opacity(0.2) }
+                }
+            } else {
+                Color.gray.opacity(0.2)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 }
 
@@ -448,15 +529,19 @@ private struct EditLandmarkView: View {
     let coordinate: CLLocationCoordinate2D
     var onDone: () -> Void
 
-    @State private var photoItem: PhotosPickerItem?
-    @State private var photoImage: UIImage?
+    @State private var photoItems: [PhotosPickerItem] = []
+    @State private var photoImages: [UIImage]
+    @State private var useStructuredHours: Bool
+    @State private var hours: LandmarkHours
+    @State private var features: Set<LandmarkFeature>
     @State private var isSubmitting = false
     @State private var errorText: String?
     @State private var pinCoordinate: CLLocationCoordinate2D
 
     init(
         landmarkID: Int, description: String, businessHours: String, phone: String,
-        businessStatus: BusinessStatus, coordinate: CLLocationCoordinate2D, onDone: @escaping () -> Void
+        businessStatus: BusinessStatus, coordinate: CLLocationCoordinate2D,
+        photos: [String], hours: LandmarkHours?, features: [LandmarkFeature], onDone: @escaping () -> Void
     ) {
         self.landmarkID = landmarkID
         self._description = State(initialValue: description)
@@ -466,6 +551,10 @@ private struct EditLandmarkView: View {
         self.coordinate = coordinate
         self.onDone = onDone
         self._pinCoordinate = State(initialValue: coordinate)
+        self._photoImages = State(initialValue: photos.compactMap(DataURIImage.decode))
+        self._useStructuredHours = State(initialValue: hours != nil)
+        self._hours = State(initialValue: hours ?? LandmarkHours())
+        self._features = State(initialValue: Set(features))
     }
 
     var body: some View {
@@ -479,8 +568,20 @@ private struct EditLandmarkView: View {
                 Section("簡介") {
                     TextField("簡介", text: $description, axis: .vertical).lineLimit(2...5)
                 }
-                Section("營業時間") {
-                    TextField("例如：週一至週日 11:00–21:00", text: $businessHours, axis: .vertical).lineLimit(2...4)
+                Section {
+                    Toggle("每天分別設定（自動顯示現在有沒有開）", isOn: $useStructuredHours)
+                    if useStructuredHours {
+                        ForEach(hours.days, id: \.key) { day in
+                            DayHoursEditRow(label: day.label, hours: Binding(
+                                get: { hours.days.first { $0.key == day.key }?.hours },
+                                set: { hours.setHours($0, forKey: day.key) }
+                            ))
+                        }
+                    } else {
+                        TextField("例如：週一至週日 11:00–21:00", text: $businessHours, axis: .vertical).lineLimit(2...4)
+                    }
+                } header: {
+                    Text("營業時間")
                 }
                 Section("電話") {
                     TextField("電話", text: $phone).keyboardType(.phonePad)
@@ -488,23 +589,37 @@ private struct EditLandmarkView: View {
                 Section("地址") {
                     AddressPickerMap(coordinate: $pinCoordinate)
                 }
-                Section("照片") {
-                    PhotosPicker(selection: $photoItem, matching: .images) {
-                        if let photoImage {
-                            Image(uiImage: photoImage).resizable().scaledToFill()
-                                .frame(height: 140).frame(maxWidth: .infinity)
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                Section("相簿（最多 \(MAX_LANDMARK_PHOTOS) 張）") {
+                    PhotosPicker(selection: $photoItems, maxSelectionCount: MAX_LANDMARK_PHOTOS, matching: .images) {
+                        if photoImages.isEmpty {
+                            Label("選擇相簿", systemImage: "photo.on.rectangle")
                         } else {
-                            Label("更換照片（可留空）", systemImage: "camera")
-                        }
-                    }
-                    .onChange(of: photoItem) { _, item in
-                        Task {
-                            if let data = try? await item?.loadTransferable(type: Data.self), let img = UIImage(data: data) {
-                                photoImage = img
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(Array(photoImages.enumerated()), id: \.offset) { _, img in
+                                        Image(uiImage: img).resizable().scaledToFill()
+                                            .frame(width: 88, height: 88)
+                                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                                    }
+                                }
                             }
+                            Text("重新選擇會取代整本相簿").font(.caption2).foregroundStyle(.secondary)
                         }
                     }
+                    .onChange(of: photoItems) { _, items in
+                        Task {
+                            var images: [UIImage] = []
+                            for item in items {
+                                if let data = try? await item.loadTransferable(type: Data.self), let img = UIImage(data: data) {
+                                    images.append(img)
+                                }
+                            }
+                            photoImages = images
+                        }
+                    }
+                }
+                Section("特色標籤") {
+                    FeatureChipPicker(selected: $features)
                 }
                 if let errorText {
                     Text(errorText).font(.footnote).foregroundStyle(.red)
@@ -521,10 +636,13 @@ private struct EditLandmarkView: View {
                         Button("儲存") {
                             isSubmitting = true
                             Task {
-                                let photo = photoImage.flatMap { PhotoUpload.encode($0) }
+                                let photos = photoImages.compactMap { PhotoUpload.encode($0) }
                                 let ok = await UserLandmarkService.update(
                                     id: landmarkID, description: description, businessHours: businessHours,
-                                    phone: phone, businessStatus: businessStatus, photo: photo, coordinate: pinCoordinate
+                                    phone: phone, businessStatus: businessStatus, photo: nil, coordinate: pinCoordinate,
+                                    photos: photos.isEmpty ? nil : photos,
+                                    hours: useStructuredHours ? hours : nil,
+                                    features: features.isEmpty ? nil : Array(features)
                                 )
                                 if ok {
                                     onDone()
@@ -536,6 +654,72 @@ private struct EditLandmarkView: View {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+let MAX_LANDMARK_PHOTOS = 6
+
+/// One day's row in the structured-hours editor: a toggle for "open at all today", plus the
+/// open/close time pickers only shown while it is. Works off "HH:mm" strings (what the server
+/// stores) via a small Date bridge, defaulting to a sensible 09:00–18:00 the first time a
+/// previously-closed day gets turned on.
+private struct DayHoursEditRow: View {
+    let label: String
+    @Binding var hours: DayHours?
+
+    private static let timeFormat: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm"; return f }()
+    private static func date(from hhmm: String) -> Date { Self.timeFormat.date(from: hhmm) ?? Date() }
+    private static func string(from date: Date) -> String { Self.timeFormat.string(from: date) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(label, isOn: Binding(
+                get: { hours != nil },
+                set: { on in hours = on ? (hours ?? DayHours(open: "09:00", close: "18:00")) : nil }
+            ))
+            if let dayHours = hours {
+                HStack {
+                    DatePicker("開店", selection: Binding(
+                        get: { Self.date(from: dayHours.open) },
+                        set: { hours = DayHours(open: Self.string(from: $0), close: dayHours.close) }
+                    ), displayedComponents: .hourAndMinute)
+                    DatePicker("打烊", selection: Binding(
+                        get: { Self.date(from: dayHours.close) },
+                        set: { hours = DayHours(open: dayHours.open, close: Self.string(from: $0)) }
+                    ), displayedComponents: .hourAndMinute)
+                }
+                .font(.subheadline)
+                .labelsHidden()
+            }
+        }
+    }
+}
+
+/// Multi-select chip grid for the fixed feature vocabulary — tap to toggle, matching the visual
+/// language of the read-only chips shown on PlaceDetailView itself.
+private struct FeatureChipPicker: View {
+    @Binding var selected: Set<LandmarkFeature>
+
+    private let columns = [GridItem(.adaptive(minimum: 110), spacing: 8)]
+
+    var body: some View {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+            ForEach(LandmarkFeature.allCases) { feature in
+                let isOn = selected.contains(feature)
+                Button {
+                    if isOn { selected.remove(feature) } else { selected.insert(feature) }
+                } label: {
+                    Label(feature.label, systemImage: feature.icon)
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .frame(maxWidth: .infinity)
+                        .background(isOn ? .blue.opacity(0.15) : Color(.secondarySystemBackground), in: Capsule())
+                        .foregroundStyle(isOn ? .blue : .primary)
+                        .overlay(Capsule().strokeBorder(isOn ? .blue : .clear, lineWidth: 1.5))
+                }
+                .buttonStyle(.plain)
             }
         }
     }

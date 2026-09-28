@@ -47,6 +47,7 @@ import {
   deleteShare,
 } from "./appdata.mjs";
 import { sanitizeSegments, sanitizeTitle, ttlMs, newToken, isToken, isExpired, isVehicle, parseTrainTrip, canRate, createRatingLedger, sanitizeNav, sanitizeNavProgress, NAV_PROGRESS_STALE_MS, sanitizeLiveLocation, LIVE_LOCATION_STALE_MS, SHARE_PAGE_CSP } from "./shares.mjs";
+import { sanitizePhotos, sanitizeHours, sanitizeFeatures } from "./landmarks.mjs";
 import { pushAnnouncement } from "./push.mjs";
 import { clampReport } from "./reports.mjs";
 import { buildStatus, allowedOrigin } from "./status.mjs";
@@ -90,8 +91,11 @@ function isTrustedProxy(req) {
 }
 
 const app = guardAsyncRoutes(express());
-// Raised from 64kb — place-review/landmark submissions can carry a base64-encoded photo.
-app.use(express.json({ limit: "2mb" }));
+// Raised from 64kb, then again from 2mb — place-review/landmark submissions carry a
+// base64-encoded photo, and a landmark's photo gallery can now carry up to MAX_PHOTOS of them
+// at once (see landmarks.mjs's per-photo size cap; this just has to fit all of them plus JSON
+// overhead in one request).
+app.use(express.json({ limit: "8mb" }));
 app.use((req, _res, next) => {
   req.clientIp = viewerIp(req.headers, req.socket.remoteAddress);
   next();
@@ -324,10 +328,15 @@ app.post("/v1/landmarks", async (req, res) => {
   hist.push(now);
   landmarkBucket.set(req.clientIp, hist);
 
-  const { name, description, category, lat, lon, photo, isBusinessClaim, businessHours, phone, appVersion, device, email, code } = req.body || {};
+  const { name, description, category, lat, lon, photo, isBusinessClaim, businessHours, phone, appVersion, device, email, code, photos, hours, features } = req.body || {};
   if (!name || typeof name !== "string") return res.status(400).json({ error: "name required" });
   if (typeof lat !== "number" || typeof lon !== "number") return res.status(400).json({ error: "lat/lon required" });
   if (!validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
+  // Optional Google-Maps-style extras — undefined (never sent) is fine, sent-but-malformed is
+  // rejected outright rather than silently dropped (see sanitizePhotos/sanitizeHours/sanitizeFeatures).
+  if (photos !== undefined && sanitizePhotos(photos) === null) return res.status(400).json({ error: "invalid photos" });
+  if (hours !== undefined && sanitizeHours(hours) === null) return res.status(400).json({ error: "invalid hours" });
+  if (features !== undefined && sanitizeFeatures(features) === null) return res.status(400).json({ error: "invalid features" });
   // A plain community landmark suggestion needs no email — only a business claim does,
   // since that's the case where "verified" starts meaning something (hours/phone shown to
   // other users, later self-editing). The admin's manual "verify-business" button still
@@ -341,6 +350,9 @@ app.post("/v1/landmarks", async (req, res) => {
   await createUserLandmark({
     name, description, category, lat, lon, photo, isBusinessClaim, businessHours, phone, appVersion, device,
     email: cleanEmail, businessVerified: isBusinessClaim ? true : false, ip: req.clientIp,
+    photos: photos !== undefined ? sanitizePhotos(photos) : null,
+    hours: hours !== undefined ? sanitizeHours(hours) : null,
+    features: features !== undefined ? sanitizeFeatures(features) : null,
   });
   res.json({ ok: true });
 });
@@ -468,15 +480,23 @@ app.post("/v1/landmarks/:id/claim", async (req, res) => {
 app.put("/v1/landmarks/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
-  const { device, description, businessHours, phone, businessStatus, photo, lat, lon } = req.body || {};
+  const { device, description, businessHours, phone, businessStatus, photo, lat, lon, photos, hours, features } = req.body || {};
   if (photo !== undefined && !validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
+  if (photos !== undefined && sanitizePhotos(photos) === null) return res.status(400).json({ error: "invalid photos" });
+  if (hours !== undefined && sanitizeHours(hours) === null) return res.status(400).json({ error: "invalid hours" });
+  if (features !== undefined && sanitizeFeatures(features) === null) return res.status(400).json({ error: "invalid features" });
   let email = null;
   if (!device && req.body?.email && (req.body?.code || isTrustedProxy(req))) {
     const candidate = String(req.body.email).trim().toLowerCase();
     if (EMAIL_RE.test(candidate) && (isTrustedProxy(req) || (await verifySiteEmailCode(candidate, String(req.body.code))))) email = candidate;
   }
   if (!device && !email) return res.status(400).json({ error: "device or verified email required" });
-  const ok = await updateMyUserLandmark(id, { device, email }, { description, businessHours, phone, businessStatus, photo, lat, lon });
+  const ok = await updateMyUserLandmark(id, { device, email }, {
+    description, businessHours, phone, businessStatus, photo, lat, lon,
+    photos: photos !== undefined ? sanitizePhotos(photos) : undefined,
+    hours: hours !== undefined ? sanitizeHours(hours) : undefined,
+    features: features !== undefined ? sanitizeFeatures(features) : undefined,
+  });
   if (!ok) return res.status(403).json({ error: "not authorized to edit this listing" });
   res.json({ ok: true });
 });

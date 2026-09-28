@@ -130,7 +130,13 @@ async function scenario(api) {
   r.lmAllAfterReports = byId(await api.listAllUserLandmarks(50));
   r.mine = byId(await api.listMyUserLandmarks("devA"));
   r.mineNone = await api.listMyUserLandmarks("nobody");
-  r.editOk = await api.updateMyUserLandmark(all0[0].id, "devA", { description: "新描述", businessHours: "10-6", phone: "0911", lat: 24.842, lon: 121.012 });
+  r.editOk = await api.updateMyUserLandmark(all0[0].id, "devA", {
+    description: "新描述", businessHours: "10-6", phone: "0911", lat: 24.842, lon: 121.012,
+    photos: ["data:image/jpeg;base64,AAAA", "data:image/jpeg;base64,BBBB"],
+    hours: Object.fromEntries(["mon", "tue", "wed", "thu", "fri", "sat", "sun"].map((d) => [d, { open: "09:00", close: "18:00" }])),
+    features: ["parking", "wifi"],
+  });
+  r.afterExtrasEdit = byId(await api.listApprovedLandmarksNear(24.842, 121.012, 100)).find((x) => x.id === all0[0].id);
   r.editWrongDevice = await api.updateMyUserLandmark(all0[0].id, "devB", { description: "hack" });
   r.editUnverified = await api.updateMyUserLandmark(all0[2].id, "devA", { description: "no" });
   r.editNothing = await api.updateMyUserLandmark(all0[0].id, "devA", {});
