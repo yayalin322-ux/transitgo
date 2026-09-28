@@ -47,7 +47,7 @@ import {
   deleteShare,
 } from "./appdata.mjs";
 import { sanitizeSegments, sanitizeTitle, ttlMs, newToken, isToken, isExpired, isVehicle, parseTrainTrip, canRate, createRatingLedger, sanitizeNav, sanitizeNavProgress, NAV_PROGRESS_STALE_MS, sanitizeLiveLocation, LIVE_LOCATION_STALE_MS, SHARE_PAGE_CSP } from "./shares.mjs";
-import { sanitizePhotos, sanitizeHours, sanitizeFeatures } from "./landmarks.mjs";
+import { sanitizePhotos, sanitizeHours, sanitizeFeatures, sanitizeLinks, sanitizePriceRange } from "./landmarks.mjs";
 import { pushAnnouncement } from "./push.mjs";
 import { clampReport } from "./reports.mjs";
 import { buildStatus, allowedOrigin } from "./status.mjs";
@@ -328,15 +328,17 @@ app.post("/v1/landmarks", async (req, res) => {
   hist.push(now);
   landmarkBucket.set(req.clientIp, hist);
 
-  const { name, description, category, lat, lon, photo, isBusinessClaim, businessHours, phone, appVersion, device, email, code, photos, hours, features } = req.body || {};
+  const { name, description, category, lat, lon, photo, isBusinessClaim, businessHours, phone, appVersion, device, email, code, photos, hours, features, links, priceRange } = req.body || {};
   if (!name || typeof name !== "string") return res.status(400).json({ error: "name required" });
   if (typeof lat !== "number" || typeof lon !== "number") return res.status(400).json({ error: "lat/lon required" });
   if (!validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
   // Optional Google-Maps-style extras — undefined (never sent) is fine, sent-but-malformed is
-  // rejected outright rather than silently dropped (see sanitizePhotos/sanitizeHours/sanitizeFeatures).
+  // rejected outright rather than silently dropped (see landmarks.mjs's sanitize* functions).
   if (photos !== undefined && sanitizePhotos(photos) === null) return res.status(400).json({ error: "invalid photos" });
   if (hours !== undefined && sanitizeHours(hours) === null) return res.status(400).json({ error: "invalid hours" });
   if (features !== undefined && sanitizeFeatures(features) === null) return res.status(400).json({ error: "invalid features" });
+  if (links !== undefined && sanitizeLinks(links) === null) return res.status(400).json({ error: "invalid links" });
+  if (priceRange !== undefined && sanitizePriceRange(priceRange) === null) return res.status(400).json({ error: "invalid priceRange" });
   // A plain community landmark suggestion needs no email — only a business claim does,
   // since that's the case where "verified" starts meaning something (hours/phone shown to
   // other users, later self-editing). The admin's manual "verify-business" button still
@@ -353,6 +355,8 @@ app.post("/v1/landmarks", async (req, res) => {
     photos: photos !== undefined ? sanitizePhotos(photos) : null,
     hours: hours !== undefined ? sanitizeHours(hours) : null,
     features: features !== undefined ? sanitizeFeatures(features) : null,
+    links: links !== undefined ? sanitizeLinks(links) : null,
+    priceRange: priceRange !== undefined ? sanitizePriceRange(priceRange) : null,
   });
   res.json({ ok: true });
 });
@@ -480,11 +484,13 @@ app.post("/v1/landmarks/:id/claim", async (req, res) => {
 app.put("/v1/landmarks/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
-  const { device, description, businessHours, phone, businessStatus, photo, lat, lon, photos, hours, features } = req.body || {};
+  const { device, description, businessHours, phone, businessStatus, photo, lat, lon, photos, hours, features, links, priceRange } = req.body || {};
   if (photo !== undefined && !validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
   if (photos !== undefined && sanitizePhotos(photos) === null) return res.status(400).json({ error: "invalid photos" });
   if (hours !== undefined && sanitizeHours(hours) === null) return res.status(400).json({ error: "invalid hours" });
   if (features !== undefined && sanitizeFeatures(features) === null) return res.status(400).json({ error: "invalid features" });
+  if (links !== undefined && sanitizeLinks(links) === null) return res.status(400).json({ error: "invalid links" });
+  if (priceRange !== undefined && priceRange !== null && sanitizePriceRange(priceRange) === null) return res.status(400).json({ error: "invalid priceRange" });
   let email = null;
   if (!device && req.body?.email && (req.body?.code || isTrustedProxy(req))) {
     const candidate = String(req.body.email).trim().toLowerCase();
@@ -496,6 +502,8 @@ app.put("/v1/landmarks/:id", async (req, res) => {
     photos: photos !== undefined ? sanitizePhotos(photos) : undefined,
     hours: hours !== undefined ? sanitizeHours(hours) : undefined,
     features: features !== undefined ? sanitizeFeatures(features) : undefined,
+    links: links !== undefined ? sanitizeLinks(links) : undefined,
+    priceRange: priceRange !== undefined ? (priceRange === null ? null : sanitizePriceRange(priceRange)) : undefined,
   });
   if (!ok) return res.status(403).json({ error: "not authorized to edit this listing" });
   res.json({ ok: true });

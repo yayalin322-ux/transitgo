@@ -6,7 +6,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { ensureGtfsSchema } from "./gtfs/schema.mjs";
-import { isOpenNow } from "./landmarks.mjs";
+import { isOpenNow, normalizePhotos } from "./landmarks.mjs";
 
 const usingPg = !!process.env.DATABASE_URL;
 export let db;
@@ -179,6 +179,10 @@ if (usingPg) {
     ALTER TABLE user_landmarks ADD COLUMN IF NOT EXISTS photos_json TEXT;
     ALTER TABLE user_landmarks ADD COLUMN IF NOT EXISTS hours_json TEXT;
     ALTER TABLE user_landmarks ADD COLUMN IF NOT EXISTS features_json TEXT;
+    -- 外部連結（菜單/線上點餐/官網/外送，見 landmarks.mjs 的 LANDMARK_LINK_KINDS）跟自報的價位
+    -- （1~4，Google 地圖式的 $ ~ $$$$）。
+    ALTER TABLE user_landmarks ADD COLUMN IF NOT EXISTS links_json TEXT;
+    ALTER TABLE user_landmarks ADD COLUMN IF NOT EXISTS price_range INTEGER;
     -- 舊的粗分類（這個功能改成 Google 地圖那樣細分類之前）換成細分類裡的代表值，
     -- 不然舊地標全部會被 App 端當成無法辨識、退回顯示成「其他」。
     UPDATE user_landmarks SET category = 'restaurant' WHERE category = 'foodDrink';
@@ -352,6 +356,8 @@ if (usingPg) {
       photos_json       TEXT,
       hours_json        TEXT,
       features_json     TEXT,
+      links_json        TEXT,
+      price_range       INTEGER,
       app_version       TEXT,
       device            TEXT,
       email             TEXT,
@@ -422,6 +428,8 @@ if (usingPg) {
   if (!landmarkCols.includes("photos_json")) db.exec(`ALTER TABLE user_landmarks ADD COLUMN photos_json TEXT`);
   if (!landmarkCols.includes("hours_json")) db.exec(`ALTER TABLE user_landmarks ADD COLUMN hours_json TEXT`);
   if (!landmarkCols.includes("features_json")) db.exec(`ALTER TABLE user_landmarks ADD COLUMN features_json TEXT`);
+  if (!landmarkCols.includes("links_json")) db.exec(`ALTER TABLE user_landmarks ADD COLUMN links_json TEXT`);
+  if (!landmarkCols.includes("price_range")) db.exec(`ALTER TABLE user_landmarks ADD COLUMN price_range INTEGER`);
   for (const [oldCat, newCat] of Object.entries(OLD_CATEGORY_REMAP)) {
     db.exec(`UPDATE user_landmarks SET category = '${newCat}' WHERE category = '${oldCat}'`);
   }
@@ -790,22 +798,24 @@ export const LANDMARK_CATEGORIES = [
   "hairSalon", "laundry", "petGrooming", "repairShop",
   "other",
 ];
-/** photos_json/hours_json/features_json, parsed and normalised: `photos` falls back to the
- * legacy single `photo` column so an old row (before this feature existed) still shows its one
- * photo as a one-item gallery instead of an empty one. `openNow` is computed fresh on every read
- * (see isOpenNow) rather than stored, so it's never stale. */
+/** photos_json/hours_json/features_json/links_json/price_range, parsed and normalised: `photos`
+ * falls back to the legacy single `photo` column (or the older plain-string gallery shape, before
+ * photo categories existed — see normalizePhotos) so an old row still shows something instead of
+ * an empty gallery. `openNow` is computed fresh on every read (see isOpenNow) rather than stored,
+ * so it's never stale. */
 function landmarkExtras(r) {
-  const photos = r.photos_json ? JSON.parse(r.photos_json) : (r.photo ? [r.photo] : []);
+  const photos = r.photos_json ? normalizePhotos(JSON.parse(r.photos_json)) : (r.photo ? [{ url: r.photo, category: "other" }] : []);
   const hours = r.hours_json ? JSON.parse(r.hours_json) : null;
   const features = r.features_json ? JSON.parse(r.features_json) : [];
-  return { photos, hours, features, openNow: isOpenNow(hours) };
+  const links = r.links_json ? JSON.parse(r.links_json) : null;
+  return { photos, hours, features, links, priceRange: r.price_range ?? null, openNow: isOpenNow(hours) };
 }
 
 export async function createUserLandmark(r) {
   const category = LANDMARK_CATEGORIES.includes(r.category) ? r.category : "other";
   await db.prepare(`
-    INSERT INTO user_landmarks (name, description, category, lat, lon, photo, is_business_claim, business_verified, business_hours, phone, app_version, device, email, ip, photos_json, hours_json, features_json)
-    VALUES (:name, :description, :category, :lat, :lon, :photo, :is_business_claim, :business_verified, :business_hours, :phone, :app_version, :device, :email, :ip, :photos_json, :hours_json, :features_json)
+    INSERT INTO user_landmarks (name, description, category, lat, lon, photo, is_business_claim, business_verified, business_hours, phone, app_version, device, email, ip, photos_json, hours_json, features_json, links_json, price_range)
+    VALUES (:name, :description, :category, :lat, :lon, :photo, :is_business_claim, :business_verified, :business_hours, :phone, :app_version, :device, :email, :ip, :photos_json, :hours_json, :features_json, :links_json, :price_range)
   `).run({
     name: r.name,
     description: (r.description ?? "").slice(0, 500),
@@ -826,6 +836,8 @@ export async function createUserLandmark(r) {
     photos_json: r.photos ? JSON.stringify(r.photos) : null,
     hours_json: r.hours ? JSON.stringify(r.hours) : null,
     features_json: r.features ? JSON.stringify(r.features) : null,
+    links_json: r.links ? JSON.stringify(r.links) : null,
+    price_range: r.priceRange ?? null,
   });
 }
 
@@ -848,7 +860,7 @@ export async function listApprovedLandmarksNear(lat, lon, radiusMeters = 1000) {
     // Google-Maps-style: a closed place stays visible (with the status flagged) rather than
     // vanishing — vanishing reads as "this data is broken", a flag reads as "closed today".
     businessStatus: r.business_verified ? r.business_status : "open",
-    ...(r.business_verified ? landmarkExtras(r) : { photos: r.photo ? [r.photo] : [], hours: null, features: [], openNow: null }),
+    ...(r.business_verified ? landmarkExtras(r) : { photos: r.photo ? [{ url: r.photo, category: "other" }] : [], hours: null, features: [], links: null, priceRange: null, openNow: null }),
   }));
 }
 
@@ -864,7 +876,7 @@ export async function getApprovedLandmark(id) {
     phone: r.business_verified ? r.phone : null,
     businessVerified: !!r.business_verified,
     businessStatus: r.business_verified ? r.business_status : "open",
-    ...(r.business_verified ? landmarkExtras(r) : { photos: r.photo ? [r.photo] : [], hours: null, features: [], openNow: null }),
+    ...(r.business_verified ? landmarkExtras(r) : { photos: r.photo ? [{ url: r.photo, category: "other" }] : [], hours: null, features: [], links: null, priceRange: null, openNow: null }),
   };
 }
 
@@ -979,6 +991,8 @@ export async function updateMyUserLandmark(id, owner, fields) {
   if (fields.photos !== undefined) { sets.push("photos_json = :photos_json"); params.photos_json = fields.photos ? JSON.stringify(fields.photos) : null; }
   if (fields.hours !== undefined) { sets.push("hours_json = :hours_json"); params.hours_json = fields.hours ? JSON.stringify(fields.hours) : null; }
   if (fields.features !== undefined) { sets.push("features_json = :features_json"); params.features_json = fields.features ? JSON.stringify(fields.features) : null; }
+  if (fields.links !== undefined) { sets.push("links_json = :links_json"); params.links_json = fields.links ? JSON.stringify(fields.links) : null; }
+  if (fields.priceRange !== undefined) { sets.push("price_range = :price_range"); params.price_range = fields.priceRange; }
   if (sets.length === 0) return false;
   await db.prepare(`UPDATE user_landmarks SET ${sets.join(", ")} WHERE id = :id`).run(params);
   return true;
@@ -1021,7 +1035,7 @@ export async function listVerifiedBusinesses({ category, limit = 60, offset = 0 
       return {
         id: r.id, name: r.name, description: r.description, category: r.category,
         businessHours: r.business_hours, businessStatus: r.business_status ?? "open",
-        coverPhoto: photos[0] ?? null, openNow,
+        coverPhoto: photos[0]?.url ?? null, openNow,
       };
     }),
     total: Number(total),

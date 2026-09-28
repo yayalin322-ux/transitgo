@@ -15,14 +15,40 @@ function validPhoto(photo) {
 
 export const MAX_PHOTOS = 6;
 
+/** Google-Maps-style photo categories — a fixed vocabulary so the gallery can group into tabs
+ * (菜單/餐點/店內/店外) instead of one undifferentiated scroll. */
+export const PHOTO_CATEGORIES = Object.freeze(["food", "menu", "interior", "exterior", "other"]);
+
+function normalizePhotoItem(item) {
+  // A plain string is accepted too (not just {url, category}) — both what a client submits
+  // and what's already stored from before photo categories existed; either way it becomes a
+  // real {url, category} item, defaulting to "other" the same way an unrecognized category on
+  // an object item does.
+  if (typeof item === "string") return validPhoto(item) ? { url: item, category: "other" } : null;
+  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+  if (!validPhoto(item.url)) return null;
+  return { url: item.url, category: PHOTO_CATEGORIES.includes(item.category) ? item.category : "other" };
+}
+
 /** Whitelist copy of a photo gallery — `null` (not an array, too many, or any one photo invalid)
  * means "reject the whole write", same as every other sanitizer here: never silently drop a bad
- * entry and save a shorter gallery than what was actually submitted. */
+ * entry and save a shorter gallery than what was actually submitted. Output is always normalized
+ * to `{url, category}` items regardless of whether the input mixed plain strings and objects. */
 export function sanitizePhotos(input) {
   if (input == null) return null;
   if (!Array.isArray(input) || input.length === 0 || input.length > MAX_PHOTOS) return null;
-  if (!input.every(validPhoto)) return null;
-  return input;
+  const normalized = input.map(normalizePhotoItem);
+  if (normalized.some((p) => p === null)) return null;
+  return normalized;
+}
+
+/** Normalizes whatever shape a stored gallery ended up in — the current `{url, category}`
+ * objects, the plain-string array from before photo categories existed, or nothing at all — into
+ * the current shape. A read-time upgrade, not a migration: nothing needs to be backfilled in the
+ * database for an old row to keep working. */
+export function normalizePhotos(rawPhotos) {
+  if (!Array.isArray(rawPhotos)) return [];
+  return rawPhotos.map((p) => (typeof p === "string" ? { url: p, category: "other" } : p)).filter(Boolean);
 }
 
 export const WEEKDAYS = Object.freeze(["mon", "tue", "wed", "thu", "fri", "sat", "sun"]);
@@ -73,6 +99,39 @@ export function sanitizeFeatures(input) {
   if (unique.length !== input.length) return null;
   if (!unique.every((f) => LANDMARK_FEATURES.includes(f))) return null;
   return unique;
+}
+
+/** Google-Maps-style external links — a fixed set of known kinds (not arbitrary key/value pairs),
+ * each optional so a business only fills in what it actually has. */
+export const LANDMARK_LINK_KINDS = Object.freeze(["menu", "order", "website", "delivery"]);
+
+function validLinkUrl(v) {
+  return typeof v === "string" && /^https:\/\//.test(v) && v.length <= 500;
+}
+
+/** Whitelist copy of a business's external links — `null` for anything not a plain object made
+ * only of known kinds, each a real https URL. An unknown key is rejected outright (same "fail
+ * loud, not silently drop" rule as every other sanitizer here) rather than just ignored, so a
+ * stale client sending an old kind name finds out immediately. */
+export function sanitizeLinks(input) {
+  if (input == null) return null;
+  if (typeof input !== "object" || Array.isArray(input)) return null;
+  const out = {};
+  for (const key of Object.keys(input)) {
+    if (!LANDMARK_LINK_KINDS.includes(key)) return null;
+    if (!validLinkUrl(input[key])) return null;
+    out[key] = input[key];
+  }
+  if (Object.keys(out).length === 0) return null;
+  return out;
+}
+
+/** Self-reported by the business, Google-Maps style ($ .. $$$$) — 1 to MAX_PRICE_RANGE. */
+export const MAX_PRICE_RANGE = 4;
+export function sanitizePriceRange(input) {
+  if (input == null) return null;
+  if (!Number.isInteger(input) || input < 1 || input > MAX_PRICE_RANGE) return null;
+  return input;
 }
 
 const DAY_LABEL = { mon: "週一", tue: "週二", wed: "週三", thu: "週四", fri: "週五", sat: "週六", sun: "週日" };
