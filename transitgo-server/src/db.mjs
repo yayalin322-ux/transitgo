@@ -6,6 +6,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { ensureGtfsSchema } from "./gtfs/schema.mjs";
+import { isOpenNow } from "./landmarks.mjs";
 
 const usingPg = !!process.env.DATABASE_URL;
 export let db;
@@ -171,6 +172,13 @@ if (usingPg) {
     ALTER TABLE user_landmarks ADD COLUMN IF NOT EXISTS email TEXT;
     -- 'open' | 'temporarily_closed' | 'permanently_closed' —— 只有已驗證店家自己能改（見 updateMyUserLandmark）。
     ALTER TABLE user_landmarks ADD COLUMN IF NOT EXISTS business_status TEXT NOT NULL DEFAULT 'open';
+    -- Google 地圖風格的店家詳情：相簿（JSON 陣列，取代單張 photo——photo 仍保留當作第一張的舊資料相容）、
+    -- 結構化營業時間（JSON：{mon:{open,close}|null, ...}，用來算「現在有沒有開」，跟舊的自由文字
+    -- business_hours 並存——沒填結構化時就照舊顯示那段文字）、特色標籤（JSON 字串陣列，見 shares.mjs 之外
+    -- 的 LANDMARK_FEATURES 固定清單）。
+    ALTER TABLE user_landmarks ADD COLUMN IF NOT EXISTS photos_json TEXT;
+    ALTER TABLE user_landmarks ADD COLUMN IF NOT EXISTS hours_json TEXT;
+    ALTER TABLE user_landmarks ADD COLUMN IF NOT EXISTS features_json TEXT;
     -- 舊的粗分類（這個功能改成 Google 地圖那樣細分類之前）換成細分類裡的代表值，
     -- 不然舊地標全部會被 App 端當成無法辨識、退回顯示成「其他」。
     UPDATE user_landmarks SET category = 'restaurant' WHERE category = 'foodDrink';
@@ -341,6 +349,9 @@ if (usingPg) {
       business_hours    TEXT,
       phone             TEXT,
       business_status   TEXT NOT NULL DEFAULT 'open',
+      photos_json       TEXT,
+      hours_json        TEXT,
+      features_json     TEXT,
       app_version       TEXT,
       device            TEXT,
       email             TEXT,
@@ -408,6 +419,9 @@ if (usingPg) {
   if (!landmarkCols.includes("business_status")) {
     db.exec(`ALTER TABLE user_landmarks ADD COLUMN business_status TEXT NOT NULL DEFAULT 'open'`);
   }
+  if (!landmarkCols.includes("photos_json")) db.exec(`ALTER TABLE user_landmarks ADD COLUMN photos_json TEXT`);
+  if (!landmarkCols.includes("hours_json")) db.exec(`ALTER TABLE user_landmarks ADD COLUMN hours_json TEXT`);
+  if (!landmarkCols.includes("features_json")) db.exec(`ALTER TABLE user_landmarks ADD COLUMN features_json TEXT`);
   for (const [oldCat, newCat] of Object.entries(OLD_CATEGORY_REMAP)) {
     db.exec(`UPDATE user_landmarks SET category = '${newCat}' WHERE category = '${oldCat}'`);
   }
@@ -776,11 +790,22 @@ export const LANDMARK_CATEGORIES = [
   "hairSalon", "laundry", "petGrooming", "repairShop",
   "other",
 ];
+/** photos_json/hours_json/features_json, parsed and normalised: `photos` falls back to the
+ * legacy single `photo` column so an old row (before this feature existed) still shows its one
+ * photo as a one-item gallery instead of an empty one. `openNow` is computed fresh on every read
+ * (see isOpenNow) rather than stored, so it's never stale. */
+function landmarkExtras(r) {
+  const photos = r.photos_json ? JSON.parse(r.photos_json) : (r.photo ? [r.photo] : []);
+  const hours = r.hours_json ? JSON.parse(r.hours_json) : null;
+  const features = r.features_json ? JSON.parse(r.features_json) : [];
+  return { photos, hours, features, openNow: isOpenNow(hours) };
+}
+
 export async function createUserLandmark(r) {
   const category = LANDMARK_CATEGORIES.includes(r.category) ? r.category : "other";
   await db.prepare(`
-    INSERT INTO user_landmarks (name, description, category, lat, lon, photo, is_business_claim, business_verified, business_hours, phone, app_version, device, email, ip)
-    VALUES (:name, :description, :category, :lat, :lon, :photo, :is_business_claim, :business_verified, :business_hours, :phone, :app_version, :device, :email, :ip)
+    INSERT INTO user_landmarks (name, description, category, lat, lon, photo, is_business_claim, business_verified, business_hours, phone, app_version, device, email, ip, photos_json, hours_json, features_json)
+    VALUES (:name, :description, :category, :lat, :lon, :photo, :is_business_claim, :business_verified, :business_hours, :phone, :app_version, :device, :email, :ip, :photos_json, :hours_json, :features_json)
   `).run({
     name: r.name,
     description: (r.description ?? "").slice(0, 500),
@@ -798,6 +823,9 @@ export async function createUserLandmark(r) {
     device: r.device ?? null,
     email: r.email ?? null,
     ip: r.ip ?? null,
+    photos_json: r.photos ? JSON.stringify(r.photos) : null,
+    hours_json: r.hours ? JSON.stringify(r.hours) : null,
+    features_json: r.features ? JSON.stringify(r.features) : null,
   });
 }
 
@@ -820,6 +848,7 @@ export async function listApprovedLandmarksNear(lat, lon, radiusMeters = 1000) {
     // Google-Maps-style: a closed place stays visible (with the status flagged) rather than
     // vanishing — vanishing reads as "this data is broken", a flag reads as "closed today".
     businessStatus: r.business_verified ? r.business_status : "open",
+    ...(r.business_verified ? landmarkExtras(r) : { photos: r.photo ? [r.photo] : [], hours: null, features: [], openNow: null }),
   }));
 }
 
@@ -835,6 +864,7 @@ export async function getApprovedLandmark(id) {
     phone: r.business_verified ? r.phone : null,
     businessVerified: !!r.business_verified,
     businessStatus: r.business_verified ? r.business_status : "open",
+    ...(r.business_verified ? landmarkExtras(r) : { photos: r.photo ? [r.photo] : [], hours: null, features: [], openNow: null }),
   };
 }
 
@@ -854,6 +884,7 @@ export async function listAllUserLandmarks(limit = 200) {
     isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified, businessHours: r.business_hours, phone: r.phone,
     businessStatus: r.business_status, email: r.email, approved: !!r.approved, reported: r.reported, reportReasons: reasonsByLandmark.get(r.id) ?? {},
     appVersion: r.app_version, createdAt: isoZ(r.created_at),
+    ...landmarkExtras(r),
   }));
 }
 
@@ -892,6 +923,7 @@ function mapMyLandmarkRow(r) {
     id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
     isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified, businessHours: r.business_hours, phone: r.phone,
     businessStatus: r.business_status, approved: !!r.approved, createdAt: isoZ(r.created_at),
+    ...landmarkExtras(r),
   };
 }
 
@@ -941,6 +973,12 @@ export async function updateMyUserLandmark(id, owner, fields) {
     sets.push("lat = :lat", "lon = :lon");
     params.lat = fields.lat; params.lon = fields.lon;
   }
+  // photos/hours/features are already sanitized by the caller (see index.mjs) before reaching
+  // here — this just stores whatever whitelisted shape it was handed, same trust boundary as
+  // every other field on this row.
+  if (fields.photos !== undefined) { sets.push("photos_json = :photos_json"); params.photos_json = fields.photos ? JSON.stringify(fields.photos) : null; }
+  if (fields.hours !== undefined) { sets.push("hours_json = :hours_json"); params.hours_json = fields.hours ? JSON.stringify(fields.hours) : null; }
+  if (fields.features !== undefined) { sets.push("features_json = :features_json"); params.features_json = fields.features ? JSON.stringify(fields.features) : null; }
   if (sets.length === 0) return false;
   await db.prepare(`UPDATE user_landmarks SET ${sets.join(", ")} WHERE id = :id`).run(params);
   return true;
@@ -978,10 +1016,14 @@ export async function listVerifiedBusinesses({ category, limit = 60, offset = 0 
   `).all(...params, cappedLimit, offset);
   const total = (await db.prepare(`SELECT COUNT(*) c FROM user_landmarks WHERE ${where}`).get(...params))?.c ?? 0;
   return {
-    businesses: rows.map((r) => ({
-      id: r.id, name: r.name, description: r.description, category: r.category,
-      businessHours: r.business_hours, businessStatus: r.business_status ?? "open",
-    })),
+    businesses: rows.map((r) => {
+      const { photos, openNow } = landmarkExtras(r);
+      return {
+        id: r.id, name: r.name, description: r.description, category: r.category,
+        businessHours: r.business_hours, businessStatus: r.business_status ?? "open",
+        coverPhoto: photos[0] ?? null, openNow,
+      };
+    }),
     total: Number(total),
   };
 }

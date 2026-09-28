@@ -13,6 +13,8 @@
  *    any landmark write, so a busy map does not spend the free read quota.
  */
 
+import { isOpenNow } from "../landmarks.mjs";
+
 export const REPORT_REASONS = ["spam", "offensive", "sexual", "harassment", "other"];
 // Google-Maps-style fine-grained taxonomy — keep this in sync with db.mjs's own copy AND
 // Swift's LandmarkCategory (same raw values). Duplicated rather than imported from db.mjs to
@@ -213,6 +215,15 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
   }
 
   // ---- landmarks ----
+  /** photos/hours/features, normalised the same way db.mjs's landmarkExtras does — Firestore
+   * stores them as native fields (arrays/objects) rather than JSON text, but the shape and the
+   * legacy-photo fallback are identical. */
+  function landmarkExtras(r) {
+    const photos = r.photos ?? (r.photo ? [r.photo] : []);
+    const hours = r.hours ?? null;
+    const features = r.features ?? [];
+    return { photos, hours, features, openNow: isOpenNow(hours) };
+  }
   async function createUserLandmark(r) {
     const id = await store.nextId("user_landmarks");
     await store.set("user_landmarks", id, {
@@ -222,6 +233,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
       phone: (r.phone ?? "").slice(0, 50) || null, business_status: "open",
       app_version: r.appVersion ?? null, device: r.device ?? null, email: r.email ?? null, ip: r.ip ?? null,
       approved: 0, reported: 0, created_at: iso(),
+      photos: r.photos ?? null, hours: r.hours ?? null, features: r.features ?? null,
     });
     dropLandmarkCache();
   }
@@ -240,6 +252,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
       id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
       businessHours: r.business_verified ? r.business_hours : null, phone: r.business_verified ? r.phone : null,
       businessVerified: !!r.business_verified, businessStatus: r.business_verified ? (r.business_status || "open") : "open",
+      ...(r.business_verified ? landmarkExtras(r) : { photos: r.photo ? [r.photo] : [], hours: null, features: [], openNow: null }),
     }));
   }
   async function getApprovedLandmark(id) {
@@ -249,6 +262,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
       id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
       businessHours: r.business_verified ? r.business_hours : null, phone: r.business_verified ? r.phone : null,
       businessVerified: !!r.business_verified, businessStatus: r.business_verified ? (r.business_status || "open") : "open",
+      ...(r.business_verified ? landmarkExtras(r) : { photos: r.photo ? [r.photo] : [], hours: null, features: [], openNow: null }),
     };
   }
   async function listAllUserLandmarks(limit = 200) {
@@ -259,6 +273,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
       businessStatus: r.business_status, email: r.email, approved: !!r.approved, reported: r.reported,
       reportReasons: r.reported > 0 ? await reasonBreakdown("user_landmark_reports", "landmark_id", r.id) : {},
       appVersion: r.app_version, createdAt: r.created_at,
+      ...landmarkExtras(r),
     })));
   }
   async function approveUserLandmark(id) { const ok = await store.update("user_landmarks", id, { approved: 1 }); dropLandmarkCache(); return ok; }
@@ -285,6 +300,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
       id: r.id, name: r.name, description: r.description, category: r.category, lat: r.lat, lon: r.lon, photo: r.photo,
       isBusinessClaim: !!r.is_business_claim, businessVerified: !!r.business_verified, businessHours: r.business_hours, phone: r.phone,
       businessStatus: r.business_status, approved: !!r.approved, createdAt: r.created_at,
+      ...landmarkExtras(r),
     }));
   }
   async function updateMyUserLandmark(id, owner, fields) {
@@ -302,6 +318,9 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
       patch.business_status = fields.businessStatus;
     }
     if (typeof fields.lat === "number" && typeof fields.lon === "number") { patch.lat = fields.lat; patch.lon = fields.lon; }
+    if (fields.photos !== undefined) patch.photos = fields.photos;
+    if (fields.hours !== undefined) patch.hours = fields.hours;
+    if (fields.features !== undefined) patch.features = fields.features;
     if (Object.keys(patch).length === 0) return false;
     await store.update("user_landmarks", id, patch);
     dropLandmarkCache();
@@ -325,10 +344,14 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     if (category) all = all.filter((r) => r.category === category);
     all.sort((a, b) => a.name.localeCompare(b.name));
     return {
-      businesses: all.slice(offset, offset + cappedLimit).map((r) => ({
-        id: r.id, name: r.name, description: r.description, category: r.category,
-        businessHours: r.business_hours, businessStatus: r.business_status ?? "open",
-      })),
+      businesses: all.slice(offset, offset + cappedLimit).map((r) => {
+        const { photos, openNow } = landmarkExtras(r);
+        return {
+          id: r.id, name: r.name, description: r.description, category: r.category,
+          businessHours: r.business_hours, businessStatus: r.business_status ?? "open",
+          coverPhoto: photos[0] ?? null, openNow,
+        };
+      }),
       total: all.length,
     };
   }
