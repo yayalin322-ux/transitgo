@@ -110,6 +110,27 @@ if (usingPg) {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
 
+    -- One row per station per hourly snapshot, for cities in BIKE_HISTORY_CITIES (see
+    -- bikepoller.mjs) — the live bike_cache above only ever holds the CURRENT state, this is
+    -- what lets a page later show a real usage-over-time trend instead of just "right now".
+    -- recorded_at_ms (epoch ms, set from JS) rather than a DB-side now()/datetime('now') — a
+    -- text TIMESTAMPTZ column compared against a JS-built ISO string breaks across backends
+    -- (Postgres's own format vs SQLite's space-separated datetime('now') don't string-compare
+    -- the same way); a plain BIGINT sidesteps that entirely, same as shares.expires_at_ms.
+    CREATE TABLE IF NOT EXISTS bike_station_history (
+      id             SERIAL PRIMARY KEY,
+      city           TEXT NOT NULL,
+      station_uid    TEXT NOT NULL,
+      name           TEXT,
+      lat            DOUBLE PRECISION,
+      lon            DOUBLE PRECISION,
+      capacity       INTEGER,
+      rent           INTEGER,
+      ret            INTEGER,
+      recorded_at_ms BIGINT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_bike_history_city_time ON bike_station_history (city, recorded_at_ms);
+
     CREATE TABLE IF NOT EXISTS place_reviews (
       id          SERIAL PRIMARY KEY,
       place_key   TEXT NOT NULL,
@@ -234,6 +255,14 @@ if (usingPg) {
       json       TEXT NOT NULL,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    -- 新竹縣交通地圖（縣市公車＋公路客運＋尖峰班距）——TDX 一天只重新抓一次（見
+    -- hsinchuTransit.mjs／index.mjs 的排程），這裡存的是抓完、算完班距之後的成品 JSON。
+    CREATE TABLE IF NOT EXISTS hsinchu_transit_cache (
+      id         TEXT PRIMARY KEY DEFAULT 'all',
+      json       TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `);
 } else {
   db.exec(`
@@ -311,6 +340,20 @@ if (usingPg) {
       json       TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS bike_station_history (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      city           TEXT NOT NULL,
+      station_uid    TEXT NOT NULL,
+      name           TEXT,
+      lat            REAL,
+      lon            REAL,
+      capacity       INTEGER,
+      rent           INTEGER,
+      ret            INTEGER,
+      recorded_at_ms INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_bike_history_city_time ON bike_station_history (city, recorded_at_ms);
 
     CREATE TABLE IF NOT EXISTS place_reviews (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -396,6 +439,12 @@ if (usingPg) {
     CREATE INDEX IF NOT EXISTS idx_shares_expires ON shares (expires_at_ms);
 
     CREATE TABLE IF NOT EXISTS speedcam_cache (
+      id         TEXT PRIMARY KEY DEFAULT 'all',
+      json       TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS hsinchu_transit_cache (
       id         TEXT PRIMARY KEY DEFAULT 'all',
       json       TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -647,6 +696,37 @@ export async function allBikeCaches() {
   }));
 }
 
+// ---- bike station history (hourly snapshots, for cities in BIKE_HISTORY_CITIES) ----
+/** One row per station, all sharing the same recorded_at_ms — see bikepoller.mjs's hourly hook. */
+export async function logBikeStationSnapshot(city, stations) {
+  if (!stations.length) return;
+  const recordedAtMs = Date.now();   // one shared moment for the whole snapshot batch
+  const stmt = db.prepare(`
+    INSERT INTO bike_station_history (city, station_uid, name, lat, lon, capacity, rent, ret, recorded_at_ms)
+    VALUES (:city, :station_uid, :name, :lat, :lon, :capacity, :rent, :ret, :recorded_at_ms)
+  `);
+  for (const s of stations) {
+    await stmt.run({
+      city, station_uid: s.uid, name: s.name ?? null, lat: s.lat ?? null, lon: s.lon ?? null,
+      capacity: s.capacity ?? null, rent: s.rent ?? null, ret: s.ret ?? null, recorded_at_ms: recordedAtMs,
+    });
+  }
+}
+
+/** Everything logged for a city since `sinceMs` — a simple time-series a later page can bucket
+ * by hour-of-day/weekday itself; no aggregation done here so the caller keeps full control. */
+export async function getBikeStationHistory(city, sinceMs) {
+  const rows = await db.prepare(`
+    SELECT station_uid, name, lat, lon, capacity, rent, ret, recorded_at_ms
+    FROM bike_station_history WHERE city = ? AND recorded_at_ms >= ?
+    ORDER BY recorded_at_ms ASC
+  `).all(city, sinceMs);
+  return rows.map((r) => ({
+    stationUID: r.station_uid, name: r.name, lat: r.lat, lon: r.lon,
+    capacity: r.capacity, rent: r.rent, ret: r.ret, recordedAt: new Date(Number(r.recorded_at_ms)).toISOString(),
+  }));
+}
+
 // ---- speed/traffic-camera cache (shared, refreshed by the poller) ----
 export async function setSpeedcamCache(cams) {
   await db.prepare(`
@@ -658,6 +738,19 @@ export async function getSpeedcamCache() {
   const r = await db.prepare(`SELECT json, updated_at FROM speedcam_cache WHERE id = 'all'`).get();
   if (!r) return null;
   return { cams: JSON.parse(r.json), updatedAt: isoZ(r.updated_at) };
+}
+
+// ---- Hsinchu County transit overview cache (refreshed daily, see hsinchuTransit.mjs) ----
+export async function setHsinchuTransitCache(overview) {
+  await db.prepare(`
+    INSERT INTO hsinchu_transit_cache (id, json, updated_at) VALUES ('all', :json, ${usingPg ? "now()" : "datetime('now')"})
+    ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = ${usingPg ? "now()" : "datetime('now')"}
+  `).run({ json: JSON.stringify(overview) });
+}
+export async function getHsinchuTransitCache() {
+  const r = await db.prepare(`SELECT json, updated_at FROM hsinchu_transit_cache WHERE id = 'all'`).get();
+  if (!r) return null;
+  return { ...JSON.parse(r.json), cachedAt: isoZ(r.updated_at) };
 }
 
 // ---- place reviews (real user-submitted, no external API) ----

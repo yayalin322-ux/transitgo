@@ -38,7 +38,8 @@ const names = [
   "createAnnouncement", "getAnnouncement", "listAnnouncements", "deactivateAnnouncement",
   "createReport", "listReports", "createRating", "listRatings", "routeRatingStats", "ratingStats",
   "createObservation", "listObservations",
-  "setBikeCache", "getBikeCache", "allBikeCaches", "setSpeedcamCache", "getSpeedcamCache",
+  "setBikeCache", "getBikeCache", "allBikeCaches", "logBikeStationSnapshot", "getBikeStationHistory", "setSpeedcamCache", "getSpeedcamCache",
+  "setHsinchuTransitCache", "getHsinchuTransitCache",
   "createPlaceReview", "listPlaceReviews", "listMyPlaceReviews", "reportPlaceReview", "deletePlaceReview", "deletePlaceReviewByDevice", "listAllPlaceReviews", "placeReviewStats",
   "createUserLandmark", "listApprovedLandmarksNear", "getApprovedLandmark", "listAllUserLandmarks", "approveUserLandmark", "verifyUserLandmarkBusiness",
   "deleteUserLandmark", "reportUserLandmark", "listMyUserLandmarks", "updateMyUserLandmark",
@@ -66,8 +67,12 @@ export const listObservations = (...a) => impl.listObservations(...a);
 export const setBikeCache = (...a) => impl.setBikeCache(...a);
 export const getBikeCache = (...a) => impl.getBikeCache(...a);
 export const allBikeCaches = (...a) => impl.allBikeCaches(...a);
+export const logBikeStationSnapshot = (...a) => impl.logBikeStationSnapshot(...a);
+export const getBikeStationHistory = (...a) => impl.getBikeStationHistory(...a);
 export const setSpeedcamCache = (...a) => impl.setSpeedcamCache(...a);
 export const getSpeedcamCache = (...a) => impl.getSpeedcamCache(...a);
+export const setHsinchuTransitCache = (...a) => impl.setHsinchuTransitCache(...a);
+export const getHsinchuTransitCache = (...a) => impl.getHsinchuTransitCache(...a);
 export const createPlaceReview = (...a) => impl.createPlaceReview(...a);
 export const listPlaceReviews = (...a) => impl.listPlaceReviews(...a);
 export const listMyPlaceReviews = (...a) => impl.listMyPlaceReviews(...a);

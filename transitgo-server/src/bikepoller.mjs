@@ -1,6 +1,6 @@
 import cron from "node-cron";
 import { tdxConfigured, bikeCity } from "./tdx.mjs";
-import { setBikeCache } from "./appdata.mjs";
+import { setBikeCache, getBikeCache, logBikeStationSnapshot } from "./appdata.mjs";
 
 /**
  * Some cities publish their own YouBike snapshot directly — no auth, no rate limit at all
@@ -187,16 +187,49 @@ const pollStatus = {};
 export function bikePollStatus() { return pollStatus; }
 
 /**
+ * Hourly, for a small configured set of cities (BIKE_HISTORY_CITIES — default none), logs
+ * one row per station into bike_station_history from whatever's currently in the live cache.
+ * This is deliberately separate from the live poll cadence above: the live cache refreshes
+ * every couple of minutes for real-time display, but a usage-pattern page only needs an
+ * hourly resolution, and logging every single live poll would make the table grow ~30x faster
+ * for no real benefit. There's no way to backfill history before this was added — a landmark
+ * or route can be "since forever", this can only ever start counting from whenever a server
+ * with this code first runs.
+ */
+function startBikeHistoryLogger() {
+  const cities = (process.env.BIKE_HISTORY_CITIES || "")
+    .split(",").map((s) => s.trim()).filter(Boolean);
+  if (cities.length === 0) return;
+  const run = async () => {
+    for (const city of cities) {
+      try {
+        const cached = await getBikeCache(city);
+        if (!cached?.stations?.length) continue;
+        await logBikeStationSnapshot(city, cached.stations);
+        console.log(`[bike-history] logged ${cached.stations.length} stations for ${city}`);
+      } catch (e) {
+        console.warn(`[bike-history] ${city} failed: ${e.message}`);
+      }
+    }
+  };
+  run();
+  cron.schedule("0 * * * *", run);
+  console.log(`[bike-history] logging hourly for ${cities.join(", ")}`);
+}
+
+/**
  * Periodically pulls YouBike availability for the configured cities and caches it, so
  * every app can read a fresh-ish shared snapshot without each device hitting TDX itself.
  * Cities in DIRECT_FEEDS go through their own no-auth feed; every other city still goes
  * through TDX.
  *
  * env:
- *   BIKE_CITIES        comma list of TDX city codes (default: Taipei,NewTaipei)
- *   BIKE_POLL_MINUTES  refresh interval (default: 2)
+ *   BIKE_CITIES          comma list of TDX city codes (default: Taipei,NewTaipei)
+ *   BIKE_POLL_MINUTES    refresh interval (default: 2)
+ *   BIKE_HISTORY_CITIES  comma list of cities to also log hourly snapshots for (default: none)
  */
 export function startBikePoller() {
+  startBikeHistoryLogger();
   const cities = (process.env.BIKE_CITIES || "Taipei,NewTaipei")
     .split(",").map((s) => s.trim()).filter(Boolean);
   if (!tdxConfigured() && !cities.some((c) => DIRECT_FEEDS[c])) {
