@@ -347,7 +347,11 @@ app.post("/v1/landmarks", async (req, res) => {
   if (isBusinessClaim) {
     cleanEmail = String(email || "").trim().toLowerCase();
     if (!EMAIL_RE.test(cleanEmail)) return res.status(400).json({ error: "invalid email" });
-    if (!(await verifySiteEmailCode(cleanEmail, String(code || "")))) return res.status(400).json({ error: "invalid code" });
+    // yayalin.com's business dashboard (already Supabase-Auth-gated) skips the code the same
+    // way it does for /mine and /claim above — see isTrustedProxy.
+    if (!isTrustedProxy(req) && !(await verifySiteEmailCode(cleanEmail, String(code || "")))) {
+      return res.status(400).json({ error: "invalid code" });
+    }
   }
   await createUserLandmark({
     name, description, category, lat, lon, photo, isBusinessClaim, businessHours, phone, appVersion, device,
@@ -484,7 +488,7 @@ app.post("/v1/landmarks/:id/claim", async (req, res) => {
 app.put("/v1/landmarks/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isInteger(id)) return res.status(400).json({ error: "invalid id" });
-  const { device, description, businessHours, phone, businessStatus, photo, lat, lon, photos, hours, features, links, priceRange } = req.body || {};
+  const { device, description, businessHours, phone, businessStatus, category, photo, lat, lon, photos, hours, features, links, priceRange } = req.body || {};
   if (photo !== undefined && !validPhoto(photo)) return res.status(400).json({ error: "invalid photo" });
   if (photos !== undefined && sanitizePhotos(photos) === null) return res.status(400).json({ error: "invalid photos" });
   if (hours !== undefined && sanitizeHours(hours) === null) return res.status(400).json({ error: "invalid hours" });
@@ -498,7 +502,7 @@ app.put("/v1/landmarks/:id", async (req, res) => {
   }
   if (!device && !email) return res.status(400).json({ error: "device or verified email required" });
   const ok = await updateMyUserLandmark(id, { device, email }, {
-    description, businessHours, phone, businessStatus, photo, lat, lon,
+    description, businessHours, phone, businessStatus, category, photo, lat, lon,
     photos: photos !== undefined ? sanitizePhotos(photos) : undefined,
     hours: hours !== undefined ? sanitizeHours(hours) : undefined,
     features: features !== undefined ? sanitizeFeatures(features) : undefined,

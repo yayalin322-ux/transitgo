@@ -319,6 +319,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     if (typeof fields.businessStatus === "string" && ["open", "temporarily_closed", "permanently_closed"].includes(fields.businessStatus)) {
       patch.business_status = fields.businessStatus;
     }
+    if (typeof fields.category === "string" && LANDMARK_CATEGORIES.includes(fields.category)) patch.category = fields.category;
     if (typeof fields.lat === "number" && typeof fields.lon === "number") { patch.lat = fields.lat; patch.lon = fields.lon; }
     if (fields.photos !== undefined) patch.photos = fields.photos;
     if (fields.hours !== undefined) patch.hours = fields.hours;

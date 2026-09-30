@@ -981,6 +981,9 @@ export async function updateMyUserLandmark(id, owner, fields) {
   if (typeof fields.businessStatus === "string" && BUSINESS_STATUSES.includes(fields.businessStatus)) {
     sets.push("business_status = :business_status"); params.business_status = fields.businessStatus;
   }
+  if (typeof fields.category === "string" && LANDMARK_CATEGORIES.includes(fields.category)) {
+    sets.push("category = :category"); params.category = fields.category;
+  }
   if (typeof fields.lat === "number" && typeof fields.lon === "number") {
     sets.push("lat = :lat", "lon = :lon");
     params.lat = fields.lat; params.lon = fields.lon;
