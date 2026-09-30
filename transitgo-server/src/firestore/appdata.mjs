@@ -49,6 +49,7 @@ const round = (v, digits) => (v ? Number(Number(v).toFixed(digits)) : null);
 export function createAppData(store, { now = () => new Date(), landmarkCacheMs = 60_000 } = {}) {
   const iso = () => now().toISOString();
   const bikeCaches = new Map();
+  const bikeHistory = [];   // { city, stationUID, name, lat, lon, capacity, rent, ret, recordedAt } — process memory, see header
   let speedcams = null;
   let approvedCache = null;   // { at, rows }
   const dropLandmarkCache = () => { approvedCache = null; };
@@ -134,6 +135,19 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
   async function setBikeCache(city, stations) { bikeCaches.set(city, { stations, updatedAt: iso() }); }
   async function getBikeCache(city) { return bikeCaches.get(city) ?? null; }
   async function allBikeCaches() { return [...bikeCaches.entries()].map(([city, v]) => ({ city, ...v })); }
+  async function logBikeStationSnapshot(city, stations) {
+    const recordedAt = iso();
+    for (const s of stations) {
+      bikeHistory.push({
+        city, stationUID: s.uid, name: s.name ?? null, lat: s.lat ?? null, lon: s.lon ?? null,
+        capacity: s.capacity ?? null, rent: s.rent ?? null, ret: s.ret ?? null, recordedAt,
+      });
+    }
+  }
+  async function getBikeStationHistory(city, sinceMs) {
+    const since = new Date(sinceMs).toISOString();
+    return bikeHistory.filter((r) => r.city === city && r.recordedAt >= since);
+  }
   async function setSpeedcamCache(cams) { speedcams = { cams, updatedAt: iso() }; }
   async function getSpeedcamCache() { return speedcams; }
 
@@ -422,7 +436,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     createAnnouncement, getAnnouncement, listAnnouncements, deactivateAnnouncement,
     createReport, listReports, createRating, listRatings, routeRatingStats, ratingStats,
     createObservation, listObservations,
-    setBikeCache, getBikeCache, allBikeCaches, setSpeedcamCache, getSpeedcamCache,
+    setBikeCache, getBikeCache, allBikeCaches, logBikeStationSnapshot, getBikeStationHistory, setSpeedcamCache, getSpeedcamCache,
     createPlaceReview, listPlaceReviews, listMyPlaceReviews, reportPlaceReview, deletePlaceReview, deletePlaceReviewByDevice, listAllPlaceReviews, placeReviewStats,
     createUserLandmark, listApprovedLandmarksNear, getApprovedLandmark, listAllUserLandmarks, approveUserLandmark, verifyUserLandmarkBusiness,
     deleteUserLandmark, reportUserLandmark, listMyUserLandmarks, updateMyUserLandmark,
