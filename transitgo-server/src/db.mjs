@@ -255,6 +255,14 @@ if (usingPg) {
       json       TEXT NOT NULL,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    -- 新竹縣交通地圖（縣市公車＋公路客運＋尖峰班距）——TDX 一天只重新抓一次（見
+    -- hsinchuTransit.mjs／index.mjs 的排程），這裡存的是抓完、算完班距之後的成品 JSON。
+    CREATE TABLE IF NOT EXISTS hsinchu_transit_cache (
+      id         TEXT PRIMARY KEY DEFAULT 'all',
+      json       TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `);
 } else {
   db.exec(`
@@ -431,6 +439,12 @@ if (usingPg) {
     CREATE INDEX IF NOT EXISTS idx_shares_expires ON shares (expires_at_ms);
 
     CREATE TABLE IF NOT EXISTS speedcam_cache (
+      id         TEXT PRIMARY KEY DEFAULT 'all',
+      json       TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS hsinchu_transit_cache (
       id         TEXT PRIMARY KEY DEFAULT 'all',
       json       TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -724,6 +738,19 @@ export async function getSpeedcamCache() {
   const r = await db.prepare(`SELECT json, updated_at FROM speedcam_cache WHERE id = 'all'`).get();
   if (!r) return null;
   return { cams: JSON.parse(r.json), updatedAt: isoZ(r.updated_at) };
+}
+
+// ---- Hsinchu County transit overview cache (refreshed daily, see hsinchuTransit.mjs) ----
+export async function setHsinchuTransitCache(overview) {
+  await db.prepare(`
+    INSERT INTO hsinchu_transit_cache (id, json, updated_at) VALUES ('all', :json, ${usingPg ? "now()" : "datetime('now')"})
+    ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = ${usingPg ? "now()" : "datetime('now')"}
+  `).run({ json: JSON.stringify(overview) });
+}
+export async function getHsinchuTransitCache() {
+  const r = await db.prepare(`SELECT json, updated_at FROM hsinchu_transit_cache WHERE id = 'all'`).get();
+  if (!r) return null;
+  return { ...JSON.parse(r.json), cachedAt: isoZ(r.updated_at) };
 }
 
 // ---- place reviews (real user-submitted, no external API) ----

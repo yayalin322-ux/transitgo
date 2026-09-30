@@ -39,6 +39,8 @@ import {
   listObservations,
   getBikeCache,
   allBikeCaches,
+  getBikeStationHistory,
+  getHsinchuTransitCache,
   getSpeedcamCache,
   createShare,
   getShare,
@@ -55,6 +57,7 @@ import { shareLinkUrl, cleanPublicOrigin, viewerIp } from "./publicUrl.mjs";
 import { startAlertPoller } from "./alerts.mjs";
 import { startBikePoller, nearestFrom, bikePollStatus } from "./bikepoller.mjs";
 import { startSpeedcamPoller, nearestCams } from "./speedcampoller.mjs";
+import { startHsinchuTransitPoller } from "./hsinchuTransit.mjs";
 import { requestSiteEmailCode, verifySiteEmailCode } from "./siteEmailCode.mjs";
 import { db } from "./db.mjs";
 import { logMemorySummary, startMemorySampler } from "./graph/memlog.mjs";
@@ -585,6 +588,27 @@ app.get("/v1/speedcams/nearby", async (req, res) => {
   const cache = await getSpeedcamCache();
   if (!cache) return res.json({ cams: [], updatedAt: null });
   res.json({ cams: nearestCams(cache.cams, lat, lon, radius, limit), updatedAt: cache.updatedAt });
+});
+
+/** 新竹縣交通地圖（yayalin.com/hsinchu/transit）的資料來源：縣市公車＋公路客運路線（含尖峰
+ * 班距）＋ YouBike 即時站點＋使用歷史。一天重新抓一次的靜態成品，跟即時查詢分開，見
+ * hsinchuTransit.mjs。沒開 HSINCHU_TRANSIT_ENABLED 的部署會回傳 cache: null，前端要能處理。 */
+app.get("/v1/hsinchu/transit-overview", async (_req, res) => {
+  const [transit, bikeCache] = await Promise.all([
+    getHsinchuTransitCache(),
+    getBikeCache("HsinchuCounty"),
+  ]);
+  const historySinceMs = Date.now() - 30 * 24 * 60 * 60 * 1000;   // 最近 30 天累積到的量
+  const bikeHistory = await getBikeStationHistory("HsinchuCounty", historySinceMs);
+  res.json({
+    countyBuses: transit?.countyBuses ?? [],
+    intercityBuses: transit?.intercityBuses ?? [],
+    busDataCachedAt: transit?.cachedAt ?? null,
+    busDataErrors: transit?.errors ?? [],
+    bikeStations: bikeCache?.stations ?? [],
+    bikeStationsUpdatedAt: bikeCache?.updatedAt ?? null,
+    bikeHistory,   // 空陣列＝還沒開始記錄，或剛開始記錄不久——前端要老實顯示，不能假裝有資料
+  });
 });
 
 // Public read so the app can fall back to crowd data when TDX is stale.
@@ -1203,6 +1227,7 @@ app.listen(PORT, () => {
   console.log(`[transitgo-server] listening on :${PORT}`);
   startBikePoller();
   startSpeedcamPoller();
+  startHsinchuTransitPoller();
   if (!ADMIN_TOKEN) console.warn("[transitgo-server] WARNING: ADMIN_TOKEN not set — admin endpoints disabled");
   startAlertPoller();
 });

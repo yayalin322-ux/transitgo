@@ -51,6 +51,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
   const bikeCaches = new Map();
   const bikeHistory = [];   // { city, stationUID, name, lat, lon, capacity, rent, ret, recordedAt } — process memory, see header
   let speedcams = null;
+  let hsinchuTransitCache = null;
   let approvedCache = null;   // { at, rows }
   const dropLandmarkCache = () => { approvedCache = null; };
 
@@ -149,6 +150,8 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     return bikeHistory.filter((r) => r.city === city && r.recordedAt >= since);
   }
   async function setSpeedcamCache(cams) { speedcams = { cams, updatedAt: iso() }; }
+  async function setHsinchuTransitCache(overview) { hsinchuTransitCache = { ...overview, cachedAt: iso() }; }
+  async function getHsinchuTransitCache() { return hsinchuTransitCache; }
   async function getSpeedcamCache() { return speedcams; }
 
   // ---- place reviews ----
@@ -437,6 +440,7 @@ export function createAppData(store, { now = () => new Date(), landmarkCacheMs =
     createReport, listReports, createRating, listRatings, routeRatingStats, ratingStats,
     createObservation, listObservations,
     setBikeCache, getBikeCache, allBikeCaches, logBikeStationSnapshot, getBikeStationHistory, setSpeedcamCache, getSpeedcamCache,
+    setHsinchuTransitCache, getHsinchuTransitCache,
     createPlaceReview, listPlaceReviews, listMyPlaceReviews, reportPlaceReview, deletePlaceReview, deletePlaceReviewByDevice, listAllPlaceReviews, placeReviewStats,
     createUserLandmark, listApprovedLandmarksNear, getApprovedLandmark, listAllUserLandmarks, approveUserLandmark, verifyUserLandmarkBusiness,
     deleteUserLandmark, reportUserLandmark, listMyUserLandmarks, updateMyUserLandmark,

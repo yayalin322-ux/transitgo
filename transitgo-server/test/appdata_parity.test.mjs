@@ -78,6 +78,13 @@ async function scenario(api) {
   r.camBefore = await api.getSpeedcamCache();
   await api.setSpeedcamCache([{ lat: 1, lon: 2 }]);
   r.cam = (await api.getSpeedcamCache())?.cams;
+  r.hsinchuBefore = await api.getHsinchuTransitCache();
+  await api.setHsinchuTransitCache({ countyBuses: [{ routeUID: "HSQ1" }], intercityBuses: [], errors: [] });
+  r.hsinchu = (await api.getHsinchuTransitCache())?.countyBuses;
+  r.bikeHistoryBefore = await api.getBikeStationHistory("HsinchuCounty", 0);
+  await api.logBikeStationSnapshot("HsinchuCounty", [{ uid: "s1", name: "站1", lat: 1, lon: 2, capacity: 10, rent: 3, ret: 7 }]);
+  r.bikeHistory = (await api.getBikeStationHistory("HsinchuCounty", 0)).map((x) => ({ stationUID: x.stationUID, rent: x.rent, ret: x.ret }));
+  r.bikeHistoryOtherCity = await api.getBikeStationHistory("Taipei", 0);
 
   // place reviews
   await api.createPlaceReview({ placeKey: "p1", placeName: "店", lat: 1, lon: 2, stars: 5, comment: "好", device: "dev1" });
