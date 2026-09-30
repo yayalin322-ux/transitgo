@@ -603,6 +603,7 @@ app.get("/v1/hsinchu/transit-overview", async (_req, res) => {
   res.json({
     countyBuses: transit?.countyBuses ?? [],
     intercityBuses: transit?.intercityBuses ?? [],
+    stops: transit?.stops ?? [],   // 單一站點的班次密集度（合併經過該站的所有路線）
     busDataCachedAt: transit?.cachedAt ?? null,
     busDataErrors: transit?.errors ?? [],
     bikeStations: bikeCache?.stations ?? [],
