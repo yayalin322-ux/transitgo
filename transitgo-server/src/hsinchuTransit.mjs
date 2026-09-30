@@ -122,10 +122,10 @@ function groupByKey(rows, key) {
  * 分開才不會把同一份原始班表資料在回應裡重複放兩次。 */
 export async function fetchHsinchuCountyBuses() {
   const [routes, stopsRows, scheduleRows, shapeRows] = await Promise.all([
-    get("v2/Bus/Route/City/HsinchuCounty?$format=JSON"),
-    get("v2/Bus/StopOfRoute/City/HsinchuCounty?$format=JSON"),
-    get("v2/Bus/Schedule/City/HsinchuCounty?$format=JSON"),
-    get("v2/Bus/Shape/City/HsinchuCounty?$format=JSON"),
+    get("v2/Bus/Route/City/HsinchuCounty"),
+    get("v2/Bus/StopOfRoute/City/HsinchuCounty"),
+    get("v2/Bus/Schedule/City/HsinchuCounty"),
+    get("v2/Bus/Shape/City/HsinchuCounty"),
   ]);
   const stopsBySub = groupByKey(stopsRows, "SubRouteUID");
   const scheduleBySub = groupByKey(scheduleRows, "SubRouteUID");
@@ -173,8 +173,8 @@ export async function fetchHsinchuCountyBuses() {
  * 定時班次，不是每條都有 TDX 可查的 Schedule 資料。回傳形狀同 fetchHsinchuCountyBuses。 */
 export async function fetchIntercityBusesServingHsinchu() {
   const [routes, stopsRows] = await Promise.all([
-    get("v2/Bus/Route/InterCity?$format=JSON"),
-    get("v2/Bus/StopOfRoute/InterCity?$format=JSON"),
+    get("v2/Bus/Route/InterCity"),
+    get("v2/Bus/StopOfRoute/InterCity"),
   ]);
   const stopsBySub = groupByKey(stopsRows, "SubRouteUID");
   const hsqSubRouteUIDs = new Set(
